@@ -1,0 +1,22 @@
+{
+  "name": "@meridian/db",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "generate": "drizzle-kit generate",
+    "migrate": "drizzle-kit migrate"
+  },
+  "dependencies": {
+    "@meridian/shared": "workspace:*",
+    "drizzle-orm": "^0.38.3",
+    "postgres": "^3.4.5"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.30.1"
+  }
+}

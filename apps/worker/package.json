@@ -1,0 +1,21 @@
+{
+  "name": "@meridian/worker",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@meridian/db": "workspace:*",
+    "@meridian/shared": "workspace:*",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  }
+}

@@ -1,0 +1,36 @@
+import { bigint, boolean, date, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { connection } from "./sources.js";
+
+export const account = pgTable(
+  "account",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    connectionId: uuid("connection_id").references(() => connection.id, { onDelete: "set null" }),
+    externalId: text("external_id"),
+    name: text("name").notNull(),
+    type: text("type", {
+      enum: ["checking", "savings", "credit", "loan", "brokerage", "401k", "ira", "roth", "hsa", "529", "asset"],
+    }).notNull(),
+    /** Set from day one; the retirement planner depends on it. */
+    taxTreatment: text("tax_treatment", { enum: ["taxable", "pre_tax", "roth", "hsa", "none"] }).notNull(),
+    currency: text("currency").notNull().default("USD"),
+    onBudget: boolean("on_budget").notNull().default(true),
+    closed: boolean("closed").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("account_connection_external_idx").on(t.connectionId, t.externalId)],
+);
+
+/** Daily balances drive net worth history. Cents as bigint. */
+export const balanceSnapshot = pgTable(
+  "balance_snapshot",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    accountId: uuid("account_id").notNull().references(() => account.id, { onDelete: "cascade" }),
+    date: date("date").notNull(),
+    balanceCents: bigint("balance_cents", { mode: "bigint" }).notNull(),
+    availableCents: bigint("available_cents", { mode: "bigint" }),
+    source: text("source", { enum: ["simplefin", "csv", "manual", "computed"] }).notNull(),
+  },
+  (t) => [uniqueIndex("balance_snapshot_account_date_idx").on(t.accountId, t.date), index("balance_snapshot_date_idx").on(t.date)],
+);

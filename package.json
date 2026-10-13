@@ -1,0 +1,23 @@
+{
+  "name": "meridian",
+  "private": true,
+  "version": "0.0.1",
+  "packageManager": "pnpm@10.28.0",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter ./apps/* dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint .",
+    "db:generate": "pnpm --filter @meridian/db generate",
+    "db:migrate": "pnpm --filter @meridian/db migrate"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "eslint": "^9.17.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.0",
+    "vitest": "^2.1.8"
+  }
+}
