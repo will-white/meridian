@@ -1,5 +1,18 @@
 name: meridian
 
+# Four services from the spec (web = API + static UI, worker, db, proxy) plus the
+# nightly backup sidecar. LAN only: nothing here publishes a port except Caddy,
+# and remote access is meant to go through Tailscale, never port forwarding.
+
+# The app containers assemble their database URL from POSTGRES_* (env file) and
+# MERIDIAN_DB_HOST, so nothing here depends on compose variable interpolation.
+x-app-env: &app-env
+  env_file: ../.env
+  environment:
+    NODE_ENV: production
+    MERIDIAN_DB_HOST: db
+    MERIDIAN_MIGRATIONS_DIR: /app/packages/db/drizzle
+
 services:
   db:
     image: postgres:16-alpine
@@ -12,6 +25,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    # Loopback only, for psql from the host. Remove if not wanted.
     ports:
       - "127.0.0.1:5432:5432"
 
@@ -20,26 +34,30 @@ services:
       context: ..
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
-    env_file: ../.env
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    <<: *app-env
     depends_on:
       db:
         condition: service_healthy
     expose:
       - "3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   worker:
     build:
       context: ..
       dockerfile: apps/worker/Dockerfile
     restart: unless-stopped
-    env_file: ../.env
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    <<: *app-env
     depends_on:
       db:
         condition: service_healthy
+      web:
+        condition: service_healthy # web runs migrations on boot
 
   proxy:
     image: caddy:2-alpine
@@ -59,13 +77,15 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     env_file: ../.env
+    environment:
+      BACKUP_HOUR: ${BACKUP_HOUR:-2}
     volumes:
       - ./backup.sh:/backup.sh:ro
       - ./backups:/backups
     depends_on:
       db:
         condition: service_healthy
-    entrypoint: ["/bin/sh", "-c", "while true; do /backup.sh; sleep 86400; done"]
+    entrypoint: ["/bin/sh", "/backup.sh", "--nightly"]
 
 volumes:
   pg_data:

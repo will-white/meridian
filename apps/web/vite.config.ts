@@ -10,9 +10,15 @@ export default defineConfig({
       manifest: {
         name: "Meridian",
         short_name: "Meridian",
+        description: "Self-hosted household finance",
         theme_color: "#0f172a",
         background_color: "#0f172a",
         display: "standalone",
+        icons: [{ src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" }],
+      },
+      workbox: {
+        // The API is never cached: money data must always be live.
+        navigateFallbackDenylist: [/^\/api\//],
       },
     }),
   ],

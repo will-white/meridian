@@ -1,6 +1,9 @@
 import { bigint, boolean, date, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { connection } from "./sources.js";
 
+export const ACCOUNT_TYPES = ["checking", "savings", "credit", "loan", "brokerage", "401k", "ira", "roth", "hsa", "529", "asset"] as const;
+export const TAX_TREATMENTS = ["taxable", "pre_tax", "roth", "hsa", "none"] as const;
+
 export const account = pgTable(
   "account",
   {
@@ -8,15 +11,20 @@ export const account = pgTable(
     connectionId: uuid("connection_id").references(() => connection.id, { onDelete: "set null" }),
     externalId: text("external_id"),
     name: text("name").notNull(),
-    type: text("type", {
-      enum: ["checking", "savings", "credit", "loan", "brokerage", "401k", "ira", "roth", "hsa", "529", "asset"],
-    }).notNull(),
+    /** Bank or brokerage name from SimpleFIN `org.name`. */
+    institution: text("institution"),
+    type: text("type", { enum: ACCOUNT_TYPES }).notNull(),
     /** Set from day one; the retirement planner depends on it. */
-    taxTreatment: text("tax_treatment", { enum: ["taxable", "pre_tax", "roth", "hsa", "none"] }).notNull(),
+    taxTreatment: text("tax_treatment", { enum: TAX_TREATMENTS }).notNull(),
     currency: text("currency").notNull().default("USD"),
     onBudget: boolean("on_budget").notNull().default(true),
     closed: boolean("closed").notNull().default(false),
+    /** Latest known balance; history lives in balance_snapshot. Cents as bigint. */
+    balanceCents: bigint("balance_cents", { mode: "bigint" }),
+    availableCents: bigint("available_cents", { mode: "bigint" }),
+    balanceDate: date("balance_date"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex("account_connection_external_idx").on(t.connectionId, t.externalId)],
 );

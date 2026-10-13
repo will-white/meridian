@@ -1,6 +1,14 @@
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["**/dist/**", "**/node_modules/**", "**/drizzle/**"] },
+  { ignores: ["**/dist/**", "**/node_modules/**", "**/drizzle/**", "**/dev-dist/**"] },
   ...tseslint.configs.recommended,
+  {
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_", ignoreRestSiblings: true },
+      ],
+    },
+  },
 );

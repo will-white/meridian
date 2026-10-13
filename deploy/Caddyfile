@@ -1,7 +1,13 @@
 # LAN-only reverse proxy with an internally issued certificate.
 # Set SITE_ADDRESS in .env (e.g. meridian.local or the Tailscale MagicDNS name).
+# Trust Caddy's local CA on your devices (docker compose exec proxy cat /data/caddy/pki/authorities/local/root.crt).
 {$SITE_ADDRESS} {
 	tls internal
-	encode gzip
+	encode gzip zstd
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+	}
 	reverse_proxy web:3000
 }

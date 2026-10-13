@@ -5,7 +5,10 @@ export const user = pgTable("user", {
   id: uuid("id").primaryKey().defaultRandom(),
   username: text("username").notNull().unique(),
   passwordHash: text("password_hash").notNull(), // Argon2id
-  totpSecretEnc: text("totp_secret_enc"), // encrypted with SECRETS_KEY; null until TOTP is set up
+  /** Encrypted with SECRETS_KEY; null until TOTP setup starts. */
+  totpSecretEnc: text("totp_secret_enc"),
+  /** Set once the user has proven a code; TOTP is enforced from then on. */
+  totpConfirmedAt: timestamp("totp_confirmed_at", { withTimezone: true }),
   role: text("role", { enum: ["owner", "viewer"] }).notNull().default("owner"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

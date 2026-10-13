@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node ../../scripts/bundle.mjs src/server.ts dist/server.js",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
@@ -13,13 +13,22 @@
   "dependencies": {
     "@fastify/cookie": "^11.0.1",
     "@fastify/helmet": "^13.0.0",
+    "@fastify/rate-limit": "^10.2.1",
+    "@fastify/static": "^8.0.3",
     "@meridian/db": "workspace:*",
     "@meridian/shared": "workspace:*",
+    "@node-rs/argon2": "^2.0.2",
+    "drizzle-orm": "^0.38.3",
     "fastify": "^5.2.0",
     "fastify-type-provider-zod": "^4.0.2",
-    "zod": "^3.24.1"
+    "otpauth": "^9.3.6",
+    "postgres": "^3.4.5",
+    "qrcode": "^1.5.4",
+    "zod": "^3.24.1",
+    "fastify-plugin": "^5.0.1"
   },
   "devDependencies": {
+    "@types/qrcode": "^1.5.5",
     "tsx": "^4.19.2"
   }
 }

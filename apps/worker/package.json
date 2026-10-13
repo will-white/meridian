@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/main.ts",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node ../../scripts/bundle.mjs src/main.ts dist/main.js",
     "start": "node dist/main.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
@@ -13,6 +13,8 @@
   "dependencies": {
     "@meridian/db": "workspace:*",
     "@meridian/shared": "workspace:*",
+    "drizzle-orm": "^0.38.3",
+    "postgres": "^3.4.5",
     "zod": "^3.24.1"
   },
   "devDependencies": {

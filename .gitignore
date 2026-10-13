@@ -10,3 +10,4 @@ coverage/
 deploy/backups/
 deploy/caddy_data/
 deploy/pg_data/
+dev-dist/
