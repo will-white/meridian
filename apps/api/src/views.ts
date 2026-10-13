@@ -25,6 +25,7 @@ export function toTransactionView(r: TransactionListRow): TransactionView {
     notes: r.notes,
     tags: r.tags,
     source: r.source,
+    recurringId: r.recurringId,
   };
 }
 
@@ -47,6 +48,10 @@ export function toAccountView(
     availableCents: r.availableCents === null ? null : r.availableCents.toString(),
     balanceDate: r.balanceDate,
     transactionCount: r.transactionCount,
+    lowBalanceThresholdCents: r.lowBalanceThresholdCents === null ? null : r.lowBalanceThresholdCents.toString(),
+    paymentDay: r.paymentDay,
+    paymentFromAccountId: r.paymentFromAccountId,
+    statementDay: r.statementDay,
   };
 }
 

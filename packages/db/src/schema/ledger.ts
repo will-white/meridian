@@ -21,13 +21,24 @@ export const BUCKETS = ["income", "bills", "savings", "spending"] as const;
  * Minimal category table, pulled forward from Phase 2 so Phase 1 can categorize
  * and rules can set a category. `category_group` and `month_plan` arrive in Phase 2.
  */
-export const category = pgTable("category", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  name: text("name").notNull().unique(),
-  bucket: text("bucket", { enum: BUCKETS }).notNull().default("spending"),
-  hidden: boolean("hidden").notNull().default(false),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const category = pgTable(
+  "category",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull().unique(),
+    bucket: text("bucket", { enum: BUCKETS }).notNull().default("spending"),
+    hidden: boolean("hidden").notNull().default(false),
+    /** Phase 2: group within the bucket (nullable; ungrouped rows render after the groups). */
+    groupId: uuid("group_id"),
+    position: integer("position").notNull().default(0),
+    /** none | surplus (carry max(0, remaining)) | all (carry remaining, may be negative). Income is always none. */
+    rolloverMode: text("rollover_mode", { enum: ["none", "surplus", "all"] }).notNull().default("none"),
+    /** Month (YYYY-MM) the carry chain starts; null = household plan_start_month. */
+    rolloverFromMonth: text("rollover_from_month"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("category_group_position_idx").on(t.groupId, t.position), index("category_bucket_position_idx").on(t.bucket, t.position)],
+);
 
 export const payee = pgTable("payee", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -65,6 +76,8 @@ export const transaction = pgTable(
     isTransfer: boolean("is_transfer").notNull().default(false),
     /** Two legs of a transfer share one pair id. */
     transferPairId: uuid("transfer_pair_id"),
+    /** Phase 2: the recurring item this charge belongs to (set by the detector/matcher). */
+    recurringId: uuid("recurring_id"),
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -76,6 +89,8 @@ export const transaction = pgTable(
     index("transaction_payee_idx").on(t.payeeId),
     index("transaction_category_idx").on(t.categoryId),
     index("transaction_transfer_pair_idx").on(t.transferPairId),
+    index("transaction_recurring_idx").on(t.recurringId),
+    index("transaction_payee_date_idx").on(t.payeeId, t.date),
   ],
 );
 

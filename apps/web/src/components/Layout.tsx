@@ -2,11 +2,19 @@ import { NavLink, Outlet } from "react-router";
 import { useAuthStatus, useLogout } from "../lib/auth.js";
 
 const links = [
+  ["/dashboard", "Dashboard"],
+  ["/plan", "Plan"],
   ["/transactions", "Transactions"],
   ["/accounts", "Accounts"],
-  ["/connections", "Connections"],
+  ["/goals", "Goals"],
+  ["/recurring", "Recurring"],
+  ["/subscriptions", "Subscriptions"],
+  ["/cashflow", "Cash flow"],
+  ["/alerts", "Alerts"],
   ["/rules", "Rules"],
+  ["/connections", "Connections"],
   ["/import", "Import CSV"],
+  ["/settings", "Settings"],
 ] as const;
 
 export function Layout() {

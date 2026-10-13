@@ -1,6 +1,8 @@
 import { runRules, type JobRow } from "@meridian/db";
 import { runClaimJob } from "./claim.js";
+import { runCloseMonthJob } from "./closeMonth.js";
 import type { JobContext } from "./context.js";
+import { runRecurringDetectJob } from "./recurringDetect.js";
 import { runSyncJob } from "./sync.js";
 
 export async function dispatchJob(ctx: JobContext, job: JobRow): Promise<unknown> {
@@ -12,6 +14,10 @@ export async function dispatchJob(ctx: JobContext, job: JobRow): Promise<unknown
       return runSyncJob(ctx, job);
     case "rules.run":
       return runRules(ctx.db, { scope: job.payload["scope"] === "all" ? "all" : "uncategorized" });
+    case "recurring.detect":
+      return runRecurringDetectJob(ctx, job);
+    case "plan.close_month":
+      return runCloseMonthJob(ctx, job);
     default:
       throw new Error(`unknown job type ${String(job.type)}`);
   }

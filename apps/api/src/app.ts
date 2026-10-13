@@ -12,20 +12,29 @@ import type { ApiConfig } from "./config.js";
 import { registerErrorHandler } from "./lib/errors.js";
 import { authPlugin } from "./plugins/auth.js";
 import { accountRoutes } from "./routes/accounts.js";
+import { auditRoutes } from "./routes/audit.js";
 import { authRoutes } from "./routes/auth.js";
+import { cashflowRoutes } from "./routes/cashflow.js";
 import { categoryRoutes } from "./routes/categories.js";
 import { connectionRoutes } from "./routes/connections.js";
+import { dashboardRoutes } from "./routes/dashboard.js";
+import { goalRoutes } from "./routes/goals.js";
 import { importRoutes } from "./routes/import.js";
+import { planRoutes } from "./routes/plan.js";
+import { recurringRoutes } from "./routes/recurring.js";
 import { ruleRoutes } from "./routes/rules.js";
+import { settingsRoutes } from "./routes/settings.js";
 import { transactionRoutes } from "./routes/transactions.js";
 
 export interface BuildAppOptions {
   db: Db;
   config: ApiConfig;
   logger?: FastifyServerOptions["logger"];
+  /** Injectable clock; routes derive the server's "today" from it. */
+  now?: () => Date;
 }
 
-export async function buildApp({ db, config, logger }: BuildAppOptions) {
+export async function buildApp({ db, config, logger, now }: BuildAppOptions) {
   const app = Fastify({
     logger: logger ?? config.nodeEnv !== "test",
     trustProxy: true,
@@ -35,6 +44,7 @@ export async function buildApp({ db, config, logger }: BuildAppOptions) {
   app.setSerializerCompiler(serializerCompiler);
   app.decorate("db", db);
   app.decorate("config", config);
+  app.decorate("now", now ?? (() => new Date()));
   registerErrorHandler(app);
 
   await app.register(helmet, {
@@ -65,6 +75,14 @@ export async function buildApp({ db, config, logger }: BuildAppOptions) {
       await api.register(categoryRoutes);
       await api.register(ruleRoutes);
       await api.register(importRoutes);
+      // Phase 2
+      await api.register(settingsRoutes);
+      await api.register(planRoutes);
+      await api.register(goalRoutes);
+      await api.register(recurringRoutes);
+      await api.register(cashflowRoutes);
+      await api.register(dashboardRoutes);
+      await api.register(auditRoutes);
     },
     { prefix: "/api" },
   );

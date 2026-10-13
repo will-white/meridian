@@ -1,4 +1,4 @@
-import { bigint, boolean, date, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, date, index, pgTable, smallint, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { connection } from "./sources.js";
 
 export const ACCOUNT_TYPES = ["checking", "savings", "credit", "loan", "brokerage", "401k", "ira", "roth", "hsa", "529", "asset"] as const;
@@ -23,6 +23,13 @@ export const account = pgTable(
     balanceCents: bigint("balance_cents", { mode: "bigint" }),
     availableCents: bigint("available_cents", { mode: "bigint" }),
     balanceDate: date("balance_date"),
+    /** Phase 2 cash flow: per-account low-balance line (null = household default for cash accounts). */
+    lowBalanceThresholdCents: bigint("low_balance_threshold_cents", { mode: "bigint" }),
+    /** Credit accounts: day of month the card is paid (1..31, clamped); non-null turns payment projection on. */
+    paymentDay: smallint("payment_day"),
+    paymentFromAccountId: uuid("payment_from_account_id"),
+    /** Statement close day; null = pay the balance as of the day before the payment date. */
+    statementDay: smallint("statement_day"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

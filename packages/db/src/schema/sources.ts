@@ -52,7 +52,7 @@ export const job = pgTable(
   "job",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    type: text("type", { enum: ["simplefin.claim", "simplefin.sync", "simplefin.balances", "rules.run"] }).notNull(),
+    type: text("type", { enum: ["simplefin.claim", "simplefin.sync", "simplefin.balances", "rules.run", "recurring.detect", "plan.close_month"] }).notNull(),
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
     status: text("status", { enum: ["queued", "running", "done", "failed"] }).notNull().default("queued"),
     runAt: timestamp("run_at", { withTimezone: true }).notNull().defaultNow(),

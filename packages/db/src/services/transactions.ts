@@ -36,6 +36,7 @@ export interface TransactionListRow {
   transferPairId: string | null;
   notes: string | null;
   source: "simplefin" | "csv" | "manual";
+  recurringId: string | null;
   tags: string[];
 }
 
@@ -78,6 +79,7 @@ export async function listTransactions(db: DbOrTx, query: ListTransactionsQuery)
       transferPairId: transaction.transferPairId,
       notes: transaction.notes,
       source: transaction.source,
+      recurringId: transaction.recurringId,
     })
     .from(transaction)
     .innerJoin(account, eq(account.id, transaction.accountId))
@@ -140,6 +142,7 @@ async function listTransactionsById(db: DbOrTx, id: string) {
       transferPairId: transaction.transferPairId,
       notes: transaction.notes,
       source: transaction.source,
+      recurringId: transaction.recurringId,
     })
     .from(transaction)
     .innerJoin(account, eq(account.id, transaction.accountId))

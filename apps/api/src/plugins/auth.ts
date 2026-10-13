@@ -34,6 +34,7 @@ declare module "fastify" {
   interface FastifyInstance {
     db: Db;
     config: ApiConfig;
+    now: () => Date;
   }
   interface FastifyRequest {
     auth: AuthState;

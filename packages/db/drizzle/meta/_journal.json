@@ -8,6 +8,13 @@
       "when": 1791920623377,
       "tag": "0000_phase1_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791929879848,
+      "tag": "0001_phase2_plan",
+      "breakpoints": true
     }
   ]
 }

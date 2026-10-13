@@ -16,7 +16,7 @@ export interface TestApp {
   cleanup: () => Promise<void>;
 }
 
-export async function createTestApp(): Promise<TestApp> {
+export async function createTestApp(options: { now?: () => Date } = {}): Promise<TestApp> {
   const db = await createTestDb();
   const config: ApiConfig = {
     nodeEnv: "test",
@@ -28,7 +28,7 @@ export async function createTestApp(): Promise<TestApp> {
     sessionTtlDays: 1,
     secureCookies: false,
   };
-  const app = await buildApp({ db: db.db, config, logger: false });
+  const app = await buildApp({ db: db.db, config, logger: false, ...(options.now ? { now: options.now } : {}) });
   await app.ready();
   const cookies: Record<string, string> = {};
   const call = async (opts: InjectOptions) => {
