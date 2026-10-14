@@ -1,0 +1,29 @@
+/* Dashboard: a responsive card grid; the cash-flow chart spans the full width. */
+.dash-head { margin-bottom: 0.75rem; }
+.dash-head h1 { margin: 0; }
+.dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; }
+.dash-grid .card { margin: 0; min-width: 0; }
+.dash-grid .wide { grid-column: 1 / -1; }
+.dash-hero { font-size: 1.9rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.dash-hero.warn { color: var(--bad); }
+.dash-sub { margin: 0.15rem 0 0.75rem; }
+.dash-note { margin: 0.5rem 0 0; }
+.dash-buckets th:not(:first-child), .dash-buckets td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+.dash-stats { display: flex; flex-wrap: wrap; gap: 0.75rem 1.5rem; margin-top: 0.5rem; }
+.dash-stat { display: flex; flex-direction: column; gap: 0.1rem; }
+.dash-stat .k { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.dash-stat .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+.dash-review { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.45rem; }
+.dash-review li { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+.dash-review .count { font-weight: 700; min-width: 2ch; text-align: right; font-variant-numeric: tabular-nums; }
+.dash-review .count.zero { color: var(--muted); font-weight: 400; }
+.dash-bills tr.overdue td:first-child { color: var(--bad); }
+.dash-bills tfoot td { border-bottom: none; color: var(--muted); }
+.dash-warnings { margin: 0.5rem 0 0; padding-left: 1.2rem; color: var(--warn); font-size: 0.9em; }
+.tone-ok { color: var(--ok); }
+.tone-bad { color: var(--bad); }
+.tone-neutral { color: var(--muted); }
+@media (max-width: 800px) {
+  .dash-grid { grid-template-columns: 1fr; }
+  .dash-hero { font-size: 1.5rem; }
+}

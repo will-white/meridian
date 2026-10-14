@@ -22,6 +22,9 @@ export default defineConfig({
       },
     }),
   ],
+  build: {
+    rollupOptions: { output: { manualChunks: { echarts: ["echarts"] } } },
+  },
   server: {
     port: 5173,
     proxy: { "/api": "http://localhost:3000" },

@@ -1,0 +1,20 @@
+/* Alerts page: kind filter toolbar and the alert list with a colored edge per kind. */
+
+.alerts-toolbar { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+.alerts-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.alert-item { display: grid; grid-template-columns: 4px 1fr auto; gap: 0.75rem; border: 1px solid var(--line); border-radius: 8px; padding: 0.7rem 0.8rem 0.7rem 0; background: var(--panel); align-items: center; overflow: hidden; }
+.alert-item::before { content: ""; display: block; width: 4px; align-self: stretch; background: var(--muted); }
+.alert-price_increase::before, .alert-trial_converted::before { background: var(--warn); }
+.alert-missed_charge::before { background: var(--bad); }
+.alert-new_recurring::before { background: var(--info); }
+.alert-item.closed { opacity: 0.6; }
+.alert-body { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+.alert-body .badge { margin-left: 0; margin-right: 0.35rem; }
+.alert-meta { font-size: 0.85em; color: var(--muted); display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
+.alert-actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+
+@media (max-width: 800px) {
+  .alert-item { grid-template-columns: 4px 1fr; }
+  .alert-item::before { grid-row: 1 / span 2; }
+  .alert-actions { grid-column: 2; justify-content: flex-start; }
+}

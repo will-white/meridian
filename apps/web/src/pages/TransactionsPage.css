@@ -1,0 +1,12 @@
+/* Register: URL-driven filters, deep-link chips and draggable rows (drop targets live in the plan grid). */
+.filters input[type="date"] { max-width: 10.5rem; }
+.filter-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin: -0.5rem 0 1rem; }
+.chip { display: inline-flex; align-items: center; gap: 0.3rem; border: 1px solid var(--line); border-radius: 999px; padding: 0.15rem 0.3rem 0.15rem 0.65rem; font-size: 0.85rem; background: var(--panel); }
+.chip button.link { padding: 0 0.3rem; font-size: 1rem; line-height: 1; }
+.register tr[draggable="true"] { cursor: grab; }
+.register tr[draggable="true"]:active { cursor: grabbing; }
+.drag-handle { color: var(--muted); margin-right: 0.35rem; user-select: none; font-size: 0.9em; }
+.register a.badge { text-decoration: none; }
+@media (max-width: 800px) {
+  .drag-handle { display: none; }
+}

@@ -41,6 +41,8 @@ declare module "fastify" {
   }
   interface FastifyContextConfig {
     auth?: AuthLevel;
+    /** A POST that only reads (e.g. a projection with a request body): viewers may call it. */
+    readOnly?: boolean;
   }
 }
 
@@ -108,7 +110,7 @@ export const authPlugin = fp(async (app) => {
     if (level === "session") return;
     if (state.kind === "totp_enrollment_required") throw forbidden("Finish setting up two-factor authentication", "totp_enrollment_required");
     if (state.kind === "totp_required") throw unauthorized("Enter your authenticator code", "totp_required");
-    const mutating = request.method !== "GET" && request.method !== "HEAD";
+    const mutating = request.method !== "GET" && request.method !== "HEAD" && request.routeOptions.config.readOnly !== true;
     if (mutating && state.user.role !== "owner") throw forbidden("Viewers cannot make changes", "viewer");
   });
 });

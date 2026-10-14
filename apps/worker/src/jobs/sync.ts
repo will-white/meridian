@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { applyAccountSet, connection, importLog, type JobRow } from "@meridian/db";
+import { applyAccountSet, connection, enqueueJob, importLog, type JobRow } from "@meridian/db";
 import { addDays, decryptSecret, toIsoDate, type IsoDate } from "@meridian/shared";
 import { fetchAccounts, SimplefinError } from "../simplefin/client.js";
 import type { JobContext } from "./context.js";
@@ -73,6 +73,9 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
       .update(importLog)
       .set({ status: "ok", finishedAt: ctx.now(), stats, errors: applied.errors, message: balancesOnly ? "Balances refreshed" : `Synced from ${windowStart}` })
       .where(eq(importLog.id, importLogId));
+
+    // Every successful full sync is followed by one recurring run (suggestions, matcher, alerts); balances-only refreshes carry no transactions.
+    if (!balancesOnly) await enqueueJob(ctx.db, "recurring.detect", { reason: "sync" }, { dedupe: true });
 
     const outcome: SyncOutcome = {
       importLogId,

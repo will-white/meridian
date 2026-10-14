@@ -2,13 +2,114 @@ import { asc, eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { category, payee, transaction } from "@meridian/db";
-import { CategoryView, CreateCategoryBody, PayeeView, UpdateCategoryBody, UpdatePayeeBody, UuidParams } from "@meridian/shared";
+import {
+  alert,
+  createCategory,
+  createCategoryGroup,
+  deleteCategory,
+  deleteCategoryGroup,
+  listCategories,
+  listCategoryGroups,
+  payee,
+  recurring,
+  reorderCategories,
+  reorderCategoryGroups,
+  transaction,
+  updateCategory,
+  updateCategoryGroup,
+  type UpdateCategoryInput,
+} from "@meridian/db";
+import {
+  CategoryDetailView,
+  CategoryGroupView,
+  CreateCategoryBodyV2,
+  CreateCategoryGroupBody,
+  OkResponse,
+  PayeeView,
+  ReorderCategoriesBody,
+  ReorderCategoryGroupsBody,
+  UpdateCategoryBodyV2,
+  UpdateCategoryGroupBody,
+  UpdatePayeeBody,
+  UuidParams,
+} from "@meridian/shared";
 import { badRequest, notFound } from "../lib/errors.js";
-import { toCategoryView } from "../views.js";
+import { toCategoryDetailView, toCategoryGroupView } from "../views/plan.js";
+import { auditContext, resolveToday, usePlanErrors } from "./plan.js";
 
+/**
+ * Categories (Phase 2 shape: group, position, rollover, goal), category groups
+ * and payees. Category and group mutations go through the audited db services;
+ * bucket/rollover/group rules live there (docs/phase-2-plan.md §1, §9).
+ */
 export async function categoryRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
+  usePlanErrors(app);
+
+  // ---- Categories ----
+
+  r.get("/categories", { schema: { response: { 200: z.array(CategoryDetailView) } } }, async () => (await listCategories(app.db)).map(toCategoryDetailView));
+
+  r.post("/categories", { schema: { body: CreateCategoryBodyV2, response: { 200: CategoryDetailView } } }, async (request) => {
+    const b = request.body;
+    const row = await createCategory(app.db, { name: b.name, bucket: b.bucket, ...(b.groupId !== undefined ? { groupId: b.groupId } : {}) }, auditContext(request));
+    return toCategoryDetailView(row);
+  });
+
+  r.patch("/categories/:id", { schema: { params: UuidParams, body: UpdateCategoryBodyV2, response: { 200: CategoryDetailView } } }, async (request) => {
+    const b = request.body;
+    const patch: UpdateCategoryInput = {
+      ...(b.name !== undefined ? { name: b.name } : {}),
+      ...(b.bucket !== undefined ? { bucket: b.bucket } : {}),
+      ...(b.hidden !== undefined ? { hidden: b.hidden } : {}),
+      ...(b.groupId !== undefined ? { groupId: b.groupId } : {}),
+      ...(b.rolloverMode !== undefined ? { rolloverMode: b.rolloverMode } : {}),
+      ...(b.rolloverFromMonth !== undefined ? { rolloverFromMonth: b.rolloverFromMonth } : {}),
+    };
+    if (Object.keys(patch).length === 0) throw badRequest("Nothing to change");
+    const today = await resolveToday(app, undefined);
+    return toCategoryDetailView(await updateCategory(app.db, request.params.id, patch, { ...auditContext(request), today }));
+  });
+
+  /** 409 `in_use` when any transaction, split, recurring item or goal references it; month_plan rows cascade. */
+  r.delete("/categories/:id", { schema: { params: UuidParams, response: { 200: OkResponse } } }, async (request) => {
+    await deleteCategory(app.db, request.params.id, auditContext(request));
+    return { ok: true as const };
+  });
+
+  /** Moves the listed categories into `groupId` (or ungrouped) at positions 1..n; the rest keep their relative order after. */
+  r.post("/categories/reorder", { schema: { body: ReorderCategoriesBody, response: { 200: z.array(CategoryDetailView) } } }, async (request) => {
+    const rows = await reorderCategories(app.db, { groupId: request.body.groupId, ids: request.body.ids }, auditContext(request));
+    return rows.map(toCategoryDetailView);
+  });
+
+  // ---- Category groups ----
+
+  r.get("/category-groups", { schema: { response: { 200: z.array(CategoryGroupView) } } }, async () => (await listCategoryGroups(app.db)).map(toCategoryGroupView));
+
+  r.post("/category-groups", { schema: { body: CreateCategoryGroupBody, response: { 200: CategoryGroupView } } }, async (request) =>
+    toCategoryGroupView(await createCategoryGroup(app.db, { name: request.body.name, bucket: request.body.bucket }, auditContext(request))),
+  );
+
+  /** The bucket is immutable: move the categories instead. */
+  r.patch("/category-groups/:id", { schema: { params: UuidParams, body: UpdateCategoryGroupBody, response: { 200: CategoryGroupView } } }, async (request) => {
+    const b = request.body;
+    const patch = { ...(b.name !== undefined ? { name: b.name } : {}), ...(b.hidden !== undefined ? { hidden: b.hidden } : {}) };
+    return toCategoryGroupView(await updateCategoryGroup(app.db, request.params.id, patch, auditContext(request)));
+  });
+
+  /** Its categories become ungrouped at their existing positions. */
+  r.delete("/category-groups/:id", { schema: { params: UuidParams, response: { 200: OkResponse } } }, async (request) => {
+    await deleteCategoryGroup(app.db, request.params.id, auditContext(request));
+    return { ok: true as const };
+  });
+
+  r.post("/category-groups/reorder", { schema: { body: ReorderCategoryGroupsBody, response: { 200: z.array(CategoryGroupView) } } }, async (request) => {
+    const rows = await reorderCategoryGroups(app.db, { bucket: request.body.bucket, ids: request.body.ids }, auditContext(request));
+    return rows.map(toCategoryGroupView);
+  });
+
+  // ---- Payees ----
 
   const payeeSelect = {
     id: payee.id,
@@ -18,30 +119,6 @@ export async function categoryRoutes(app: FastifyInstance): Promise<void> {
     // Raw identifiers on purpose: drizzle unqualifies interpolated columns in single-table queries.
     transactionCount: sql<number>`(select count(*)::int from "transaction" t where t.payee_id = "payee"."id")`,
   };
-
-  r.get("/categories", { schema: { response: { 200: z.array(CategoryView) } } }, async () =>
-    (await app.db.select().from(category).orderBy(asc(category.bucket), asc(category.name))).map(toCategoryView),
-  );
-
-  r.post("/categories", { schema: { body: CreateCategoryBody, response: { 200: CategoryView } } }, async (request) => {
-    const [row] = await app.db
-      .insert(category)
-      .values({ name: request.body.name.trim(), bucket: request.body.bucket })
-      .onConflictDoUpdate({ target: category.name, set: { hidden: false } })
-      .returning();
-    return toCategoryView(row!);
-  });
-
-  r.patch("/categories/:id", { schema: { params: UuidParams, body: UpdateCategoryBody, response: { 200: CategoryView } } }, async (request) => {
-    const patch: Partial<typeof category.$inferInsert> = {};
-    if (request.body.name !== undefined) patch.name = request.body.name.trim();
-    if (request.body.bucket !== undefined) patch.bucket = request.body.bucket;
-    if (request.body.hidden !== undefined) patch.hidden = request.body.hidden;
-    if (Object.keys(patch).length === 0) throw badRequest("Nothing to change");
-    const [row] = await app.db.update(category).set(patch).where(eq(category.id, request.params.id)).returning();
-    if (!row) throw notFound("Category not found");
-    return toCategoryView(row);
-  });
 
   r.get("/payees", { schema: { querystring: z.object({ q: z.string().max(100).optional() }), response: { 200: z.array(PayeeView) } } }, async (request) =>
     app.db
@@ -62,7 +139,10 @@ export async function categoryRoutes(app: FastifyInstance): Promise<void> {
       if (request.body.mergeFromId !== undefined && request.body.mergeFromId !== target.id) {
         const [source] = await tx.select().from(payee).where(eq(payee.id, request.body.mergeFromId));
         if (!source) throw notFound("Payee to merge not found");
+        // Everything that points at the source payee follows it to the target (recurring and alert cascade on payee delete).
         await tx.update(transaction).set({ payeeId: target.id }).where(eq(transaction.payeeId, source.id));
+        await tx.update(recurring).set({ payeeId: target.id }).where(eq(recurring.payeeId, source.id));
+        await tx.update(alert).set({ payeeId: target.id }).where(eq(alert.payeeId, source.id));
         patch.aliases = [...new Set([...target.aliases, source.name, ...source.aliases])];
         await tx.delete(payee).where(eq(payee.id, source.id));
       }

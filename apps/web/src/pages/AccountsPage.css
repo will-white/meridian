@@ -1,0 +1,9 @@
+/* Accounts: the cash-flow column summarises each account's threshold and card payment; an inline editor row opens below it. */
+.acct-cf { min-width: 10rem; }
+.acct-editor td { background: color-mix(in srgb, var(--accent) 6%, transparent); border-bottom: 2px solid var(--line); }
+.acct-form { display: flex; flex-wrap: wrap; gap: 0.75rem 1.5rem; align-items: flex-start; padding: 0.25rem 0; }
+.acct-form label { min-width: 12rem; max-width: 18rem; }
+.acct-form-actions { align-self: flex-end; padding-bottom: 0.1rem; }
+@media (max-width: 800px) {
+  .acct-form label { max-width: none; flex: 1 1 100%; }
+}

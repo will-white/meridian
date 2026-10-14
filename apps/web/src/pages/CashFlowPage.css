@@ -1,0 +1,45 @@
+/* Cash-flow page: toolbar with a segmented horizon control, chart card, events table and a what-if side panel. */
+.cf-toolbar { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
+.cf-toolbar h1 { margin: 0; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { background: transparent; color: var(--ink); border: none; border-radius: 0; padding: 0.4rem 0.7rem; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+
+.cf-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 1rem; align-items: start; }
+.cf-layout.closed { grid-template-columns: minmax(0, 1fr); }
+.cf-main { min-width: 0; }
+.cf-stats { margin-bottom: 0.5rem; }
+.dash-stats { display: flex; flex-wrap: wrap; gap: 0.75rem 1.5rem; margin-top: 0.5rem; }
+.dash-stat { display: flex; flex-direction: column; gap: 0.1rem; }
+.dash-stat .k { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.dash-stat .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+.dash-warnings { margin: 0.5rem 0 0; padding-left: 1.2rem; color: var(--warn); font-size: 0.9em; }
+.tone-bad { color: var(--bad); }
+
+.cf-legend { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; margin: 0.5rem 0; }
+.cf-legend label.inline { font-size: 0.85rem; }
+.cf-swatch { display: inline-block; width: 16px; height: 3px; border-radius: 2px; vertical-align: middle; }
+.cf-swatch.bold { height: 4px; }
+
+.cf-events tr.skipped td { text-decoration: line-through; color: var(--muted); }
+.cf-events tr.skipped td.actions, .cf-events tr.skipped td.actions * { text-decoration: none; }
+.cf-events tr.overdue td.date { color: var(--bad); }
+.cf-events td.actions { white-space: nowrap; text-align: right; }
+.cf-move { display: inline-flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; }
+.cf-move input { width: 5.5rem; }
+.cf-move button.small { padding: 0.3rem 0.6rem; font-size: 0.85em; }
+
+.cf-drawer { position: sticky; top: 1rem; min-width: 0; }
+.cf-whatifs { padding-left: 1.2rem; margin: 0 0 1rem; display: flex; flex-direction: column; gap: 0.45rem; font-size: 0.9rem; }
+.cf-onetime { display: flex; flex-direction: column; gap: 0.5rem; border-top: 1px solid var(--line); padding-top: 0.75rem; }
+.cf-onetime .row { align-items: flex-end; }
+
+@media (max-width: 1000px) {
+  .cf-layout { grid-template-columns: 1fr; }
+  .cf-drawer { position: static; }
+}
+@media (max-width: 800px) {
+  .cf-events td.actions { white-space: normal; }
+  .cf-events .muted.small { display: none; }
+}

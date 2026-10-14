@@ -1,0 +1,45 @@
+/* Recurring page: suggestions panel, status tabs, the item table and its inline panels (charges, edit, confirm). */
+
+.rec-toolbar { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.75rem; }
+.rec-totals { margin-left: auto; }
+.rec-tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.rec-tabs button { background: transparent; color: var(--ink); border: none; border-radius: 0; padding: 0.4rem 0.7rem; }
+.rec-tabs button + button { border-left: 1px solid var(--line); }
+.rec-tabs button[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-weight: 600; }
+
+.rec-suggestions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.75rem; }
+.rec-suggestion { border: 1px solid var(--line); border-radius: 8px; padding: 0.75rem; }
+.rec-suggestion-head { display: flex; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
+.rec-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; }
+.rec-actions button[aria-pressed="true"] { text-decoration: underline; }
+.rec-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.5rem 1rem; margin: 0.6rem 0 0; }
+.rec-facts div { display: flex; flex-direction: column; gap: 0.1rem; }
+.rec-facts dt { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.rec-facts dd { margin: 0; }
+.rec-facts dd .link { padding: 0; }
+
+.rec-form { display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--line); }
+.rec-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.6rem; }
+.rec-form textarea { font: inherit; padding: 0.45rem 0.6rem; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); resize: vertical; }
+.rec-form input:disabled { color: var(--muted); }
+.rec-form-summary { margin: 0; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+
+.rec-table td { vertical-align: middle; }
+.rec-table .rec-actions { justify-content: flex-end; }
+.rec-expanded > td { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.rec-charges { display: flex; flex-direction: column; gap: 0.5rem; }
+.rec-charge-table { margin: 0; }
+.rec-link { border-top: 1px dashed var(--line); padding-top: 0.5rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.rec-note { font-size: 0.85em; color: var(--muted); margin: 0.5rem 0 0; }
+
+.rec-focus { outline: 2px solid var(--accent); outline-offset: 2px; animation: rec-flash 2.5s ease-out; }
+@keyframes rec-flash {
+  from { background-color: color-mix(in srgb, var(--accent) 25%, transparent); }
+  to { background-color: transparent; }
+}
+
+@media (max-width: 800px) {
+  .rec-col-schedule, .rec-col-last, .rec-col-account { display: none; }
+  .rec-table .rec-actions { justify-content: flex-start; }
+  .rec-totals { margin-left: 0; }
+}

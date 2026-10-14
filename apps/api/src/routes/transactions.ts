@@ -1,9 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
-import { createManualTransaction, getTransaction, listTransactions, updateTransaction } from "@meridian/db";
+import { createManualTransaction, enqueueJob, getTransaction, listTransactions, unlinkTransactionFromRecurring, updateTransaction } from "@meridian/db";
 import { CreateManualTransactionBody, TransactionList, TransactionQuery, TransactionView, UpdateTransactionBody, UuidParams } from "@meridian/shared";
 import { notFound } from "../lib/errors.js";
 import { toTransactionView } from "../views.js";
+import { serverToday } from "./plan.js";
 
 export async function transactionRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
@@ -20,6 +21,8 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       ...(q.from !== undefined ? { from: q.from } : {}),
       ...(q.to !== undefined ? { to: q.to } : {}),
       ...(q.cursor !== undefined ? { cursor: q.cursor } : {}),
+      ...(q.goalId !== undefined ? { goalId: q.goalId } : {}),
+      ...(q.recurringId !== undefined ? { recurringId: q.recurringId } : {}),
     });
     return { items: result.items.map(toTransactionView), nextCursor: result.nextCursor };
   });
@@ -34,13 +37,19 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     const existing = await getTransaction(app.db, request.params.id);
     if (!existing) throw notFound("Transaction not found");
     const b = request.body;
-    const row = await updateTransaction(app.db, request.params.id, {
+    let row = await updateTransaction(app.db, request.params.id, {
       ...(b.categoryId !== undefined ? { categoryId: b.categoryId } : {}),
       ...(b.payeeName !== undefined ? { payeeName: b.payeeName } : {}),
       ...(b.notes !== undefined ? { notes: b.notes } : {}),
       ...(b.isTransfer !== undefined ? { isTransfer: b.isTransfer } : {}),
       ...(b.tags !== undefined ? { tags: b.tags } : {}),
     });
+    // Recurring hook (design C5): a charge that changed payee or became a transfer no longer belongs to its item.
+    if (existing.recurringId !== null && row && (row.payeeId !== existing.payeeId || (row.isTransfer && !existing.isTransfer))) {
+      const today = await serverToday(app);
+      await app.db.transaction((tx) => unlinkTransactionFromRecurring(tx, existing.id, { today, now: app.now() }));
+      row = await getTransaction(app.db, existing.id);
+    }
     return toTransactionView(row!);
   });
 
@@ -54,6 +63,8 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       ...(b.categoryId !== undefined ? { categoryId: b.categoryId } : {}),
       ...(b.notes !== undefined ? { notes: b.notes } : {}),
     });
+    // The "match recurring" pipeline step runs for every ingest path; one queued job covers any number of edits.
+    await enqueueJob(app.db, "recurring.detect", { reason: "ledger" }, { dedupe: true });
     return toTransactionView(row);
   });
 }

@@ -69,8 +69,8 @@ describe.skipIf(!TEST_DATABASE_URL)("claim and sync jobs end to end", () => {
         ? new Response(ACCESS, { status: 200 })
         : new Response(JSON.stringify(renderAccountSet({ start: firstWindow, asOf: addDays(FIXTURE_START, 60) })), { status: 200 });
 
-    // The claim job queues the first sync, and draining runs both.
-    expect(await drainQueue(ctx)).toBe(2);
+    // The claim job queues the first sync, which queues the recurring run (plan §17); draining runs all three.
+    expect(await drainQueue(ctx)).toBe(3);
 
     const [after] = await t.db.select().from(connection).where(eq(connection.id, connectionId));
     expect(after!.status).toBe("ok");
@@ -79,9 +79,11 @@ describe.skipIf(!TEST_DATABASE_URL)("claim and sync jobs end to end", () => {
     expect(after!.accessUrlEnc?.startsWith("v1.")).toBe(true);
     const jobs = await t.db.select().from(job);
     expect(jobs.map((j) => [j.type, j.status]).sort()).toEqual([
+      ["recurring.detect", "done"],
       ["simplefin.claim", "done"],
       ["simplefin.sync", "done"],
     ]);
+    expect(jobs.find((j) => j.type === "recurring.detect")!.payload).toEqual({ reason: "sync" });
 
     // First sync: 93 days back, pending included, raw payload logged, connection updated.
     expect(requests).toHaveLength(2);
@@ -112,7 +114,8 @@ describe.skipIf(!TEST_DATABASE_URL)("claim and sync jobs end to end", () => {
     const expectedStart = addDays(addDays(FIXTURE_START, 60), -7);
     nextResponse = () => new Response(JSON.stringify(renderAccountSet({ start: expectedStart, asOf: FIXTURE_END })), { status: 200 });
     const before = (await t.db.select().from(transaction)).length;
-    expect(await drainQueue(ctx)).toBe(1);
+    // The sync plus the recurring run it queues.
+    expect(await drainQueue(ctx)).toBe(2);
     expect(requests[0]!.searchParams.get("start-date")).toBe(String(isoDateToUtcMs(expectedStart) / 1000));
     const logs = await t.db.select().from(importLog).where(eq(importLog.kind, "simplefin.sync"));
     const last = logs[logs.length - 1]!;

@@ -1,7 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
-import { account, connection, importCsvRows, importLog, transaction } from "@meridian/db";
+import { account, connection, enqueueJob, importCsvRows, importLog, transaction } from "@meridian/db";
 import { CsvCommitBody, CsvMapping, CsvPreviewBody, CsvPreviewResponse, guessCsvMapping, ImportResult, mapCsvRows, parseCsv, type CsvMappingInput } from "@meridian/shared";
 import { badRequest, notFound } from "../lib/errors.js";
 
@@ -96,17 +96,20 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
       .insert(importLog)
       .values({ connectionId: profileId, kind: "csv", rawPayload: { csvText: request.body.csvText, mapping: request.body.mapping } })
       .returning({ id: importLog.id });
+    let result: Awaited<ReturnType<typeof importCsvRows>>;
     try {
-      const result = await importCsvRows(app.db, { accountId: acct.id, rows: mapped.rows, importLogId: log!.id });
+      result = await importCsvRows(app.db, { accountId: acct.id, rows: mapped.rows, importLogId: log!.id });
       await app.db
         .update(importLog)
         .set({ status: "ok", finishedAt: new Date(), stats: { ...result, rowsRead: mapped.rows.length, rowsRejected: mapped.errors.length } })
         .where(eq(importLog.id, log!.id));
       if (profileId) await app.db.update(connection).set({ lastSyncAt: new Date(), status: "ok" }).where(eq(connection.id, profileId));
-      return { ...result, errors: mapped.errors };
     } catch (err) {
       await app.db.update(importLog).set({ status: "error", finishedAt: new Date(), message: (err as Error).message }).where(eq(importLog.id, log!.id));
       throw err;
     }
+    // The "match recurring" pipeline step runs for every ingest path (design C5); one queued job covers any number of commits.
+    await enqueueJob(app.db, "recurring.detect", { reason: "ledger" }, { dedupe: true });
+    return { ...result, errors: mapped.errors };
   });
 }

@@ -1,4 +1,4 @@
-import { createDb, runMigrations, seedDefaultCategories } from "@meridian/db";
+import { createDb, getHouseholdSetting, runMigrations, seedDefaultCategories } from "@meridian/db";
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 
@@ -7,6 +7,8 @@ const { db, client } = createDb(config.databaseUrl);
 
 await runMigrations(db);
 await seedDefaultCategories(db);
+// The household_setting singleton exists from the first request on, so a viewer's GET never has to create it.
+await getHouseholdSetting(db);
 
 const app = await buildApp({ db, config });
 

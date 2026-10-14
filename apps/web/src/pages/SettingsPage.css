@@ -1,0 +1,9 @@
+/* Settings: one column of cards, each a short list of labelled fields. */
+.settings-form { max-width: 720px; }
+.settings-fields { display: flex; flex-direction: column; gap: 1rem; }
+.settings-fields label { max-width: 520px; }
+.settings-fields label .row { align-items: center; }
+.settings-fields input[type="number"] { width: 7rem; }
+.settings-check { max-width: none; }
+.settings-actions { margin: 0.25rem 0 1rem; }
+.settings-actions .notice { padding: 0.35rem 0.6rem; }

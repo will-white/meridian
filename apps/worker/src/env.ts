@@ -34,6 +34,12 @@ function int(value: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+/** An integer within [min, max] (so 0 is a valid hour), else the fallback. */
+function intInRange(value: string | undefined, min: number, max: number, fallback: number): number {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
+}
+
 export interface WorkerConfig {
   databaseUrl: string;
   secretsKey: string;
@@ -48,7 +54,15 @@ export interface WorkerConfig {
   overlapDays: number;
   /** Outbound request timeout. */
   requestTimeoutMs: number;
+  /**
+   * The daily tick (recurring detection, month close) runs once per UTC day at or after
+   * this hour (0..23). loadConfig always sets it; a hand-built config without it means
+   * DEFAULT_DETECT_HOUR_UTC.
+   */
+  detectHourUtc?: number;
 }
+
+export const DEFAULT_DETECT_HOUR_UTC = 8;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   return {
@@ -60,5 +74,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     initialWindowDays: int(env["SIMPLEFIN_INITIAL_WINDOW_DAYS"], 93),
     overlapDays: int(env["SIMPLEFIN_OVERLAP_DAYS"], 7),
     requestTimeoutMs: int(env["SIMPLEFIN_TIMEOUT_MS"], 60_000),
+    detectHourUtc: intInRange(env["DETECT_HOUR_UTC"], 0, 23, DEFAULT_DETECT_HOUR_UTC),
   };
 }

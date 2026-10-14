@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, ilike, isNull, lte, or, sql } from "drizzle-orm";
 import type { IsoDate } from "@meridian/shared";
 import type { Db, DbOrTx } from "../index.js";
-import { account, category, payee, transaction } from "../schema/index.js";
+import { account, category, payee, savingsGoal, transaction } from "../schema/index.js";
 import { resolvePayee } from "./payees.js";
 import { setTransactionTags, tagsForTransactions } from "./tags.js";
 import { unpairTransfer } from "./transfers.js";
@@ -14,6 +14,10 @@ export interface ListTransactionsQuery {
   transfers?: "include" | "exclude" | "only";
   from?: IsoDate;
   to?: IsoDate;
+  /** Phase 2: a goal's rows (its category's non-transfer rows plus transfer legs in its linked account). */
+  goalId?: string;
+  /** Phase 2: charges linked to one recurring item. */
+  recurringId?: string;
   limit: number;
   cursor?: string;
 }
@@ -94,6 +98,10 @@ export async function listTransactions(db: DbOrTx, query: ListTransactionsQuery)
         query.transfers === "only" ? eq(transaction.isTransfer, true) : undefined,
         query.from ? gte(transaction.date, query.from) : undefined,
         query.to ? lte(transaction.date, query.to) : undefined,
+        query.goalId
+          ? sql`exists (select 1 from ${savingsGoal} g where g.id = ${query.goalId}::uuid and ((g.category_id = ${transaction.categoryId} and ${transaction.isTransfer} = false) or (g.linked_account_id is not null and g.linked_account_id = ${transaction.accountId} and ${transaction.isTransfer} = true)))`
+          : undefined,
+        query.recurringId ? eq(transaction.recurringId, query.recurringId) : undefined,
         pattern
           ? or(
               ilike(transaction.rawDescription, pattern),

@@ -10,6 +10,8 @@ export const IsoDateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD
 export const UuidParams = z.object({ id: z.string().uuid() });
 export const OkResponse = z.object({ ok: z.literal(true) });
 export const ErrorResponse = z.object({ error: z.string(), code: z.string().optional() });
+/** Query-string booleans: "true"/"1" and "false"/"0" only. (z.coerce.boolean would read "false" as true.) */
+export const QueryBoolean = z.enum(["true", "false", "1", "0"]).transform((v) => v === "true" || v === "1");
 
 // ---- Auth ----
 export const AuthStatus = z.object({
@@ -149,7 +151,7 @@ export const TransactionQuery = z.object({
   q: z.string().max(200).optional(),
   accountId: z.string().uuid().optional(),
   categoryId: z.string().uuid().optional(),
-  uncategorized: z.coerce.boolean().optional(),
+  uncategorized: QueryBoolean.optional(),
   transfers: z.enum(["include", "exclude", "only"]).default("include"),
   from: IsoDateString.optional(),
   to: IsoDateString.optional(),
@@ -650,8 +652,8 @@ export const AlertView = z.object({
 });
 export type AlertView = z.infer<typeof AlertView>;
 export const AlertQuery = z.object({
-  includeDismissed: z.coerce.boolean().default(false),
-  includeResolved: z.coerce.boolean().default(false),
+  includeDismissed: QueryBoolean.default("false"),
+  includeResolved: QueryBoolean.default("false"),
   kind: AlertKind.optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
 });
@@ -778,3 +780,18 @@ export const DashboardView = z.object({
   retirement: z.null(),
 });
 export type DashboardView = z.infer<typeof DashboardView>;
+
+export type AlertList = z.infer<typeof AlertList>;
+export type DetectResponse = z.infer<typeof DetectResponse>;
+export type CreateRecurringBody = z.infer<typeof CreateRecurringBody>;
+export type UpdateRecurringBody = z.infer<typeof UpdateRecurringBody>;
+export type RecurringQuery = z.infer<typeof RecurringQuery>;
+export type SubscriptionRow = z.infer<typeof SubscriptionRow>;
+export type SetPlanCellsBody = z.infer<typeof SetPlanCellsBody>;
+export type SetPlanCellsResponse = z.infer<typeof SetPlanCellsResponse>;
+export type AuditList = z.infer<typeof AuditList>;
+export type AuditEntryView = z.infer<typeof AuditEntryView>;
+export type CashFlowProjectionBody = z.infer<typeof CashFlowProjectionBody>;
+export type UpdateHouseholdSettingBody = z.infer<typeof UpdateHouseholdSettingBody>;
+export type CreateGoalBody = z.infer<typeof CreateGoalBody>;
+export type UpdateGoalBody = z.infer<typeof UpdateGoalBody>;

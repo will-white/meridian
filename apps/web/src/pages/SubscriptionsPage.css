@@ -1,0 +1,16 @@
+/* Subscriptions page: totals strip, cost table with share bars, paused section. */
+
+.subs-totals { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+.subs-stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 0.75rem 1rem; display: flex; flex-direction: column; gap: 0.15rem; }
+.subs-stat strong { font-size: 1.3rem; font-variant-numeric: tabular-nums; }
+
+.subs-table td { vertical-align: middle; }
+.subs-table tfoot td { border-bottom: none; border-top: 2px solid var(--line); }
+.subs-col-foot { color: var(--muted); }
+.subs-share { display: flex; align-items: center; gap: 0.4rem; min-width: 120px; }
+.subs-bar { flex: 1; height: 6px; background: color-mix(in srgb, var(--line) 70%, transparent); border-radius: 3px; overflow: hidden; }
+.subs-bar > span { display: block; height: 100%; background: var(--accent); min-width: 1px; }
+
+@media (max-width: 800px) {
+  .subs-col-cadence, .subs-col-share, .subs-col-last, .subs-col-each { display: none; }
+}
