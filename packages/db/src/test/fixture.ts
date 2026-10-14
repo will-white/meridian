@@ -1,4 +1,4 @@
-import { addDays, dayDiff, formatCents, isoDateToUtcMs, type IsoDate, type SimplefinAccountSet } from "@meridian/shared";
+import { addDays, dayDiff, formatCents, isoDateToUtcMs, monthKey, monthRange, type IsoDate, type SimplefinAccountSet } from "@meridian/shared";
 
 /**
  * A deterministic three-month household, rendered as the SimpleFIN Account Set the
@@ -54,35 +54,36 @@ function mulberry32(seed: number) {
   };
 }
 
-export function buildTruth(): TruthEvent[] {
+/** The household through `end` (default FIXTURE_END); a later end extends every series and reshuffles the card draws after it. */
+export function buildTruth(end: IsoDate = FIXTURE_END): TruthEvent[] {
   const rand = mulberry32(20261001);
   const events: TruthEvent[] = [];
-  const days = dayDiff(FIXTURE_START, FIXTURE_END);
+  const days = dayDiff(FIXTURE_START, end);
   let n = 0;
 
   // Checking: paychecks every other Friday (Jul 3 is a Friday), rent on the 1st, utilities on the 12th.
   for (let d = 2; d <= days; d += 14) {
     events.push({ account: "checking", date: addDays(FIXTURE_START, d), amount: "2500.00", description: "ACME CORP PAYROLL DIRECT DEP", postedId: `CHK-PAY-${++n}`, postLag: 0 });
   }
-  for (const month of ["2026-07", "2026-08", "2026-09", "2026-10"]) {
+  for (const month of monthRange(monthKey(FIXTURE_START), monthKey(end))) {
     const first: IsoDate = `${month}-01`;
-    if (first > FIXTURE_END) break;
+    if (first > end) break;
     events.push({ account: "checking", date: first, amount: "-1800.00", description: "ACH DEBIT RENT PAYMENT OAKWOOD APTS", postedId: `CHK-RENT-${month}`, postLag: 0 });
     const twelfth: IsoDate = `${month}-12`;
-    if (twelfth <= FIXTURE_END) {
+    if (twelfth <= end) {
       const cents = 9500 + Math.floor(rand() * 4000);
       events.push({ account: "checking", date: twelfth, amount: formatCents(BigInt(-cents)), description: "XCEL ENERGY DES:XCELENERGY ID:0000123456 INDN:HOUSEHOLD CO ID:1234567890 WEB", postedId: `CHK-UTIL-${month}`, postLag: 0 });
     }
     // Savings sweep on the 15th: both legs the same day.
     const fifteenth: IsoDate = `${month}-15`;
-    if (fifteenth <= FIXTURE_END) {
+    if (fifteenth <= end) {
       events.push({ account: "checking", date: fifteenth, amount: "-500.00", description: "ONLINE TRANSFER TO SAVINGS XXXXXX4321", postedId: `CHK-XFER-${month}`, postLag: 0 });
       events.push({ account: "savings", date: fifteenth, amount: "500.00", description: "ONLINE TRANSFER FROM CHECKING XXXXXX8765", postedId: `SAV-XFER-${month}`, postLag: 0 });
       events.push({ account: "savings", date: `${month}-28`, amount: "12.34", description: "INTEREST PAYMENT", postedId: `SAV-INT-${month}`, postLag: 0 });
     }
     // Card payment on the 5th from checking; the card credits it on the 6th.
     const fifth: IsoDate = `${month}-05`;
-    if (fifth <= FIXTURE_END) {
+    if (fifth <= end) {
       const cents = 60000 + Math.floor(rand() * 40000);
       events.push({ account: "checking", date: fifth, amount: formatCents(BigInt(-cents)), description: "ONLINE PAYMENT TO SAPPHIRE VISA 1234", postedId: `CHK-CCPAY-${month}`, postLag: 0 });
       events.push({ account: "card", date: addDays(fifth, 1), amount: formatCents(BigInt(cents)), description: "PAYMENT THANK YOU - WEB", postedId: `CARD-PAYRCV-${month}`, postLag: 0 });
