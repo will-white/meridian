@@ -190,6 +190,10 @@ export function toHouseholdSettingView(r: HouseholdSettingRow): HouseholdSetting
     primaryAccountId: r.primaryAccountId,
     projectionDefaultDays: r.projectionDefaultDays,
     timezone: r.timezone,
+    benchmarkSecurityId: r.benchmarkSecurityId,
+    investmentIncomeCategoryId: r.investmentIncomeCategoryId,
+    rebalanceBandBp: r.rebalanceBandBp,
+    rebalanceMinTradeCents: cents(r.rebalanceMinTradeCents),
     updatedAt: r.updatedAt.toISOString(),
   };
 }

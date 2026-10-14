@@ -89,7 +89,7 @@ describe.skipIf(!TEST_DATABASE_URL)("auth flow", () => {
     expect(verify.statusCode).toBe(200);
     expect((await t.call({ method: "GET", url: "/api/accounts" })).statusCode).toBe(200);
     const status = await t.call({ method: "GET", url: "/api/auth/status" });
-    expect(status.json()).toEqual({ setupRequired: false, authenticated: true, totpRequired: false, totpEnrolled: true, username: "owner" });
+    expect(status.json()).toEqual({ setupRequired: false, authenticated: true, totpRequired: false, totpEnrolled: true, username: "owner", role: "owner" });
   });
 
   it("ignores a forged session cookie", async () => {

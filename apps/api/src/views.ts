@@ -1,5 +1,5 @@
 import type { AccountView, CategoryView, ConnectionView, ImportLogView, JobView, RuleView, TransactionView } from "@meridian/shared";
-import { CsvMapping } from "@meridian/shared";
+import { CsvMapping, isInvestmentAccountType, PositionsCsvMapping, TradesCsvMapping } from "@meridian/shared";
 import type { account, category, connection, importLog, job, rule } from "@meridian/db";
 import type { LoadedRule, TransactionListRow } from "@meridian/db";
 
@@ -52,13 +52,34 @@ export function toAccountView(
     paymentDay: r.paymentDay,
     paymentFromAccountId: r.paymentFromAccountId,
     statementDay: r.statementDay,
+    lotMethod: r.lotMethod,
+    cashInference: r.cashInference,
+    investmentIncomeFeed: r.investmentIncomeFeed,
+    // Phase 3 skeleton: no snapshots or trades can exist before the investments services land, so every
+    // investment-type account is balance_only with nothing to check; step 11 attaches `accountFidelities`.
+    investment: isInvestmentAccountType(r.type)
+      ? {
+          fidelity: "balance_only",
+          fidelityNote: null,
+          positionsMatch: null,
+          lastSnapshotDate: null,
+          lastSnapshotSource: null,
+          lastTradeDate: null,
+          securityCount: 0,
+          needsReviewCount: 0,
+          lastReconciliation: null,
+        }
+      : null,
   };
 }
 
 export function toConnectionView(
   r: typeof connection.$inferSelect & { accountCount: number; activeJob: typeof job.$inferSelect | undefined },
 ): ConnectionView {
-  const mapping = r.csvMapping ? CsvMapping.safeParse(r.csvMapping) : undefined;
+  // The saved mapping is typed by `csv_kind`; the other two mapping fields are null.
+  const bank = r.csvKind === "bank" && r.csvMapping ? CsvMapping.safeParse(r.csvMapping) : undefined;
+  const positions = r.csvKind === "positions" && r.csvMapping ? PositionsCsvMapping.safeParse(r.csvMapping) : undefined;
+  const trades = r.csvKind === "trades" && r.csvMapping ? TradesCsvMapping.safeParse(r.csvMapping) : undefined;
   return {
     id: r.id,
     type: r.type,
@@ -68,7 +89,10 @@ export function toConnectionView(
     syncedThrough: r.syncedThrough,
     lastError: r.lastError,
     lastErrors: r.lastErrors.map((e) => (e.accountId ? { code: e.code, message: e.message, accountId: e.accountId } : { code: e.code, message: e.message })),
-    csvMapping: mapping?.success ? mapping.data : null,
+    csvMapping: bank?.success ? bank.data : null,
+    csvKind: r.csvKind,
+    positionsMapping: positions?.success ? positions.data : null,
+    tradesMapping: trades?.success ? trades.data : null,
     accountCount: r.accountCount,
     activeJob: r.activeJob ? { id: r.activeJob.id, type: r.activeJob.type, status: r.activeJob.status } : null,
     createdAt: r.createdAt.toISOString(),

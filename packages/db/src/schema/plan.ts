@@ -1,11 +1,29 @@
 import { sql } from "drizzle-orm";
-import { bigint, boolean, date, index, integer, jsonb, pgTable, smallint, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, check, date, index, integer, jsonb, pgTable, smallint, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { account } from "./accounts.js";
 import { user } from "./auth.js";
+import { security } from "./investments.js";
 import { BUCKETS, category } from "./ledger.js";
 
 export const ROLLOVER_MODES = ["none", "surplus", "all"] as const;
 export const PLANNED_SOURCES = ["manual", "average", "recurring", "goal"] as const;
+export const AUDIT_ENTITIES = [
+  "month_plan",
+  "category",
+  "category_group",
+  "savings_goal",
+  "recurring",
+  "rule",
+  "household_setting",
+  // Phase 3
+  "security",
+  "investment_txn",
+  "holding_snapshot",
+  "allocation_target",
+  "lot_pick",
+  "account_reconciliation",
+  "account",
+] as const;
 
 /** Category groups sit under bucket headers in the grid. A group belongs to exactly one bucket. */
 export const categoryGroup = pgTable(
@@ -87,8 +105,19 @@ export const householdSetting = pgTable("household_setting", {
   projectionDefaultDays: integer("projection_default_days").notNull().default(90),
   /** IANA zone used to compute the household's "today" on the server and in worker jobs. */
   timezone: text("timezone").notNull().default("America/Denver"),
+  /** Phase 3: the performance benchmark (a non-cash security); null = none. */
+  benchmarkSecurityId: uuid("benchmark_security_id").references(() => security.id, { onDelete: "set null" }),
+  /** Phase 3: income-bucket category that dividend/interest feed rows land in; null = feeds cannot be enabled. */
+  investmentIncomeCategoryId: uuid("investment_income_category_id").references(() => category.id, { onDelete: "set null" }),
+  /** Phase 3: drift band in basis points before a class is flagged (0..5000). */
+  rebalanceBandBp: integer("rebalance_band_bp").notNull().default(500),
+  /** Phase 3: smallest trade the rebalance suggestion proposes. */
+  rebalanceMinTradeCents: bigint("rebalance_min_trade_cents", { mode: "bigint" }).notNull().default(sql`10000`),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, () => [
+  check("household_setting_rebalance_band_check", sql`"rebalance_band_bp" >= 0 AND "rebalance_band_bp" <= 5000`),
+  check("household_setting_min_trade_check", sql`"rebalance_min_trade_cents" >= 0`),
+]);
 
 /** Edits to plans, categories, goals, recurring items and rules keep history (spec: Security). */
 export const auditLog = pgTable(
@@ -99,7 +128,7 @@ export const auditLog = pgTable(
     userId: uuid("user_id").references(() => user.id, { onDelete: "set null" }),
     /** One per HTTP request, so a fill-right or a reorder is one reviewable batch. */
     batchId: uuid("batch_id").notNull(),
-    entity: text("entity", { enum: ["month_plan", "category", "category_group", "savings_goal", "recurring", "rule", "household_setting"] }).notNull(),
+    entity: text("entity", { enum: AUDIT_ENTITIES }).notNull(),
     /** Row id, or `${month}:${categoryId}` for plan cells. */
     entityId: text("entity_id").notNull(),
     action: text("action", { enum: ["create", "update", "delete"] }).notNull(),

@@ -113,6 +113,8 @@ export function toDashboardView(d: DashboardResult): DashboardView {
       yearAgoCents: nullableCents(d.netWorth.yearAgoCents),
       changeCents: nullableCents(d.netWorth.changeCents),
       newAccounts: d.netWorth.newAccounts.map((a) => ({ id: a.id, name: a.name })),
+      // Phase 3 skeleton: the type breakdown and the investments block arrive with the investments services (step 9).
+      breakdown: null,
     },
     review: { uncategorized: d.review.uncategorized, suggestedRecurring: d.review.suggestedRecurring, alerts: d.review.alerts },
     sync: {
@@ -120,5 +122,6 @@ export function toDashboardView(d: DashboardResult): DashboardView {
       attention: d.sync.attention.map((c) => ({ connectionId: c.connectionId, name: c.name, status: c.status })),
     },
     retirement: null,
+    investments: null,
   };
 }

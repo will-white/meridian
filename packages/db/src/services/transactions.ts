@@ -39,7 +39,7 @@ export interface TransactionListRow {
   isTransfer: boolean;
   transferPairId: string | null;
   notes: string | null;
-  source: "simplefin" | "csv" | "manual";
+  source: (typeof transaction.$inferSelect)["source"];
   recurringId: string | null;
   tags: string[];
 }

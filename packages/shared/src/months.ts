@@ -82,6 +82,30 @@ export function localDateInTimeZone(instant: Date, timeZone: string): IsoDate {
   return `${get("year")}-${get("month")}-${get("day")}`;
 }
 
+export interface LocalClock {
+  date: IsoDate;
+  /** 0–23 */
+  hour: number;
+  /** 0–59 */
+  minute: number;
+}
+
+/** Calendar date and wall-clock time for an instant in an IANA time zone (the price feed's "after 18:30 ET"). */
+export function localClockInTimeZone(instant: Date, timeZone: string): LocalClock {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+  const parts = fmt.formatToParts(instant);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  return { date: `${get("year")}-${get("month")}-${get("day")}`, hour: Number(get("hour")) % 24, minute: Number(get("minute")) };
+}
+
 /** Integer helpers for money. BigInt `/` truncates toward zero; both assert a positive divisor. */
 export function truncDiv(n: bigint, d: bigint): bigint {
   if (d <= 0n) throw new Error("divisor must be > 0n");

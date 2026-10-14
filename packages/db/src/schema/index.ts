@@ -4,3 +4,4 @@ export * from "./accounts.js";
 export * from "./ledger.js";
 export * from "./plan.js";
 export * from "./recurring.js";
+export * from "./investments.js";

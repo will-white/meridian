@@ -6,6 +6,33 @@ export interface ConnectionError {
   accountId?: string;
 }
 
+/** Phase 3: what a csv connection's saved mapping describes. */
+export const CSV_KINDS = ["bank", "positions", "trades"] as const;
+export const IMPORT_LOG_KINDS = [
+  "simplefin.claim",
+  "simplefin.sync",
+  "simplefin.balances",
+  "csv",
+  // Phase 3
+  "csv.positions",
+  "csv.trades",
+  "simplefin.reprocess",
+  "prices.fetch",
+] as const;
+export const JOB_TYPES = [
+  "simplefin.claim",
+  "simplefin.sync",
+  "simplefin.balances",
+  "rules.run",
+  "recurring.detect",
+  "plan.close_month",
+  // Phase 3
+  "simplefin.reprocess_holdings",
+  "prices.fetch",
+  "investments.valuation",
+  "investments.income_feed",
+] as const;
+
 /** A data source: a SimpleFIN access URL, a CSV mapping profile, or manual entry. */
 export const connection = pgTable("connection", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -15,8 +42,10 @@ export const connection = pgTable("connection", {
   accessUrlEnc: text("access_url_enc"),
   /** AES-256-GCM ciphertext of a pasted setup token, waiting for the worker to claim it. Cleared after the claim. */
   claimTokenEnc: text("claim_token_enc"),
-  /** For csv connections: the saved column mapping for one institution. */
+  /** For csv connections: the saved column mapping for one institution (of the kind in `csv_kind`). */
   csvMapping: jsonb("csv_mapping").$type<Record<string, unknown>>(),
+  /** Phase 3: bank | positions | trades; existing rows are `bank` by the default. */
+  csvKind: text("csv_kind", { enum: CSV_KINDS }).notNull().default("bank"),
   status: text("status", { enum: ["ok", "claiming", "auth_required", "error", "disabled"] }).notNull().default("ok"),
   lastSyncAt: timestamp("last_sync_at", { withTimezone: true }),
   /** High-water mark of the last successful sync; the next window starts 7 days before it. */
@@ -34,7 +63,7 @@ export const importLog = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     connectionId: uuid("connection_id").references(() => connection.id, { onDelete: "cascade" }),
-    kind: text("kind", { enum: ["simplefin.claim", "simplefin.sync", "simplefin.balances", "csv"] }).notNull(),
+    kind: text("kind", { enum: IMPORT_LOG_KINDS }).notNull(),
     status: text("status", { enum: ["running", "ok", "error"] }).notNull().default("running"),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
@@ -52,7 +81,7 @@ export const job = pgTable(
   "job",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    type: text("type", { enum: ["simplefin.claim", "simplefin.sync", "simplefin.balances", "rules.run", "recurring.detect", "plan.close_month"] }).notNull(),
+    type: text("type", { enum: JOB_TYPES }).notNull(),
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
     status: text("status", { enum: ["queued", "running", "done", "failed"] }).notNull().default("queued"),
     runAt: timestamp("run_at", { withTimezone: true }).notNull().defaultNow(),

@@ -18,11 +18,11 @@ function statusFor(state: AuthState): AuthStatus {
     case "anonymous":
       return { setupRequired: false, authenticated: false, totpRequired: false, totpEnrolled: false };
     case "totp_required":
-      return { setupRequired: false, authenticated: false, totpRequired: true, totpEnrolled: true, username: state.user.username };
+      return { setupRequired: false, authenticated: false, totpRequired: true, totpEnrolled: true, username: state.user.username, role: state.user.role };
     case "totp_enrollment_required":
-      return { setupRequired: false, authenticated: true, totpRequired: false, totpEnrolled: false, username: state.user.username };
+      return { setupRequired: false, authenticated: true, totpRequired: false, totpEnrolled: false, username: state.user.username, role: state.user.role };
     case "ok":
-      return { setupRequired: false, authenticated: true, totpRequired: false, totpEnrolled: true, username: state.user.username };
+      return { setupRequired: false, authenticated: true, totpRequired: false, totpEnrolled: true, username: state.user.username, role: state.user.role };
   }
 }
 

@@ -85,6 +85,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /api/dashboard", () => {
       yearAgoCents: "350000",
       changeCents: "225000",
       newAccounts: [{ id: S.accounts.visa, name: "Visa" }],
+      breakdown: null,
     });
 
     expect(view.review).toEqual({ uncategorized: 1, suggestedRecurring: 2, alerts: 1 });

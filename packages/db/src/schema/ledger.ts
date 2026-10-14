@@ -16,6 +16,8 @@ import { account } from "./accounts.js";
 import { importLog } from "./sources.js";
 
 export const BUCKETS = ["income", "bills", "savings", "spending"] as const;
+/** `investment`: Phase 3 synthetic income rows (`investment_income_feed = create`), keyed `inv:<investment_txn id>`. */
+export const TRANSACTION_SOURCES = ["simplefin", "csv", "manual", "investment"] as const;
 
 /**
  * Minimal category table, pulled forward from Phase 2 so Phase 1 can categorize
@@ -54,9 +56,9 @@ export const transaction = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     accountId: uuid("account_id").notNull().references(() => account.id, { onDelete: "cascade" }),
-    /** SimpleFIN transaction id, a CSV content hash, or null for manual entries. */
+    /** SimpleFIN transaction id, a CSV content hash, `inv:<investment_txn id>` for feed rows, or null for manual entries. */
     externalId: text("external_id"),
-    source: text("source", { enum: ["simplefin", "csv", "manual"] }).notNull(),
+    source: text("source", { enum: TRANSACTION_SOURCES }).notNull(),
     importLogId: uuid("import_log_id").references(() => importLog.id, { onDelete: "set null" }),
     date: date("date").notNull(),
     postedAt: timestamp("posted_at", { withTimezone: true }),

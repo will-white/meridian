@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addMonths, addMonthsClamped, ceilDiv, daysInMonth, daysRemainingInMonth, isMonthKey, localDateInTimeZone, monthDiff, monthEnd, monthRange, truncDiv } from "./months.js";
+import { addMonths, addMonthsClamped, ceilDiv, daysInMonth, daysRemainingInMonth, isMonthKey, localClockInTimeZone, localDateInTimeZone, monthDiff, monthEnd, monthRange, truncDiv } from "./months.js";
 
 describe("months", () => {
   it("validates and does arithmetic across year boundaries", () => {
@@ -38,5 +38,17 @@ describe("months", () => {
   it("gives the calendar date in a time zone", () => {
     expect(localDateInTimeZone(new Date("2026-10-14T03:30:00Z"), "America/Denver")).toBe("2026-10-13");
     expect(localDateInTimeZone(new Date("2026-10-14T03:30:00Z"), "UTC")).toBe("2026-10-14");
+  });
+  it("gives the local wall clock in a time zone (prices design, scheduler and expected price date)", () => {
+    expect(localClockInTimeZone(new Date("2026-10-14T00:05:00Z"), "America/Denver")).toEqual({ date: "2026-10-13", hour: 18, minute: 5 });
+    expect(localClockInTimeZone(new Date("2026-10-13T23:30:00Z"), "America/Denver")).toEqual({ date: "2026-10-13", hour: 17, minute: 30 });
+    expect(localClockInTimeZone(new Date("2026-10-14T22:30:00Z"), "America/New_York")).toEqual({ date: "2026-10-14", hour: 18, minute: 30 });
+    expect(localClockInTimeZone(new Date("2026-10-14T22:29:00Z"), "America/New_York")).toEqual({ date: "2026-10-14", hour: 18, minute: 29 });
+    // midnight is hour 0, never 24
+    expect(localClockInTimeZone(new Date("2026-10-14T06:00:00Z"), "America/Denver")).toEqual({ date: "2026-10-14", hour: 0, minute: 0 });
+    expect(localClockInTimeZone(new Date("2026-10-14T04:00:00Z"), "America/New_York")).toEqual({ date: "2026-10-14", hour: 0, minute: 0 });
+    // standard time (EST, UTC−5) after the November change
+    expect(localClockInTimeZone(new Date("2026-11-10T23:30:00Z"), "America/New_York")).toEqual({ date: "2026-11-10", hour: 18, minute: 30 });
+    expect(localClockInTimeZone(new Date("2026-10-14T03:30:00Z"), "UTC")).toEqual({ date: "2026-10-14", hour: 3, minute: 30 });
   });
 });

@@ -93,7 +93,7 @@ describe.skipIf(!TEST_DATABASE_URL)("dashboard on the grid-and-api seed", () => 
     expect(view.plan.committed).toEqual({ income: "500000", bills: "189648", savings: "50000", spending: "85000" });
     expect(view.plan.uncategorized).toEqual({ count: 1, cents: "-4500" });
     expect(view.billsDue).toEqual([{ recurringId: S.recurring.internet, name: "Internet", categoryName: "Internet", accountName: "Checking", dueDate: "2026-10-20", amountCents: "-7999", overdue: false }]);
-    expect(view.netWorth).toEqual({ asOf: today, todayCents: "575000", yearAgoDate: "2025-10-13", yearAgoCents: "350000", changeCents: "225000", newAccounts: [{ id: S.accounts.visa, name: "Visa" }] });
+    expect(view.netWorth).toEqual({ asOf: today, todayCents: "575000", yearAgoDate: "2025-10-13", yearAgoCents: "350000", changeCents: "225000", newAccounts: [{ id: S.accounts.visa, name: "Visa" }], breakdown: null });
     expect(view.cashFlow.points[0]).toEqual({ date: today, cents: "-3290" });
     expect(view.cashFlow.thresholdCents).toBe("0");
     expect(view.sync).toEqual({ lastSyncAt: null, attention: [] });

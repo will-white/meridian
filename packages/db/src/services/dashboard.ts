@@ -317,6 +317,8 @@ export function toDashboardView(d: DashboardResult): DashboardView {
       yearAgoCents: d.netWorth.yearAgoCents === null ? null : d.netWorth.yearAgoCents.toString(),
       changeCents: d.netWorth.changeCents === null ? null : d.netWorth.changeCents.toString(),
       newAccounts: d.netWorth.newAccounts,
+      // Phase 3 skeleton: the type breakdown and the investments block arrive with the investments services (step 9).
+      breakdown: null,
     },
     review: d.review,
     sync: {
@@ -324,5 +326,6 @@ export function toDashboardView(d: DashboardResult): DashboardView {
       attention: d.sync.attention,
     },
     retirement: null,
+    investments: null,
   };
 }
