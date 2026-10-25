@@ -64,6 +64,20 @@ describe.skipIf(!TEST_DATABASE_URL)("migration 0002_phase3_investments", () => {
     expect([...rows].map((r) => r.table_name).sort()).toEqual([...PHASE3_TABLES].sort());
   });
 
+  it("migration 0003: security_name_norm_idx indexes the resolver's exact normalized-name expression, btrim included, so the name step can use it", async () => {
+    const [idx] = await t.db.execute<{ indexdef: string }>(sql`select indexdef from pg_indexes where tablename = 'security' and indexname = 'security_name_norm_idx'`);
+    expect(idx!.indexdef).toContain("btrim(upper(regexp_replace(name, '[^A-Za-z0-9]+'::text, ' '::text, 'g'::text)))");
+    // The predicate `lookupSecurity` issues (securities.ts `normalizedNameSql`) is matched by the index once sequential scans are discouraged.
+    const plan = await t.db.transaction(async (tx) => {
+      await tx.execute(sql`set local enable_seqscan = off`);
+      const rows = await tx.execute<{ "QUERY PLAN": string }>(
+        sql`explain (costs off) select "id" from "security" where btrim(upper(regexp_replace("name", '[^A-Za-z0-9]+', ' ', 'g'))) = 'VANGUARD TOTAL STOCK MARKET ETF'`,
+      );
+      return [...rows].map((r) => r["QUERY PLAN"]).join("\n");
+    });
+    expect(plan).toMatch(/Index Scan using security_name_norm_idx|Bitmap Index Scan on security_name_norm_idx/);
+  });
+
   it("adds the account, household_setting and connection columns with their defaults and CHECKs", async () => {
     const [acct] = await t.db.select().from(account).where(sql`${account.id} = ${accountId}`);
     expect(acct).toMatchObject({ lotMethod: "fifo", cashInference: "auto", investmentIncomeFeed: "off" });

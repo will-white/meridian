@@ -8,11 +8,32 @@ import {
   flagSuspectBars,
   isSuspectClose,
   mapSymbol,
+  parsePriceProviderId,
   parseTiingoCsv,
   type ProviderBar,
 } from "./prices.js";
 
 const f = parseFixed8;
+
+/** Plan decision 10: the API and the worker read `PRICE_PROVIDER` through this one parser. */
+describe("parsePriceProviderId", () => {
+  it("treats unset, empty and `none` (any case or spacing) as no provider", () => {
+    expect(parsePriceProviderId(undefined)).toBeNull();
+    expect(parsePriceProviderId(null)).toBeNull();
+    expect(parsePriceProviderId("")).toBeNull();
+    expect(parsePriceProviderId("   ")).toBeNull();
+    expect(parsePriceProviderId("none")).toBeNull();
+    expect(parsePriceProviderId(" None\n")).toBeNull();
+  });
+  it("normalizes a known provider id and names an unknown value", () => {
+    expect(parsePriceProviderId("tiingo")).toBe("tiingo");
+    expect(parsePriceProviderId(" Tiingo ")).toBe("tiingo");
+    expect(parsePriceProviderId("TIINGO")).toBe("tiingo");
+    expect(() => parsePriceProviderId("stooq")).toThrow('PRICE_PROVIDER must be "tiingo" or "none", not "stooq"');
+    expect(() => parsePriceProviderId(" Stooq ")).toThrow(/not "Stooq"/);
+    expect(() => parsePriceProviderId("tiingo,none")).toThrow(/PRICE_PROVIDER/);
+  });
+});
 
 /** Prices design §3.3, §3.6, §3.12 and tests 5 and 23. */
 describe("expectedPriceDate", () => {

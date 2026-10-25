@@ -10,7 +10,7 @@ import { dollarsToCentsSigned } from "../../lib/investmentForms.js";
 import { handBuiltPositionsMapping, positionsCommitLabel, positionsMappingIssues, positionsResultText, previewWarningText, reconciliationLine, snapshotBar } from "../../lib/importMapping.js";
 import { localToday } from "../../lib/plan.js";
 import { Badge, Card, Empty, ErrorText } from "../ui.js";
-import { invalidateInvestments } from "../investments/queries.js";
+import { invalidateInvestments, useIsViewer } from "../investments/queries.js";
 import { PositionsMappingEditor } from "./PositionsMappingEditor.js";
 import { previewQueryOptions } from "./previewQuery.js";
 import { SecurityChoiceCell } from "./SecurityChoiceCell.js";
@@ -24,6 +24,23 @@ import { SecurityChoiceCell } from "./SecurityChoiceCell.js";
  * with the optional statement total, seams C40) → the result line.
  */
 export function PositionsImport({ accounts, connections }: { accounts: readonly AccountView[]; connections: readonly ConnectionView[] }) {
+  const viewer = useIsViewer();
+  if (viewer) return <ImportsAreOwnerOnly what="brokerage positions" />;
+  return <PositionsImportEditor accounts={accounts} connections={connections} />;
+}
+
+/** The viewer role (plan decision 19): the preview and the commit are both owner-only writes, so the flow is not shown. */
+export function ImportsAreOwnerOnly({ what }: { what: string }) {
+  return (
+    <Card>
+      <Empty>
+        Importing {what} is for the owner role. Browse the <Link to="/investments">Portfolio</Link> and each account's <Link to="/accounts">positions and trades</Link> instead.
+      </Empty>
+    </Card>
+  );
+}
+
+function PositionsImportEditor({ accounts, connections }: { accounts: readonly AccountView[]; connections: readonly ConnectionView[] }) {
   const qc = useQueryClient();
   const today = useMemo(() => localToday(), []);
   const investmentAccounts = accounts.filter((a) => isInvestmentAccountType(a.type) && !a.closed);

@@ -11,6 +11,7 @@ import {
   listInvestmentTxns,
   listSnapshots,
   loadInvestmentAccount,
+  requestValuation,
   setManualPositions,
   updateInvestmentTxn,
   type CreateInvestmentTxnInput,
@@ -46,7 +47,11 @@ import { auditContext, resolveToday, usePlanErrors } from "./plan.js";
  * `PUT /api/investments/txns/:id/lot-picks` in routes/performance.ts), the snapshot reads,
  * the manual positions editor (`PUT …/positions`, source `manual`, optional
  * `statementTotalCents`) and the snapshot delete. Mutations rebuild lots and are audited by
- * the services; the viewer role may only read.
+ * the services; the viewer role may only read. A manual transaction changes the lots (and so
+ * the chain's value of a lots-basis account), so its create, update and delete request the
+ * `investments.valuation` job for every account it touched (plan decision 9), deduped per
+ * account like the positions and reconcile commits; the snapshot routes' services do that
+ * themselves.
  */
 
 type CreateBody = z.infer<typeof CreateInvestmentTxnBody>;
@@ -119,6 +124,16 @@ function toUpdateInput(b: UpdateBody): UpdateInvestmentTxnInput {
   };
 }
 
+/** The accounts a row's value lives in: its own and, for a paired transfer, the counterparty's. */
+function accountsOf(rows: ReadonlyArray<{ accountId: string; counterpartyAccountId: string | null }>): string[] {
+  const ids = new Set<string>();
+  for (const r of rows) {
+    ids.add(r.accountId);
+    if (r.counterpartyAccountId) ids.add(r.counterpartyAccountId);
+  }
+  return [...ids];
+}
+
 function toManualPositions(b: ManualBody): ManualPositionInputRecord[] {
   return b.positions.map((p) => ({
     security: p.security,
@@ -159,18 +174,24 @@ export async function investmentTxnRoutes(app: FastifyInstance): Promise<void> {
     const today = await resolveToday(app, request.body.today);
     const ctx = auditContext(request);
     const result = await createInvestmentTxn(app.db, toCreateInput(request.body), { ...ctx, today });
+    for (const accountId of accountsOf(result.items)) await requestValuation(app.db, { reason: "investment_txn", accountId });
     return { items: result.items.map(toInvestmentTxnView), batchId: ctx.batchId };
   });
 
   /** `ledgerTransactionId` links or (null) unlinks the ledger row; `transferGroupId: null` unpairs both legs. */
   r.patch("/investments/txns/:id", { schema: { params: UuidParams, body: UpdateInvestmentTxnBody, response: { 200: InvestmentTxnView } } }, async (request) => {
     const today = await resolveToday(app, request.body.today);
+    const before = await getInvestmentTxn(app.db, request.params.id);
     const result = await updateInvestmentTxn(app.db, request.params.id, toUpdateInput(request.body), { ...auditContext(request), today });
+    // The counterparty before the patch too: `transferGroupId: null` unpairs the legs.
+    for (const accountId of accountsOf(before ? [before, result.item] : [result.item])) await requestValuation(app.db, { reason: "investment_txn", accountId });
     return toInvestmentTxnView(result.item);
   });
 
   r.delete("/investments/txns/:id", { schema: { params: UuidParams, querystring: DeleteInvestmentTxnQuery, response: { 200: OkResponse } } }, async (request) => {
+    const before = await getInvestmentTxn(app.db, request.params.id);
     await deleteInvestmentTxn(app.db, request.params.id, { ...(request.query.deleteGroup !== undefined ? { deleteGroup: request.query.deleteGroup } : {}) }, auditContext(request));
+    for (const accountId of accountsOf(before ? [before] : [])) await requestValuation(app.db, { reason: "investment_txn", accountId });
     return { ok: true as const };
   });
 

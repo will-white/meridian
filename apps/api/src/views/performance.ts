@@ -391,7 +391,13 @@ export function toPerformanceResponse(r: PerformanceRecord, lotDetails: LotDetai
     days: r.days,
     detail: r.detail,
     accounts: r.accounts.map(account),
-    total: { ...block(r.total), accountIds: [...r.total.accountIds], partialGains: r.total.partialGains, excludedInternalFlows: r.total.excludedInternalFlows },
+    total: {
+      ...block(r.total),
+      accountIds: [...r.total.accountIds],
+      partialGains: r.total.partialGains,
+      excludedInternalFlows: r.total.excludedInternalFlows,
+      excludedAccountIds: [...r.total.excludedAccountIds],
+    },
     benchmark: benchmark(r.benchmark),
     warnings: warnings(r.warnings),
   };

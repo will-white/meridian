@@ -477,8 +477,10 @@ function classifyCash(text: string, amountSign: ClassifyRow["amountSign"]): { ki
  * Classify a trade-file row (imports design §3.8): the mapping's `actionMap` first (exact key, then
  * the longest key that is a prefix of the action), then the regex rules in order. Undefined means
  * unclassified: the row is listed under `actionsFound` and nothing is imported until it is mapped.
- * Buys and sells need a quantity (a "PURCHASE CREDIT" journal line without shares is not a trade).
- * A cash row whose text names both directions goes the way of the amount's sign.
+ * Buys and sells need a quantity (a "PURCHASE CREDIT" journal line without shares is not a trade)
+ * and, with one, are read before the income words so a fund named "… DIVIDEND …" or "… INTEREST …"
+ * cannot turn a trade into income. A cash row whose text names both directions goes the way of
+ * the amount's sign.
  */
 export function classifyTradeAction(action: string, description: string, row: ClassifyRow, mapping: Pick<TradesCsvMapping, "actionMap" | "reinvestRows">): TradeKind | undefined {
   const fromMap = lookupActionMap(action, mapping.actionMap);
@@ -489,12 +491,15 @@ export function classifyTradeAction(action: string, description: string, row: Cl
     if (!row.hasQuantity) return "dividend";
     return mapping.reinvestRows === "combined" ? "reinvest_combined" : "reinvest";
   }
+  // A trade verb with shares wins over an income word: "BOUGHT 10 FIDELITY DIVIDEND GROWTH FUND"
+  // is a buy even when no name column is mapped (nothing to strip); an income word decides only
+  // when no trade verb is present, or when the row carries no quantity (not a trade).
+  if (row.hasQuantity && BUY_RE.test(text)) return "buy";
+  if (row.hasQuantity && SELL_RE.test(text)) return "sell";
   if (DIVIDEND_RE.test(text) || (DISTRIBUTION_RE.test(text) && !DISTRIBUTION_EXCLUDE_RE.test(text))) return "dividend";
   if (INTEREST_RE.test(text)) return "interest";
   if (FEE_RE.test(text)) return "fee";
   if (SPLIT_RE.test(text)) return "split";
-  if (row.hasQuantity && BUY_RE.test(text)) return "buy";
-  if (row.hasQuantity && SELL_RE.test(text)) return "sell";
   if (row.hasQuantity && SHARE_TRANSFER_RE.test(text)) return SHARE_TRANSFER_OUT_RE.test(text) ? "transfer_out" : "transfer_in";
   const cash = classifyCash(text, row.amountSign);
   if (cash) return cash.kind;

@@ -102,6 +102,8 @@ const changeSummary = {
   growthReason: null,
   incomeCents: "3243500",
   uncategorizedRows: 1,
+  partial: false,
+  missingAccountIds: [],
 };
 const performanceBlock = {
   method: "true_twr",
@@ -553,7 +555,7 @@ describe("Lots and performance", () => {
           statementCheck: { date: "2026-10-13", statementCents: "270520000", securitiesCents: "256200000", impliedCashCents: "14320000", trackedCashCents: "14320000", trackedFrom: "inception", differenceCents: "0" },
         },
       ],
-      total: { ...performanceBlock, twr: failedFigure, accountIds: [U1], partialGains: false, excludedInternalFlows: 0 },
+      total: { ...performanceBlock, twr: failedFigure, accountIds: [U1], partialGains: false, excludedInternalFlows: 0, excludedAccountIds: [] },
       benchmark: {
         securityId: U2,
         ticker: "VTI",
@@ -656,6 +658,10 @@ describe("Valuation", () => {
       accounts: [accountValuation],
     };
     roundTrip(ValuationSummaryResponse, summary);
+    // An account valued at the start but not at the end is named and the change marked partial.
+    roundTrip(ValuationSummaryResponse, { ...summary, periodChange: { ...summary.periodChange, partial: true, missingAccountIds: [U2] } });
+    bad(ValuationSummaryResponse, { ...summary, periodChange: { ...summary.periodChange, missingAccountIds: ["not-a-uuid"] } });
+    bad(ValuationSummaryResponse, { ...summary, periodChange: { ...changeSummary, period: "1w", newAccounts: [], partial: undefined } });
     ok(ValuationSummaryResponse, { ...summary, periodChange: null });
     bad(ValuationSummaryResponse, { ...summary, dayChange: dayChange });
   });

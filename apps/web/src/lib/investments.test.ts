@@ -27,7 +27,9 @@ import {
   fromToText,
   groupTrades,
   marketOrUnknownText,
+  noValueYetText,
   parseSplitsForm,
+  periodChangePartialText,
   parseTargetsForm,
   percentToBp,
   periodFromParams,
@@ -180,9 +182,28 @@ describe("sentences", () => {
     );
     expect(changeSentence({ from: "2025-10-13", changeCents: "3200", netFlowsCents: "0", growthCents: "3200", growthReason: null, incomeCents: "0" })).toBe("+$32.00: $32.00 growth");
     expect(changeSentence({ from: "2025-10-13", changeCents: "100000", netFlowsCents: "0", growthCents: null, growthReason: "flows_not_in_value", incomeCents: "0" })).toBe(
-      "+$1,000.00: growth unknown (transfers since the last statement are not in the value (cash inference is off))",
+      "+$1,000.00: growth unknown (transfers since the last statement are not in the value (cash inference is off, or shares arrived in kind))",
     );
     expect(changeSentence({ from: "2025-10-13", changeCents: null, netFlowsCents: "0", growthCents: null, growthReason: null, incomeCents: "0" })).toBe("no value at 10/13/25");
+  });
+  it("captions a partial period change with the accounts left out, and says nothing when complete", () => {
+    const names = new Map([
+      ["r", "Fidelity Roth IRA"],
+      ["b", "Vanguard Brokerage"],
+    ]);
+    const nameOf = (id: string) => names.get(id);
+    expect(periodChangePartialText({ partial: true, missingAccountIds: ["r"] }, nameOf)).toBe("partial: Fidelity Roth IRA had a value at the start but none at the end and was left out");
+    expect(periodChangePartialText({ partial: true, missingAccountIds: ["r", "b"] }, nameOf)).toBe(
+      "partial: 2 accounts (Fidelity Roth IRA, Vanguard Brokerage) had a value at the start but none at the end and were left out",
+    );
+    expect(periodChangePartialText({ partial: true, missingAccountIds: ["x"] }, nameOf)).toBe("partial: an account had a value at the start but none at the end and was left out");
+    expect(periodChangePartialText({ partial: false, missingAccountIds: [] }, nameOf)).toBeNull();
+    // A `partial` flag without names is not a caption (the contract ties the two together).
+    expect(periodChangePartialText({ partial: true, missingAccountIds: [] }, nameOf)).toBeNull();
+  });
+  it("explains an account the chain cannot value yet (the Portfolio's 'No values yet' rows)", () => {
+    expect(noValueYetText({ accountName: "Schwab", positionsDate: null })).toBe("Schwab has no positions, statement balance or prices on file yet.");
+    expect(noValueYetText({ accountName: "Schwab", positionsDate: "2026-10-09" })).toBe("Schwab has positions as of 10/09/26 but no price to value them with yet.");
   });
   it("writes rebalance trades as sentences (views design §3.7 worked example)", () => {
     expect(tradeSentence({ action: "sell", assetClass: "us_stock", ticker: "VTI", inAccount: true, amountCents: "439200", approxQuantity: "14.0544" })).toBe("sell $4,392.00 of VTI (~14.05 sh)");
@@ -364,7 +385,7 @@ describe("allocation bars", () => {
 });
 
 describe("why did it change", () => {
-  const summary = { from: "2026-10-12", to: "2026-10-13", startCents: "2673200", endCents: "2705200", changeCents: "32000", changeBp: 119, netFlowsCents: "0", growthCents: "32000", growthReason: null, incomeCents: "0", uncategorizedRows: 0 };
+  const summary = { from: "2026-10-12", to: "2026-10-13", startCents: "2673200", endCents: "2705200", changeCents: "32000", changeBp: 119, netFlowsCents: "0", growthCents: "32000", growthReason: null, incomeCents: "0", uncategorizedRows: 0, partial: false, missingAccountIds: [] };
   const holding = (ticker: string, priceEffectCents: string, quantityEffectCents: string) => ({
     securityId: null,
     ticker,

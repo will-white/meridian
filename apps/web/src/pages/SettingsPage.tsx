@@ -8,6 +8,7 @@ import { money, titleCase } from "../lib/format.js";
 import { bpToPpInput, dollarsToCents, ppToBp } from "../lib/investments.js";
 import { securityLabel } from "../lib/investmentForms.js";
 import { Card, ErrorText } from "../components/ui.js";
+import { useIsViewer } from "../components/investments/queries.js";
 import "./SettingsPage.css";
 
 interface Form {
@@ -118,6 +119,7 @@ function zoneList(): string[] {
  */
 export function SettingsPage() {
   const qc = useQueryClient();
+  const viewer = useIsViewer();
   const settings = useQuery({ queryKey: ["settings"], queryFn: () => api<HouseholdSettingView>("/settings") });
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api<AccountView[]>("/accounts") });
   const securities = useQuery({ queryKey: ["securities", "all"], queryFn: () => api<SecurityView[]>("/investments/securities") });
@@ -179,144 +181,151 @@ export function SettingsPage() {
       {!form && settings.isLoading && <p className="muted">Loading…</p>}
       {form && current && (
         <form className="settings-form" onSubmit={submit}>
-          <Card title="Spending plan">
-            <div className="settings-fields">
-              <label>
-                Plan start month
-                <input type="month" value={form.planStartMonth} onChange={(e) => edit({ planStartMonth: e.target.value })} required />
-                <span className="muted small">Rollovers are computed from this month forward; nothing earlier is carried in.</span>
-              </label>
-              <label className="inline settings-check">
-                <input type="checkbox" checked={form.zeroBased} onChange={(e) => edit({ zeroBased: e.target.checked })} /> Zero-based: show "to assign" (income minus everything planned) instead of "left to spend"
-              </label>
+          {/* The viewer role reads the settings and changes none (plan decision 19): every field is disabled and the save row is not shown. */}
+          <fieldset className="settings-fieldset" disabled={viewer}>
+            <Card title="Spending plan">
+              <div className="settings-fields">
+                <label>
+                  Plan start month
+                  <input type="month" value={form.planStartMonth} onChange={(e) => edit({ planStartMonth: e.target.value })} required />
+                  <span className="muted small">Rollovers are computed from this month forward; nothing earlier is carried in.</span>
+                </label>
+                <label className="inline settings-check">
+                  <input type="checkbox" checked={form.zeroBased} onChange={(e) => edit({ zeroBased: e.target.checked })} /> Zero-based: show "to assign" (income minus everything planned) instead of "left to spend"
+                </label>
+              </div>
+            </Card>
+            <Card title="Cash flow">
+              <div className="settings-fields">
+                <label>
+                  Low-balance threshold
+                  <input inputMode="decimal" value={form.threshold} onChange={(e) => edit({ threshold: e.target.value })} placeholder="500.00" />
+                  <span className="muted small">
+                    Checking and savings accounts without their own threshold warn below this line (currently {money(current.lowBalanceThresholdCents)}). Per-account thresholds are set on the Accounts
+                    page.
+                  </span>
+                </label>
+                <label>
+                  Primary account
+                  <select value={form.primaryAccountId} onChange={(e) => edit({ primaryAccountId: e.target.value })}>
+                    <option value="">— none (first checking account) —</option>
+                    {candidates.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name} ({titleCase(a.type)})
+                      </option>
+                    ))}
+                    {primaryMissing && <option value={form.primaryAccountId}>(current: not an on-budget open account)</option>}
+                  </select>
+                  <span className="muted small">Planned spending that cannot be attributed to an account is drawn from here.</span>
+                </label>
+                <label>
+                  Default projection horizon (days)
+                  <span className="row wrap">
+                    <input type="number" min={1} max={366} step={1} value={form.projectionDefaultDays} onChange={(e) => edit({ projectionDefaultDays: e.target.value })} required />
+                    {HORIZON_PRESETS.map((d) => (
+                      <button key={d} type="button" className="link small" onClick={() => edit({ projectionDefaultDays: String(d) })}>
+                        {d}
+                      </button>
+                    ))}
+                  </span>
+                </label>
+              </div>
+            </Card>
+            <Card title="Household">
+              <div className="settings-fields">
+                <label>
+                  Time zone
+                  <input list="settings-zones" value={form.timezone} onChange={(e) => edit({ timezone: e.target.value })} placeholder="America/Denver" required autoComplete="off" spellCheck={false} />
+                  <datalist id="settings-zones">
+                    {zones.map((z) => (
+                      <option key={z} value={z} />
+                    ))}
+                  </datalist>
+                  <span className="muted small">
+                    An IANA name such as America/Denver. Nightly jobs and "today" use it.
+                    {tzToday ? ` Today there is ${tzToday}.` : ""}
+                    {!tzKnown ? " This browser does not recognise that zone; the server will say whether it is valid." : ""}
+                  </span>
+                </label>
+              </div>
+            </Card>
+            <Card title="Investments">
+              <div className="settings-fields">
+                <label>
+                  Benchmark
+                  <select value={form.benchmarkSecurityId} onChange={(e) => edit({ benchmarkSecurityId: e.target.value })}>
+                    <option value="">— none —</option>
+                    {benchmarks.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {securityLabel(s)}
+                      </option>
+                    ))}
+                    {benchmarkMissing && <option value={form.benchmarkSecurityId}>(current: not an active security)</option>}
+                  </select>
+                  <span className="muted small">
+                    The Performance page compares every account with the same deposits made into this fund (a shadow portfolio). It is priced nightly even when nothing holds it; add one on the{" "}
+                    <Link to="/investments/securities">Securities page</Link> if it is missing.
+                  </span>
+                </label>
+                <label>
+                  Investment income category
+                  <select value={form.investmentIncomeCategoryId} onChange={(e) => edit({ investmentIncomeCategoryId: e.target.value })}>
+                    <option value="">— none (income feeds stay off) —</option>
+                    {incomeCategories.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="muted small">
+                    An income-bucket category that dividends and interest fed into the plan land in; each account chooses its feed mode on its{" "}
+                    <Link to="/investments/income">Income page</Link>. {incomeCategories.length === 0 && categories.data !== undefined ? <Link to="/plan">Create one on the Plan page.</Link> : null}
+                  </span>
+                </label>
+                <label>
+                  Rebalance when a class drifts more than
+                  <span className="row wrap">
+                    <input inputMode="decimal" value={form.rebalanceBand} onChange={(e) => edit({ rebalanceBand: e.target.value })} className="settings-short" aria-label="Rebalance band in percentage points" />
+                    <span className="muted">percentage points</span>
+                  </span>
+                  <span className="muted small">The Allocation page flags a class outside this band around its target and suggests trades (never executed).</span>
+                </label>
+                <label>
+                  Ignore rebalance trades under
+                  <span className="row wrap">
+                    <span className="muted">$</span>
+                    <input inputMode="decimal" value={form.rebalanceMinTrade} onChange={(e) => edit({ rebalanceMinTrade: e.target.value })} className="settings-short" aria-label="Minimum rebalance trade in dollars" />
+                  </span>
+                </label>
+                <p className="muted small settings-note">
+                  Prices: the provider, its schedule and each security's pricing mode are on the <Link to="/investments/prices">Prices page</Link> (PRICE_PROVIDER and TIINGO_API_KEY come from the environment, never from here).
+                </p>
+              </div>
+            </Card>
+          </fieldset>
+          {viewer ? (
+            <p className="muted small settings-actions">Settings are read-only for the viewer role. Last changed {new Date(current.updatedAt).toLocaleString()}</p>
+          ) : (
+            <div className="row wrap settings-actions">
+              <button type="submit" disabled={!dirty || save.isPending}>
+                {save.isPending ? "Saving…" : "Save settings"}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={!dirty || save.isPending}
+                onClick={() => {
+                  setForm(fromView(current));
+                  setDirty(false);
+                  setClientError(null);
+                }}
+              >
+                Discard changes
+              </button>
+              {saved && !dirty && <span className="notice">Saved.</span>}
+              <span className="muted small">Last changed {new Date(current.updatedAt).toLocaleString()}</span>
             </div>
-          </Card>
-          <Card title="Cash flow">
-            <div className="settings-fields">
-              <label>
-                Low-balance threshold
-                <input inputMode="decimal" value={form.threshold} onChange={(e) => edit({ threshold: e.target.value })} placeholder="500.00" />
-                <span className="muted small">
-                  Checking and savings accounts without their own threshold warn below this line (currently {money(current.lowBalanceThresholdCents)}). Per-account thresholds are set on the Accounts
-                  page.
-                </span>
-              </label>
-              <label>
-                Primary account
-                <select value={form.primaryAccountId} onChange={(e) => edit({ primaryAccountId: e.target.value })}>
-                  <option value="">— none (first checking account) —</option>
-                  {candidates.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name} ({titleCase(a.type)})
-                    </option>
-                  ))}
-                  {primaryMissing && <option value={form.primaryAccountId}>(current: not an on-budget open account)</option>}
-                </select>
-                <span className="muted small">Planned spending that cannot be attributed to an account is drawn from here.</span>
-              </label>
-              <label>
-                Default projection horizon (days)
-                <span className="row wrap">
-                  <input type="number" min={1} max={366} step={1} value={form.projectionDefaultDays} onChange={(e) => edit({ projectionDefaultDays: e.target.value })} required />
-                  {HORIZON_PRESETS.map((d) => (
-                    <button key={d} type="button" className="link small" onClick={() => edit({ projectionDefaultDays: String(d) })}>
-                      {d}
-                    </button>
-                  ))}
-                </span>
-              </label>
-            </div>
-          </Card>
-          <Card title="Household">
-            <div className="settings-fields">
-              <label>
-                Time zone
-                <input list="settings-zones" value={form.timezone} onChange={(e) => edit({ timezone: e.target.value })} placeholder="America/Denver" required autoComplete="off" spellCheck={false} />
-                <datalist id="settings-zones">
-                  {zones.map((z) => (
-                    <option key={z} value={z} />
-                  ))}
-                </datalist>
-                <span className="muted small">
-                  An IANA name such as America/Denver. Nightly jobs and "today" use it.
-                  {tzToday ? ` Today there is ${tzToday}.` : ""}
-                  {!tzKnown ? " This browser does not recognise that zone; the server will say whether it is valid." : ""}
-                </span>
-              </label>
-            </div>
-          </Card>
-          <Card title="Investments">
-            <div className="settings-fields">
-              <label>
-                Benchmark
-                <select value={form.benchmarkSecurityId} onChange={(e) => edit({ benchmarkSecurityId: e.target.value })}>
-                  <option value="">— none —</option>
-                  {benchmarks.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {securityLabel(s)}
-                    </option>
-                  ))}
-                  {benchmarkMissing && <option value={form.benchmarkSecurityId}>(current: not an active security)</option>}
-                </select>
-                <span className="muted small">
-                  The Performance page compares every account with the same deposits made into this fund (a shadow portfolio). It is priced nightly even when nothing holds it; add one on the{" "}
-                  <Link to="/investments/securities">Securities page</Link> if it is missing.
-                </span>
-              </label>
-              <label>
-                Investment income category
-                <select value={form.investmentIncomeCategoryId} onChange={(e) => edit({ investmentIncomeCategoryId: e.target.value })}>
-                  <option value="">— none (income feeds stay off) —</option>
-                  {incomeCategories.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-                <span className="muted small">
-                  An income-bucket category that dividends and interest fed into the plan land in; each account chooses its feed mode on its{" "}
-                  <Link to="/investments/income">Income page</Link>. {incomeCategories.length === 0 && categories.data !== undefined ? <Link to="/plan">Create one on the Plan page.</Link> : null}
-                </span>
-              </label>
-              <label>
-                Rebalance when a class drifts more than
-                <span className="row wrap">
-                  <input inputMode="decimal" value={form.rebalanceBand} onChange={(e) => edit({ rebalanceBand: e.target.value })} className="settings-short" aria-label="Rebalance band in percentage points" />
-                  <span className="muted">percentage points</span>
-                </span>
-                <span className="muted small">The Allocation page flags a class outside this band around its target and suggests trades (never executed).</span>
-              </label>
-              <label>
-                Ignore rebalance trades under
-                <span className="row wrap">
-                  <span className="muted">$</span>
-                  <input inputMode="decimal" value={form.rebalanceMinTrade} onChange={(e) => edit({ rebalanceMinTrade: e.target.value })} className="settings-short" aria-label="Minimum rebalance trade in dollars" />
-                </span>
-              </label>
-              <p className="muted small settings-note">
-                Prices: the provider, its schedule and each security's pricing mode are on the <Link to="/investments/prices">Prices page</Link> (PRICE_PROVIDER and TIINGO_API_KEY come from the environment, never from here).
-              </p>
-            </div>
-          </Card>
-          <div className="row wrap settings-actions">
-            <button type="submit" disabled={!dirty || save.isPending}>
-              {save.isPending ? "Saving…" : "Save settings"}
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              disabled={!dirty || save.isPending}
-              onClick={() => {
-                setForm(fromView(current));
-                setDirty(false);
-                setClientError(null);
-              }}
-            >
-              Discard changes
-            </button>
-            {saved && !dirty && <span className="notice">Saved.</span>}
-            <span className="muted small">Last changed {new Date(current.updatedAt).toLocaleString()}</span>
-          </div>
+          )}
           {clientError && <ErrorText error={new Error(clientError)} />}
           <ErrorText error={save.error} />
         </form>

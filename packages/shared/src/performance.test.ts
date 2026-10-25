@@ -448,6 +448,25 @@ describe("TC16. Modified Dietz for a balance-only account, carried starts and th
     expect(a.xirr).toMatchObject({ annualized: null, period: null, reason: "no_valuations" });
     expect(a.warnings).toEqual([{ code: "no_valuations", date: "2026-01-20", accountId: "C" }]);
     expect(r.total.twr.reason).toBe("no_valuations");
+    expect(r.total.excludedAccountIds).toEqual(["C"]);
+  });
+  it("an account without a valuation on or before `to` is left out of the total (value and flows), not charged as a loss", () => {
+    // C's +5000 on 01-10 is in the window, but C is valued 0 on every date: folding its flow into
+    // the total would read as a 5000 loss. A alone: V(01-01) = 0, +100000 on 01-02, V(01-20) = 100000.
+    const unvalued = account({ ...C, cashFlows: [cash("C", "2026-01-10", 5000n), ...C.cashFlows] });
+    const r = perf({ from: "2026-01-01", to: "2026-01-20", accounts: [A, unvalued], prices: [VTI_14] });
+    const t = r.total;
+    expect(t).toMatchObject({ accountIds: ["A", "C"], excludedAccountIds: ["C"], partialGains: true, method: "true_twr", startValueCents: 0n, endValueCents: 100000n, contributionsCents: 100000n, withdrawalsCents: 0n, growthCents: 0n });
+    expect(t.flows.map((x) => [x.accountId, x.date, x.amountCents])).toEqual([["A", "2026-01-02", 100000n]]);
+    expect(t.twr).toEqual({ rate: 0, annualized: null, reason: null, reasonDate: null });
+    expect(t.xirr.annualized).toBe(0);
+    expect(t.warnings).toEqual([{ code: "no_valuations", accountId: "C", date: "2026-01-20", detail: "excluded from the total: no valuation on or before 2026-01-20" }]);
+    // C's own block is unaware of the selection (D18).
+    const c = r.accounts[1]!;
+    expect(c.contributionsCents).toBe(5000n);
+    expect(c.twr.reason).toBe("no_valuations");
+    // The same selection with every account valued excludes nothing.
+    expect(perf({ from: "2026-01-01", to: "2026-02-28", accounts: [A, unvalued], prices: [VTI_14] }).total.excludedAccountIds).toEqual([]);
   });
 });
 

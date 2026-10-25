@@ -25,7 +25,8 @@ import {
 } from "../../lib/importMapping.js";
 import { localToday } from "../../lib/plan.js";
 import { Badge, Card, Empty, ErrorText } from "../ui.js";
-import { invalidateInvestments } from "../investments/queries.js";
+import { invalidateInvestments, useIsViewer } from "../investments/queries.js";
+import { ImportsAreOwnerOnly } from "./PositionsImport.js";
 import { previewQueryOptions } from "./previewQuery.js";
 import { SecurityChoiceCell } from "./SecurityChoiceCell.js";
 import { TradesMappingEditor } from "./TradesMappingEditor.js";
@@ -40,6 +41,12 @@ import { TradesMappingEditor } from "./TradesMappingEditor.js";
  * link to review new securities.
  */
 export function TradesImport({ accounts, connections }: { accounts: readonly AccountView[]; connections: readonly ConnectionView[] }) {
+  const viewer = useIsViewer();
+  if (viewer) return <ImportsAreOwnerOnly what="trade history" />;
+  return <TradesImportEditor accounts={accounts} connections={connections} />;
+}
+
+function TradesImportEditor({ accounts, connections }: { accounts: readonly AccountView[]; connections: readonly ConnectionView[] }) {
   const qc = useQueryClient();
   const today = useMemo(() => localToday(), []);
   const investmentAccounts = accounts.filter((a) => isInvestmentAccountType(a.type) && !a.closed);

@@ -99,7 +99,7 @@ export const security = pgTable(
     /** One cash security per currency. */
     uniqueIndex("security_cash_currency_idx").on(t.currency).where(sql`"type" = 'cash'`),
     /** Name resolution: the same normalization as `normalizeName` in packages/shared. */
-    index("security_name_norm_idx").on(sql`upper(regexp_replace("name", '[^A-Za-z0-9]+', ' ', 'g'))`),
+    index("security_name_norm_idx").on(sql`btrim(upper(regexp_replace("name", '[^A-Za-z0-9]+', ' ', 'g')))`),
     index("security_needs_review_idx").on(t.needsReview),
     check("security_ticker_shape", sql`"ticker" IS NULL OR "ticker" ~ '^[A-Z0-9][A-Z0-9./-]{0,11}$'`),
     check("security_expense_ratio_range", sql`"expense_ratio_ppm" IS NULL OR ("expense_ratio_ppm" >= 0 AND "expense_ratio_ppm" <= 1000000)`),

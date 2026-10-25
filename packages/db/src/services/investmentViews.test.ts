@@ -487,7 +487,7 @@ describe.skipIf(!TEST_DATABASE_URL)("investment views on the INV seed (views tes
 
   it("why did it change (test 10 on the chain): price and quantity effects sum to the delta exactly", async () => {
     const day = await getAccountChanges(t.db, B, { from: "2026-10-12", to: "2026-10-13", ...q });
-    expect(day.summary).toEqual({ from: "2026-10-12", to: "2026-10-13", startCents: 2673200n, endCents: 2705200n, changeCents: 32000n, changeBp: 119, netFlowsCents: 0n, growthCents: 32000n, growthReason: null, incomeCents: 0n, uncategorizedRows: 0 });
+    expect(day.summary).toEqual({ from: "2026-10-12", to: "2026-10-13", startCents: 2673200n, endCents: 2705200n, changeCents: 32000n, changeBp: 119, netFlowsCents: 0n, growthCents: 32000n, growthReason: null, incomeCents: 0n, uncategorizedRows: 0, partial: false, missingAccountIds: [] });
     expect(day.holdings.map((h) => [h.ticker, h.priceEffectCents, h.quantityEffectCents, h.deltaCents])).toEqual([
       ["AAPL", 10000n, 0n, 10000n],
       ["VTI", 10000n, 0n, 10000n],

@@ -1,7 +1,7 @@
 import { and, count, eq } from "drizzle-orm";
 import type { InjectOptions } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { auditLog, balanceSnapshot } from "@meridian/db";
+import { auditLog, balanceSnapshot, job } from "@meridian/db";
 import { INV_SEED_TODAY } from "@meridian/db/testing";
 import type { AccountView, CreateInvestmentTxnResponse, HoldingSnapshotView, InvestmentTxnList, InvestmentTxnView, LotsResponse, SnapshotSummaryView } from "@meridian/shared";
 import { TEST_DATABASE_URL } from "./test/helpers.js";
@@ -12,7 +12,8 @@ import { freshInvestmentApp, viewerCookies, type InvestmentApp } from "./test/in
  * tests 15, 22, 23, 24; plan decisions 5, 14, 17, 19): keyset listing, the manual defaults
  * (5 × 48.123 + $4.95 → −24 557), transfer legs, user edits and ledger links, the snapshot
  * reads with the Bridge comparison, the positions editor with `statementTotalCents`, the
- * snapshot delete, and the viewer matrix.
+ * snapshot delete, and the viewer matrix. Every manual transaction write queues the
+ * per-account `investments.valuation` job (plan decision 9) for the accounts it touched.
  */
 
 const TODAY = INV_SEED_TODAY;
@@ -32,6 +33,14 @@ describe.skipIf(!TEST_DATABASE_URL)("investment transaction and snapshot routes"
   });
 
   const auditCount = async (): Promise<number> => (await A.t.db.db.select({ n: count() }).from(auditLog))[0]!.n;
+  /** Queued valuation jobs as `{ reason, accountId }`, sorted by account for stable comparisons. */
+  const valuationJobs = async () =>
+    (await A.t.db.db.select().from(job).where(eq(job.type, "investments.valuation")))
+      .map((j) => ({ status: j.status, reason: j.payload["reason"], accountId: j.payload["accountId"], dedupeKey: j.payload["dedupeKey"] }))
+      .sort((x, y) => String(x.accountId).localeCompare(String(y.accountId)));
+  const clearValuationJobs = () => A.t.db.db.delete(job).where(eq(job.type, "investments.valuation"));
+  const valuationOf = (...accountIds: string[]) =>
+    [...new Set(accountIds)].sort((x, y) => x.localeCompare(y)).map((accountId) => ({ status: "queued", reason: "investment_txn", accountId, dedupeKey: `investments.valuation:${accountId}` }));
   const list = async (query: string) => {
     const res = await A.t.call({ method: "GET", url: `/api/investments/txns?${query}` });
     expect(res.statusCode).toBe(200);
@@ -89,7 +98,8 @@ describe.skipIf(!TEST_DATABASE_URL)("investment transaction and snapshot routes"
     expect((await A.t.call({ method: "GET", url: "/api/investments/txns/00000000-0000-4000-8000-000000000000" })).statusCode).toBe(404);
   });
 
-  it("creates manual rows with the design's defaults, audits them and rebuilds lots; refuses bad shapes", async () => {
+  it("creates manual rows with the design's defaults, audits them, rebuilds lots and queues the valuation job; refuses bad shapes", async () => {
+    await clearValuationJobs();
     const audits = await auditCount();
     const buy = await A.t.call({
       method: "POST",
@@ -102,6 +112,8 @@ describe.skipIf(!TEST_DATABASE_URL)("investment transaction and snapshot routes"
     expect(created.items).toHaveLength(1);
     expect(created.items[0]).toMatchObject({ amountCents: "-24557", feeCents: "495", sequence: 0, source: "manual", externalId: null, quantity: "5", price: "48.123" });
     expect(await auditCount()).toBe(audits + 1);
+    // B's lots changed, so B's value did: one per-account valuation job (plan decision 9).
+    expect(await valuationJobs()).toEqual(valuationOf(B));
 
     const lots = (await A.t.call({ method: "GET", url: `/api/investments/lots?accountId=${B}&securityId=${A.S.securities.aapl}&asOf=2026-10-13&today=${TODAY}` })).json() as LotsResponse;
     const lot = lots.lots.find((l) => l.openedByTxnId === created.items[0]!.id)!;
@@ -110,6 +122,9 @@ describe.skipIf(!TEST_DATABASE_URL)("investment transaction and snapshot routes"
 
     const second = (await A.t.call({ method: "POST", url: "/api/investments/txns", payload: { accountId: B, date: "2026-10-13", type: "buy", securityId: A.S.securities.aapl, quantity: "1", price: "240", today: TODAY } })).json() as CreateInvestmentTxnResponse;
     expect(second.items[0]).toMatchObject({ sequence: 1, amountCents: "-24000" });
+    // Deduped by key while the first is still queued.
+    expect(await valuationJobs()).toEqual(valuationOf(B));
+    await clearValuationJobs();
 
     const bad = async (payload: Record<string, unknown>) => {
       const res = await A.t.call({ method: "POST", url: "/api/investments/txns", payload });
@@ -121,11 +136,16 @@ describe.skipIf(!TEST_DATABASE_URL)("investment transaction and snapshot routes"
     expect(await bad({ accountId: B, date: "2026-10-15", type: "buy", securityId: A.S.securities.aapl, quantity: "1", price: "1", today: TODAY })).toBe("future_date");
     expect(await bad({ accountId: C, date: "2026-10-13", type: "buy", securityId: A.S.securities.aapl, quantity: "1", price: "1", today: TODAY })).toBe("not_investment_account");
     expect(await bad({ accountId: B, date: "2026-10-13", type: "dividend", today: TODAY })).toBe("validation");
+    // Refused writes queue nothing.
+    expect(await valuationJobs()).toEqual([]);
 
     for (const item of [...created.items, ...second.items]) {
       expect((await A.t.call({ method: "DELETE", url: `/api/investments/txns/${item.id}` })).json()).toEqual({ ok: true });
       expect((await A.t.call({ method: "GET", url: `/api/investments/txns/${item.id}` })).statusCode).toBe(404);
     }
+    // The deletes rebuilt B's lots too: the job is requested again (one row, deduped).
+    expect(await valuationJobs()).toEqual(valuationOf(B));
+    await clearValuationJobs();
   });
 
   it("writes both legs of an own-account transfer and guards the pair", async () => {
@@ -140,6 +160,9 @@ describe.skipIf(!TEST_DATABASE_URL)("investment transaction and snapshot routes"
     expect(inLeg).toMatchObject({ accountId: R, transferDirection: "in", amountCents: "0", quantity: "10", counterpartyAccountId: B });
     expect(out!.transferGroupId).toBe(inLeg!.transferGroupId);
     expect(out!.transferGroupId).not.toBeNull();
+    // Both legs' accounts are valued again.
+    expect(await valuationJobs()).toEqual(valuationOf(B, R));
+    await clearValuationJobs();
 
     const edit = await A.t.call({ method: "PATCH", url: `/api/investments/txns/${inLeg!.id}`, payload: { quantity: "5", today: TODAY } });
     expect(edit.statusCode).toBe(409);
@@ -147,17 +170,25 @@ describe.skipIf(!TEST_DATABASE_URL)("investment transaction and snapshot routes"
     const del = await A.t.call({ method: "DELETE", url: `/api/investments/txns/${out!.id}` });
     expect(del.statusCode).toBe(409);
     expect(del.json().code).toBe("transfer_leg_linked");
+    expect(await valuationJobs()).toEqual([]);
     expect((await A.t.call({ method: "DELETE", url: `/api/investments/txns/${out!.id}?deleteGroup=true` })).json()).toEqual({ ok: true });
     expect((await A.t.call({ method: "GET", url: `/api/investments/txns/${inLeg!.id}` })).statusCode).toBe(404);
+    // The group delete touched both accounts (the out leg named R as its counterparty).
+    expect(await valuationJobs()).toEqual(valuationOf(B, R));
+    await clearValuationJobs();
   });
 
   it("patches user-owned and source-owned columns and links to the ledger", async () => {
     const memo = await A.t.call({ method: "PATCH", url: `/api/investments/txns/${A.S.txns["buyVti1"]}`, payload: { memo: "first lot", today: TODAY } });
     expect(memo.statusCode).toBe(200);
-    expect(memo.json()).toMatchObject({ memo: "first lot", userEdited: false });
+    expect(memo.json()).toMatchObject({ memo: "first lot", userEdited: false, accountId: B });
+    expect(await valuationJobs()).toEqual(valuationOf(B));
+    await clearValuationJobs();
     const price = await A.t.call({ method: "PATCH", url: `/api/investments/txns/${A.S.txns["buyVti1"]}`, payload: { price: "250.5", today: TODAY } });
     expect(price.json()).toMatchObject({ price: "250.5", userEdited: true });
+    expect(await valuationJobs()).toEqual(valuationOf(B));
     await A.t.call({ method: "PATCH", url: `/api/investments/txns/${A.S.txns["buyVti1"]}`, payload: { price: "250", today: TODAY } });
+    await clearValuationJobs();
 
     const divSep = A.S.txns["divVtiSep"]!;
     const unlinked = await A.t.call({ method: "PATCH", url: `/api/investments/txns/${divSep}`, payload: { ledgerTransactionId: null, today: TODAY } });

@@ -13,6 +13,10 @@ import { freshInvestmentApp, viewerCookies, type InvestmentApp } from "./test/in
  * manual refresh (503 without a provider; created / moved up with one), a security's history,
  * and manual closes at PUT/DELETE /api/prices/:securityId/:date with their audit rows and error
  * codes. Reads are open to the viewer role and write nothing; mutations are refused for it.
+ * Every close-changing write (manual PUT/DELETE, the implied rebuild) queues the deduped
+ * household-wide `investments.valuation` job (plan decision 9): with `PRICE_PROVIDER=none` no
+ * fetch run ever chains it, so the computed balance rows would otherwise never follow a
+ * hand-set price.
  */
 
 const TODAY = INV_SEED_TODAY;
@@ -37,6 +41,8 @@ describe.skipIf(!TEST_DATABASE_URL)("prices routes", () => {
   const securityAudits = async (securityId: string) =>
     (await A.t.db.db.select({ n: count() }).from(auditLog).where(and(eq(auditLog.entity, "security"), eq(auditLog.entityId, securityId))))[0]!.n;
   const fetchJobs = async () => A.t.db.db.select().from(job).where(eq(job.type, "prices.fetch"));
+  const valuationJobs = async () => (await A.t.db.db.select().from(job).where(eq(job.type, "investments.valuation"))).map((j) => ({ status: j.status, payload: j.payload }));
+  const clearValuationJobs = () => A.t.db.db.delete(job).where(eq(job.type, "investments.valuation"));
 
   it("reports the feed's status on the seed: unconfigured, the expected close, one row per priced security, the counts (prices test 26)", async () => {
     const before = await tableCounts();
@@ -105,35 +111,46 @@ describe.skipIf(!TEST_DATABASE_URL)("prices routes", () => {
     expect((await A.t.call({ method: "GET", url: "/api/prices/not-a-uuid" })).statusCode).toBe(400);
   });
 
-  it("sets and removes a manual close: precedence, audit rows, 409 manual_only, 400 future_date / cash_security_reserved (prices test 25)", async () => {
+  it("sets and removes a manual close: precedence, audit rows, the valuation job, 409 manual_only, 400 future_date / cash_security_reserved (prices test 25)", async () => {
+    await clearValuationJobs();
     const auditsBefore = await securityAudits(VTI);
     const put = await A.t.call({ method: "PUT", url: `/api/prices/${VTI}/2026-10-09`, payload: { close: "310.02", today: TODAY } });
     expect(put.statusCode, put.body).toBe(200);
-    // A manual close keeps the row's stored adjusted close (upsertPrices compares adj_close through COALESCE, a step-6 decision).
-    expect(put.json() as PriceView).toMatchObject({ securityId: VTI, date: "2026-10-09", close: "310.02", adjClose: "309", source: "manual", provider: null, suspect: false });
+    // A manual close replaces the provider row outright: the provider's adjusted close goes with it (adj_close follows the manual row, which has none).
+    expect(put.json() as PriceView).toMatchObject({ securityId: VTI, date: "2026-10-09", close: "310.02", adjClose: null, source: "manual", provider: null, suspect: false });
     expect(await securityAudits(VTI)).toBe(auditsBefore + 1);
+    // The chain's values changed: the household-wide valuation job is queued (plan decision 9; no provider means no fetch run would chain it).
+    const manualJob = { status: "queued", payload: { reason: "manual_price", dedupeKey: "investments.valuation" } };
+    expect(await valuationJobs()).toEqual([manualJob]);
     const history = (await A.t.call({ method: "GET", url: `/api/prices/${VTI}?from=2026-10-09&to=2026-10-09` })).json() as PriceHistoryResponse;
     expect(history.items).toEqual([expect.objectContaining({ date: "2026-10-09", close: "310.02", source: "manual" })]);
-    // An identical re-put is a no-op: the row and the audit log are unchanged.
+    // An identical re-put is a no-op: the row and the audit log are unchanged, and the queued job is reused (deduped by key).
     expect((await A.t.call({ method: "PUT", url: `/api/prices/${VTI}/2026-10-09`, payload: { close: "310.02", today: TODAY } })).statusCode).toBe(200);
     expect(await securityAudits(VTI)).toBe(auditsBefore + 1);
+    expect(await valuationJobs()).toEqual([manualJob]);
+    await clearValuationJobs();
 
     expect((await A.t.call({ method: "PUT", url: `/api/prices/${VTI}/2026-10-15`, payload: { close: "1", today: TODAY } })).json()).toMatchObject({ code: "future_date" });
     expect((await A.t.call({ method: "PUT", url: `/api/prices/${A.S.securities.cash}/2026-10-13`, payload: { close: "1", today: TODAY } })).json()).toMatchObject({ code: "cash_security_reserved" });
     expect((await A.t.call({ method: "PUT", url: `/api/prices/${randomUUID()}/2026-10-13`, payload: { close: "1", today: TODAY } })).statusCode).toBe(404);
     expect((await A.t.call({ method: "PUT", url: `/api/prices/${VTI}/2026-10-13`, payload: { close: "-1", today: TODAY } })).statusCode).toBe(400);
+    // Refused writes queue nothing.
+    expect(await valuationJobs()).toEqual([]);
 
-    // Removing it: audited; no provider is configured, so no refill fetch is queued.
+    // Removing it: audited; no provider is configured, so no refill fetch is queued; the valuation job is.
     const del = await A.t.call({ method: "DELETE", url: `/api/prices/${VTI}/2026-10-09` });
     expect(del.statusCode, del.body).toBe(200);
     expect(del.json()).toEqual({ ok: true });
     expect(await securityAudits(VTI)).toBe(auditsBefore + 2);
     expect(await fetchJobs()).toEqual([]);
+    expect(await valuationJobs()).toEqual([manualJob]);
     expect((await A.t.db.db.select().from(price).where(and(eq(price.securityId, VTI), eq(price.date, "2026-10-09"))))).toEqual([]);
+    await clearValuationJobs();
     expect((await A.t.call({ method: "DELETE", url: `/api/prices/${VTI}/2026-10-09` })).json()).toMatchObject({ code: "not_found" });
     const provider = await A.t.call({ method: "DELETE", url: `/api/prices/${VTI}/2026-10-12` });
     expect(provider.statusCode).toBe(409);
     expect(provider.json()).toMatchObject({ code: "manual_only" });
+    expect(await valuationJobs()).toEqual([]);
   });
 
   it("queues a manual refresh only when a provider is configured: 503 not_configured, then created, then moved up", async () => {
@@ -160,16 +177,20 @@ describe.skipIf(!TEST_DATABASE_URL)("prices routes", () => {
     }
   });
 
-  it("rebuilds implied prices on demand: the 10-09 VTI close removed above is re-derived from the Roth statement (20 @ 309); a second run writes nothing", async () => {
+  it("rebuilds implied prices on demand: the 10-09 VTI close removed above is re-derived from the Roth statement (20 @ 309) and the valuation job queued; a second run writes nothing new", async () => {
     expect(await A.t.db.db.select().from(price).where(and(eq(price.securityId, VTI), eq(price.date, "2026-10-09")))).toEqual([]);
+    expect(await valuationJobs()).toEqual([]);
     const res = await A.t.call({ method: "POST", url: "/api/prices/rebuild-implied" });
     expect(res.statusCode, res.body).toBe(200);
     expect(res.json()).toEqual({ written: 1 });
     const history = (await A.t.call({ method: "GET", url: `/api/prices/${VTI}?from=2026-10-09&to=2026-10-09` })).json() as PriceHistoryResponse;
     expect(history.items).toEqual([expect.objectContaining({ date: "2026-10-09", close: "309", source: "implied", provider: null })]);
+    expect(await valuationJobs()).toEqual([{ status: "queued", payload: { reason: "rebuild_implied", dedupeKey: "investments.valuation" } }]);
+    // The second run changes no price and reuses the queued job: no table grows.
     const before = await tableCounts();
     expect((await A.t.call({ method: "POST", url: "/api/prices/rebuild-implied" })).json()).toEqual({ written: 0 });
     expect(await tableCounts()).toEqual(before);
+    await clearValuationJobs();
   });
 
   it("viewer: every read is 200, every mutation 403 viewer", async () => {

@@ -105,16 +105,19 @@ describe.skipIf(!TEST_DATABASE_URL)("prices", () => {
     expect((await listPrices(t.db, S.securities.vti, { from: "2026-04-01", to: "2026-04-30" })).map((p) => p.date)).toEqual(["2026-04-13", "2026-04-10"]);
   });
 
-  it("upsert precedence manual > provider > implied, adjusted closes kept, no-op re-upserts kept (prices test 7)", async () => {
+  it("upsert precedence manual > provider > implied, adjusted closes kept between provider rows and dropped by a manual close, no-op re-upserts kept (prices test 7)", async () => {
     const vfiax = (await createSecurity(t.db, { ticker: "VFIAX", name: "Vanguard 500 Index Admiral", type: "fund", assetClass: "us_stock" }, ctx())).id;
     const d = "2026-10-13";
     expect(await upsertPrices(t.db, [{ securityId: vfiax, date: d, close: f8("500"), source: "implied" }])).toEqual({ inserted: 1, updated: 0, kept: 0 });
     expect(await upsertPrices(t.db, [{ securityId: vfiax, date: d, close: f8("505.1"), source: "provider", provider: "tiingo", adjClose: f8("505.1"), fetchedAt: NOW }])).toEqual({ inserted: 0, updated: 1, kept: 0 });
     expect((await getPrice(t.db, vfiax, d))!).toMatchObject({ close: f8("505.1"), source: "provider", provider: "tiingo", adjClose: f8("505.1"), fetchedAt: NOW });
     expect(await upsertPrices(t.db, [{ securityId: vfiax, date: d, close: f8("505"), source: "manual" }])).toEqual({ inserted: 0, updated: 1, kept: 0 });
-    expect((await getPrice(t.db, vfiax, d))!).toMatchObject({ close: f8("505"), source: "manual", provider: null, adjClose: f8("505.1") });
+    // The owner's close replaces the provider row whole: the stale provider adjusted close does not survive next to it.
+    expect((await getPrice(t.db, vfiax, d))!).toMatchObject({ close: f8("505"), source: "manual", provider: null, adjClose: null, fetchedAt: null });
+    const corrected = (await loadPriceSeries(t.db, [vfiax], addDays(d, -1), d, { adjusted: true })).get(vfiax)!;
+    expect(corrected).toEqual({ securityId: vfiax, adjusted: false, points: [{ date: d, close: f8("505"), source: "manual", suspect: false }] });
     expect(await upsertPrices(t.db, [{ securityId: vfiax, date: d, close: f8("505.1"), source: "provider", provider: "tiingo" }])).toEqual({ inserted: 0, updated: 0, kept: 1 });
-    expect((await getPrice(t.db, vfiax, d))!).toMatchObject({ close: f8("505"), source: "manual" });
+    expect((await getPrice(t.db, vfiax, d))!).toMatchObject({ close: f8("505"), source: "manual", adjClose: null });
 
     const d2 = "2026-10-14";
     expect(await upsertPrices(t.db, [{ securityId: vfiax, date: d2, close: f8("505.1"), source: "provider", provider: "tiingo", adjClose: f8("505.1") }])).toEqual({ inserted: 1, updated: 0, kept: 0 });

@@ -264,7 +264,7 @@ export function dayChangeReasonText(reason: string | null): string {
 }
 
 const GROWTH_REASONS: Record<string, string> = {
-  flows_not_in_value: "transfers since the last statement are not in the value (cash inference is off)",
+  flows_not_in_value: "transfers since the last statement are not in the value (cash inference is off, or shares arrived in kind)",
 };
 
 export function growthReasonText(reason: string | null): string {
@@ -290,6 +290,28 @@ export function changeSentence(p: Pick<ChangeSummaryView, "from" | "changeCents"
   else parts.push(`growth unknown${p.growthReason ? ` (${growthReasonText(p.growthReason)})` : ""}`);
   const income = BigInt(p.incomeCents) !== 0n ? ` (incl. ${money(p.incomeCents)} income)` : "";
   return `${signedMoney(p.changeCents)}: ${parts.join(", ")}${income}`;
+}
+
+/**
+ * The period-change card's caption when the change left accounts out: "partial: Fidelity Roth
+ * IRA had a value at the start but none at the end and was left out". Null when complete.
+ */
+export function periodChangePartialText(p: Pick<ChangeSummaryView, "partial" | "missingAccountIds">, nameOf: (accountId: string) => string | undefined): string | null {
+  if (!p.partial || p.missingAccountIds.length === 0) return null;
+  const names = p.missingAccountIds.map((id) => nameOf(id) ?? "an account");
+  const n = names.length;
+  return `partial: ${n === 1 ? names[0] : `${n} accounts (${names.join(", ")})`} had a value at the start but none at the end and ${n === 1 ? "was" : "were"} left out`;
+}
+
+/**
+ * The expanded row of an account the chain cannot value yet (the Portfolio's "No values yet"
+ * state, where the valuation summary is not even requested): why, in one line; the page adds
+ * the links to import positions or add prices.
+ */
+export function noValueYetText(a: Pick<PortfolioAccountView, "accountName" | "positionsDate">): string {
+  return a.positionsDate
+    ? `${a.accountName} has positions as of ${shortDate(a.positionsDate)} but no price to value them with yet.`
+    : `${a.accountName} has no positions, statement balance or prices on file yet.`;
 }
 
 /**

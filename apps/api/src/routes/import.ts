@@ -725,6 +725,8 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
         queuePriceRefresh: priceProviderConfigured(app),
         now: app.now(),
       });
+      // The lots the trades rebuilt feed the chain for a lots-basis account (plan decision 9): the computed rows follow.
+      if (result.created + result.updated > 0) await requestValuation(app.db, { reason: "trades", accountId: acct.id });
       await finishLog(
         logId,
         {

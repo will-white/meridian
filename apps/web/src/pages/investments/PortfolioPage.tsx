@@ -19,6 +19,8 @@ import {
   formatQuantity,
   growthReasonText,
   lineKindLabel,
+  noValueYetText,
+  periodChangePartialText,
   periodFromParams,
   periodQuery,
   signedMoney,
@@ -145,7 +147,8 @@ export function PortfolioPage() {
       {p && p.accounts.length > 0 && p.asOf === null && (
         <Card>
           <Empty>No values yet: SimpleFIN balances arrive with the next sync, prices after market close; or import positions.</Empty>
-          <AccountsTable portfolio={p} accounts={p.accounts} valuations={valuationByAccount} expanded={expanded} onExpand={setExpanded} why={why} onWhy={setWhy} today={today} />
+          {/* The valuation summary is not requested without an as-of date: the expanded rows explain instead of waiting for it. */}
+          <AccountsTable portfolio={p} accounts={p.accounts} valuations={valuationByAccount} valuationsRequested={false} expanded={expanded} onExpand={setExpanded} why={why} onWhy={setWhy} today={today} />
         </Card>
       )}
       {p && p.asOf !== null && (
@@ -172,6 +175,7 @@ export function PortfolioPage() {
                 <span className="k">Period change{p.period ? ` (${p.period.kind === "custom" ? "custom" : p.period.kind.toUpperCase()})` : ""}</span>
                 <span className={`v ${changeTone(p.periodChange?.changeCents ?? null)}`}>{p.periodChange ? changeSentence(p.periodChange) : "—"}</span>
                 {p.periodChange?.growthReason && <span className="sub">{growthReasonText(p.periodChange.growthReason)}</span>}
+                {p.periodChange && periodChangePartialText(p.periodChange, (id) => accountNames.get(id)) && <span className="sub">{periodChangePartialText(p.periodChange, (id) => accountNames.get(id))}</span>}
                 {p.period?.partial && <span className="sub">{p.period.note ?? "The period starts before the first data"}</span>}
                 {p.periodChange !== null && p.periodChange.uncategorizedRows > 0 && (
                   <span className="sub">
@@ -224,7 +228,7 @@ export function PortfolioPage() {
 
           <Card title="Accounts" actions={<span className="muted small">{fidelitySummary(p.fidelityCounts)}</span>}>
             <ErrorText error={summary.error} />
-            <AccountsTable portfolio={p} accounts={p.accounts} valuations={valuationByAccount} expanded={expanded} onExpand={setExpanded} why={why} onWhy={setWhy} today={today} />
+            <AccountsTable portfolio={p} accounts={p.accounts} valuations={valuationByAccount} valuationsRequested={true} expanded={expanded} onExpand={setExpanded} why={why} onWhy={setWhy} today={today} />
           </Card>
         </>
       )}
@@ -245,6 +249,7 @@ function AccountsTable({
   portfolio,
   accounts,
   valuations,
+  valuationsRequested,
   expanded,
   onExpand,
   why,
@@ -254,6 +259,8 @@ function AccountsTable({
   portfolio: Pick<PortfolioView, "asOf" | "dayChange">;
   accounts: PortfolioAccountView[];
   valuations: Map<string, AccountValuationView>;
+  /** False in the "No values yet" state, where GET /valuation/summary is never sent: an expanded row explains instead of loading. */
+  valuationsRequested: boolean;
   expanded: string | null;
   onExpand: (id: string | null) => void;
   /** The account whose "why?" panel is open. */
@@ -352,7 +359,7 @@ function AccountsTable({
                 </tr>
                 {open && (
                   <tr className="inv-detail">
-                    <td colSpan={8}>{v ? <AccountDetail v={v} /> : <span className="muted">Loading the valuation…</span>}</td>
+                    <td colSpan={8}>{v ? <AccountDetail v={v} /> : valuationsRequested ? <span className="muted">Loading the valuation…</span> : <NoValueYet account={a} />}</td>
                   </tr>
                 )}
                 {whyOpen && canWhy && (
@@ -368,6 +375,17 @@ function AccountsTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+/** The expanded row of an account in the "No values yet" state: what is missing and where to add it. */
+function NoValueYet({ account }: { account: Pick<PortfolioAccountView, "accountId" | "accountName" | "positionsDate"> }) {
+  return (
+    <p className="muted small pf-no-value">
+      {noValueYetText(account)}{" "}
+      <Link to="/import?kind=positions">Import positions</Link>, <Link to="/investments/prices">add prices</Link>, or{" "}
+      <Link to={`/investments/accounts/${account.accountId}`}>enter them by hand on the account page</Link>; SimpleFIN balances arrive with the next sync.
+    </p>
   );
 }
 

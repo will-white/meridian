@@ -2,6 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { parsePriceProviderId } from "@meridian/shared";
 import { loadConfig, loadPriceConfig, PRICE_DEFAULTS, priceConfigOf, readCatchupHour, readPriceProvider, readTiingoApiKey, resolveDatabaseUrl } from "./env.js";
 
 describe("resolveDatabaseUrl", () => {
@@ -32,8 +33,27 @@ describe("price feed configuration (prices design §6.4)", () => {
     });
     expect(readPriceProvider({ PRICE_PROVIDER: "none" })).toBeNull();
     expect(readPriceProvider({ PRICE_PROVIDER: "" })).toBeNull();
+    expect(readPriceProvider({ PRICE_PROVIDER: " None " })).toBeNull();
+    expect(readPriceProvider({})).toBeNull();
     expect(readPriceProvider({ PRICE_PROVIDER: "Tiingo" })).toBe("tiingo");
-    expect(() => readPriceProvider({ PRICE_PROVIDER: "stooq" })).toThrow(/PRICE_PROVIDER/);
+    expect(readPriceProvider({ PRICE_PROVIDER: " tiingo\n" })).toBe("tiingo");
+    // The same parser as the API's `loadConfig` (plan decision 10): one .env value boots both or neither.
+    for (const value of ["", "none", " None ", "tiingo", " Tiingo ", "stooq"]) {
+      let shared: string | null | Error;
+      let worker: string | null | Error;
+      try {
+        shared = parsePriceProviderId(value);
+      } catch (err) {
+        shared = err as Error;
+      }
+      try {
+        worker = readPriceProvider({ PRICE_PROVIDER: value });
+      } catch (err) {
+        worker = err as Error;
+      }
+      expect(worker instanceof Error ? worker.message : worker, value).toEqual(shared instanceof Error ? shared.message : shared);
+    }
+    expect(() => readPriceProvider({ PRICE_PROVIDER: "stooq" })).toThrow('PRICE_PROVIDER must be "tiingo" or "none", not "stooq"');
   });
 
   it("tiingo needs a key from the environment or a secret file; boot fails without one", () => {

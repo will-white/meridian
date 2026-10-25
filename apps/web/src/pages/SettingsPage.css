@@ -1,5 +1,7 @@
 /* Settings: one column of cards, each a short list of labelled fields. */
 .settings-form { max-width: 720px; }
+/* The viewer's read-only wrapper: a fieldset so one `disabled` covers every field, without the element's own chrome. */
+.settings-fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .settings-fields { display: flex; flex-direction: column; gap: 1rem; }
 .settings-fields label { max-width: 520px; }
 .settings-fields label .row { align-items: center; }

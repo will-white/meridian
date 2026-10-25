@@ -87,7 +87,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Phase 1/2 touches: ingest classifier, off-b
     expect(await rowByExt(S.accounts.checking, "C2")).toMatchObject({ isTransfer: false });
   });
 
-  it("investment-type accounts start off budget; the sync's balance row never overwrites a manual one (test 26, C41)", async () => {
+  it("investment-type accounts start off budget; the sync's balance row never overwrites a manual or csv one (test 26, C41, plan decision 14)", async () => {
     expect(defaultOnBudget("brokerage")).toBe(false);
     expect(defaultOnBudget("roth")).toBe(false);
     expect(defaultOnBudget("checking")).toBe(true);
@@ -107,10 +107,18 @@ describe.skipIf(!TEST_DATABASE_URL)("Phase 1/2 touches: ingest classifier, off-b
     await upsertSimplefinAccount(t.db, S.connections.vanguard, { ...sf, balance: "1010.00" });
     expect(await balanceRow("2026-10-13")).toMatchObject({ balanceCents: 999999n, source: "manual" });
     expect((await t.db.select().from(account).where(eq(account.id, first.id)))[0]!.balanceCents).toBe(101000n);
-    // A csv row is not guarded (precedence manual > csv > simplefin applies to statement rows; the sync only yields to manual).
+    // Plan decision 14: the precedence manual > csv > simplefin applies to balance rows alike, so a positions import's
+    // csv statement total (setBalance into a fed account) survives the sync too; the account's own balance still follows the feed.
     await t.db.insert(balanceSnapshot).values({ accountId: first.id, date: "2026-10-12", balanceCents: 5n, source: "csv" });
     await upsertSimplefinAccount(t.db, S.connections.vanguard, { ...sf, balance: "1020.00", "balance-date": Math.floor(Date.UTC(2026, 9, 12, 12) / 1000) });
-    expect(await balanceRow("2026-10-12")).toMatchObject({ balanceCents: 102000n, source: "simplefin" });
+    expect(await balanceRow("2026-10-12")).toMatchObject({ balanceCents: 5n, source: "csv" });
+    expect((await t.db.select().from(account).where(eq(account.id, first.id)))[0]!.balanceCents).toBe(102000n);
+    // A computed row ranks below the feed and is replaced; a feed row of the same date is refreshed.
+    await t.db.insert(balanceSnapshot).values({ accountId: first.id, date: "2026-10-11", balanceCents: 7n, source: "computed" });
+    await upsertSimplefinAccount(t.db, S.connections.vanguard, { ...sf, balance: "1030.00", "balance-date": Math.floor(Date.UTC(2026, 9, 11, 12) / 1000) });
+    expect(await balanceRow("2026-10-11")).toMatchObject({ balanceCents: 103000n, source: "simplefin" });
+    await upsertSimplefinAccount(t.db, S.connections.vanguard, { ...sf, balance: "1031.00", "balance-date": Math.floor(Date.UTC(2026, 9, 11, 12) / 1000) });
+    expect(await balanceRow("2026-10-11")).toMatchObject({ balanceCents: 103100n, source: "simplefin" });
   });
 
   it("the plan reads on-budget accounts plus feed-category rows; a goal's linked transfers count either way (test 26)", async () => {

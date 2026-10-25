@@ -765,7 +765,10 @@ const SOURCE_OWNED = ["type", "transferDirection", "date", "securityId", "quanti
 /**
  * `PATCH /api/investments/transactions/:id`: any column may change; the merged row is
  * re-validated as a whole; a paired transfer leg refuses a change of type, security, quantity
- * or direction (409 `transfer_leg_linked`) unless the request also clears the group; a
+ * or direction (409 `transfer_leg_linked`) unless the request also clears the group, and a
+ * paired cash transfer's amount or date change mirrors onto the other leg (negated amount,
+ * same date) and the derived ledger row this side wrote for it, so the group stays equal and
+ * opposite (the other leg is audited in the same batch); a
  * source-owned change on an imported row sets `user_edited`; picks that no longer apply are
  * dropped; a ledger row this side wrote (a derived transfer row or the feed's synthetic
  * income row) follows the date and amount, or goes when the row leaves its kind or the link
@@ -871,6 +874,24 @@ export async function updateInvestmentTxn(db: Db, id: string, patch: UpdateInves
         await deleteOwnedLedgerRow(tx, twin.id);
       } else if (await followOwnedTwin(tx, twin, { type: merged.type, securityId: merged.securityId, date, amountCents: merged.amountCents }, { date: row.date, amountCents: row.amountCents })) {
         ledgerTransactionId = null;
+      }
+    }
+
+    // A paired cash transfer stays equal and opposite: an amount or date change mirrors onto the
+    // other leg (negated amount, same date) and onto its owned ledger twin; a merely linked bank
+    // row on that side is the owner's and stays. The other leg is audited below with `otherLegs`.
+    if (groupId !== null && isCashTransfer(merged) && (merged.amountCents !== current.amountCents || date !== row.date)) {
+      const legs = await tx.select().from(investmentTxn).where(and(eq(investmentTxn.transferGroupId, groupId), ne(investmentTxn.id, id)));
+      for (const leg of legs) {
+        otherLegs.push({ row: leg, picks: (await listLotPicks(tx, [leg.id])).get(leg.id) ?? [] });
+        accounts.add(leg.accountId);
+        const legAmountCents = -merged.amountCents;
+        const legTwin = await ownedLedgerTwin(tx, leg);
+        if (legTwin) await followOwnedTwin(tx, legTwin, { type: leg.type, securityId: leg.securityId, date, amountCents: legAmountCents }, { date: leg.date, amountCents: leg.amountCents });
+        await tx
+          .update(investmentTxn)
+          .set({ date, amountCents: legAmountCents, userEdited: leg.userEdited || leg.source !== "manual", updatedAt: new Date() })
+          .where(eq(investmentTxn.id, leg.id));
       }
     }
 

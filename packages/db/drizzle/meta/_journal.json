@@ -22,6 +22,13 @@
       "when": 1791969257252,
       "tag": "0002_phase3_investments",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1792926949601,
+      "tag": "0003_security_name_index",
+      "breakpoints": true
     }
   ]
 }

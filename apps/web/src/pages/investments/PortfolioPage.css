@@ -4,6 +4,7 @@
 .pf-detail { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.25rem 0; }
 .pf-detail-head { gap: 0.4rem 1.25rem; font-size: 0.9em; }
 .inv-chart-note { margin: 0.25rem 0 0; }
+.pf-no-value { margin: 0.25rem 0; }
 @media (max-width: 800px) {
   .pf-table .hide-narrow { display: none; }
 }

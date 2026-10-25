@@ -83,14 +83,17 @@ export async function upsertSimplefinAccount(tx: DbOrTx, connectionId: string, s
     created = true;
   }
 
-  // Phase 3 (seams C41): a hand-checked statement balance (`manual`) survives the next sync.
+  // Phase 3 (plan decision 14, seams C41): the balance row follows the snapshot precedence
+  // manual > csv > simplefin > computed (the rank `writeReportedBalance` in holdings.ts applies),
+  // so a hand-checked statement balance and a positions import's statement total both survive
+  // the next sync; a feed row refreshes only a feed or computed row.
   await tx
     .insert(balanceSnapshot)
     .values({ accountId: id, date: balanceDate, balanceCents, availableCents, source: "simplefin" })
     .onConflictDoUpdate({
       target: [balanceSnapshot.accountId, balanceSnapshot.date],
       set: { balanceCents, availableCents, source: "simplefin" },
-      setWhere: sql`${balanceSnapshot.source} <> 'manual'`,
+      setWhere: sql`(case ${balanceSnapshot.source} when 'manual' then 3 when 'csv' then 2 when 'simplefin' then 1 else 0 end) <= 1`,
     });
 
   return { id, created };

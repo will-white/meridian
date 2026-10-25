@@ -1674,7 +1674,14 @@ export const PerformanceResponse = z.object({
   days: z.number().int(),
   detail: DetailLevel,
   accounts: z.array(AccountPerformanceView),
-  total: z.object({ ...PerformanceBlock, accountIds: z.array(z.string().uuid()), partialGains: z.boolean(), excludedInternalFlows: z.number().int() }),
+  total: z.object({
+    ...PerformanceBlock,
+    accountIds: z.array(z.string().uuid()),
+    partialGains: z.boolean(),
+    excludedInternalFlows: z.number().int(),
+    /** Selected accounts with no valuation on or before `to`, left out of the total's values and flows. */
+    excludedAccountIds: z.array(z.string().uuid()),
+  }),
   benchmark: BenchmarkPerformanceView.nullable(),
   warnings: z.array(EngineWarningView),
 });
@@ -1869,10 +1876,14 @@ export const ChangeSummaryView = z.object({
   /** External flows in (from, to] plus the opening values of accounts entering after `from`. */
   netFlowsCents: CentsString,
   growthCents: CentsString.nullable(),
-  /** e.g. `flows_not_in_value` for a positions-basis account with cash inference off. */
+  /** e.g. `flows_not_in_value`: a positions-basis account with cash inference off, or shares received in kind after its statement. */
   growthReason: z.string().nullable(),
   incomeCents: CentsString,
   uncategorizedRows: z.number().int(),
+  /** True when `missingAccountIds` is non-empty. */
+  partial: z.boolean(),
+  /** Accounts valued at `from` but not at `to`, left out of every total (never read as a fall to zero). */
+  missingAccountIds: z.array(z.string().uuid()),
 });
 export const NewAccountView = z.object({ id: z.string().uuid(), name: z.string(), openingCents: CentsString });
 export const PeriodChangeView = ChangeSummaryView.extend({ period: InvestmentPeriod, newAccounts: z.array(NewAccountView) });

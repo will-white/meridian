@@ -1253,6 +1253,10 @@ export interface ChangeSummaryRecord {
   growthReason: string | null;
   incomeCents: bigint;
   uncategorizedRows: number;
+  /** True when `missingAccountIds` is non-empty (the engine's `partial`). */
+  partial: boolean;
+  /** Accounts valued at `from` but not at `to`, left out of every total (the engine's `missing`). */
+  missingAccountIds: string[];
 }
 
 export interface PortfolioAccountRecord extends AccountRefRecord, ValuationRefRecord {
@@ -1343,6 +1347,8 @@ export async function getPortfolio(db: DbOrTx, q: PortfolioQueryInput): Promise<
       growthReason: change.growthReason,
       incomeCents,
       uncategorizedRows,
+      partial: change.partial,
+      missingAccountIds: [...change.missing],
     };
     for (const a of change.accounts) {
       const [income, uncategorized] = await Promise.all([incomeInWindow(db, [a.accountId], change.from, change.to), uncategorizedRowsInWindow(db, [a.accountId], change.from, change.to)]);
@@ -1358,6 +1364,9 @@ export async function getPortfolio(db: DbOrTx, q: PortfolioQueryInput): Promise<
         growthReason: a.growthReason,
         incomeCents: income,
         uncategorizedRows: uncategorized,
+        // The account's own row: it is "missing" when it is valued at the start and not at the end.
+        partial: change.missing.includes(a.accountId),
+        missingAccountIds: change.missing.includes(a.accountId) ? [a.accountId] : [],
       });
     }
   }
@@ -1505,6 +1514,8 @@ export async function getAccountChanges(db: DbOrTx, accountId: string, q: { from
     growthReason: mine?.growthReason ?? null,
     incomeCents,
     uncategorizedRows,
+    partial: change?.partial ?? false,
+    missingAccountIds: [...(change?.missing ?? [])],
   };
 
   // Holdings: every security (positions and the cash security) present at either date.

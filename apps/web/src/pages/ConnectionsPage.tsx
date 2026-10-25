@@ -5,6 +5,7 @@ import { api } from "../lib/api.js";
 import { relativeTime } from "../lib/format.js";
 import { csvKindLabel } from "../lib/importMapping.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
+import { useIsViewer } from "../components/investments/queries.js";
 
 const STATUS_TONE: Record<ConnectionView["status"], "ok" | "warn" | "bad" | "info" | "neutral"> = {
   ok: "ok",
@@ -24,6 +25,7 @@ const STATUS_LABEL: Record<ConnectionView["status"], string> = {
 
 export function ConnectionsPage() {
   const qc = useQueryClient();
+  const viewer = useIsViewer();
   const connections = useQuery({
     queryKey: ["connections"],
     queryFn: () => api<ConnectionView[]>("/connections"),
@@ -134,14 +136,16 @@ export function ConnectionsPage() {
                 <button className="secondary" onClick={() => sync.mutate({ id: c.id, balancesOnly: true })} disabled={sync.isPending || !!c.activeJob || c.status !== "ok"}>
                   Balances only
                 </button>
-                <button
-                  className="secondary"
-                  onClick={() => reprocess.mutate(c.id)}
-                  disabled={reprocess.isPending || !!c.activeJob || c.status === "disabled"}
-                  title="Re-read the holdings in the stored sync payloads (after a parser change); no bank call is made"
-                >
-                  Re-process holdings
-                </button>
+                {!viewer && (
+                  <button
+                    className="secondary"
+                    onClick={() => reprocess.mutate(c.id)}
+                    disabled={reprocess.isPending || !!c.activeJob || c.status === "disabled"}
+                    title="Re-read the holdings in the stored sync payloads (after a parser change); no bank call is made"
+                  >
+                    Re-process holdings
+                  </button>
+                )}
                 <button className="secondary" onClick={() => setOpenLog(openLog === c.id ? null : c.id)}>
                   {openLog === c.id ? "Hide log" : "Log"}
                 </button>

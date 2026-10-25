@@ -263,6 +263,29 @@ describe.skipIf(!TEST_DATABASE_URL)("investment transactions (imports tests 13â€
     await expect(createInvestmentTxn(t.db, { accountId: A15, date: "2026-10-07", type: "transfer", direction: "in", amountCents: -5n }, ctx())).rejects.toMatchObject({ status: 400, code: "txn_invalid", message: expect.stringContaining("itx_transfer") });
     await expect(createInvestmentTxn(t.db, { accountId: A15, date: "2026-10-07", type: "transfer", direction: "in", amountCents: 5n, counterpartyAccountId: A15 }, ctx())).rejects.toMatchObject({ status: 400, code: "transfer_same_account" });
 
+    // An amount or date change on one cash leg mirrors onto the other leg and both derived ledger rows, so the group stays equal and opposite.
+    const mirrorBatch = randomUUID();
+    const resized = await updateInvestmentTxn(t.db, cash.items[0]!.id, { amountCents: 60000n, date: "2026-10-08" }, ctx(mirrorBatch));
+    expect(resized.item).toMatchObject({ amountCents: 60000n, date: "2026-10-08", transferDirection: "in", transferGroupId: cash.items[0]!.transferGroupId, ledgerTransactionId: ledgerA.id });
+    expect(await getInvestmentTxn(t.db, cash.items[1]!.id)).toMatchObject({ amountCents: -60000n, date: "2026-10-08", transferDirection: "out", transferGroupId: cash.items[0]!.transferGroupId, ledgerTransactionId: ledgerB.id, userEdited: false });
+    expect((await t.db.select().from(transaction).where(eq(transaction.id, ledgerA.id)))[0]).toMatchObject({ amountCents: 60000n, date: "2026-10-08", isTransfer: true, transferPairId: ledgerA.transferPairId });
+    expect((await t.db.select().from(transaction).where(eq(transaction.id, ledgerB.id)))[0]).toMatchObject({ amountCents: -60000n, date: "2026-10-08", isTransfer: true, transferPairId: ledgerA.transferPairId });
+    const mirrorAudit = await listAudit(t.db, { batchId: mirrorBatch, limit: 10 });
+    expect(mirrorAudit.items.map((e) => [e.entity, e.action, e.entityId]).sort()).toEqual(
+      [
+        ["investment_txn", "update", cash.items[0]!.id],
+        ["investment_txn", "update", cash.items[1]!.id],
+      ].sort(),
+    );
+    const mirrorEntry = mirrorAudit.items.find((e) => e.entityId === cash.items[1]!.id)!;
+    expect(mirrorEntry.before).toMatchObject({ amountCents: "-50000", date: "2026-10-07" });
+    expect(mirrorEntry.after).toMatchObject({ amountCents: "-60000", date: "2026-10-08" });
+    // A change that leaves amount and date alone touches only the patched leg.
+    const memoBatch = randomUUID();
+    await updateInvestmentTxn(t.db, cash.items[1]!.id, { memo: "Roth contribution" }, ctx(memoBatch));
+    expect((await listAudit(t.db, { batchId: memoBatch, limit: 10 })).items.map((e) => e.entityId)).toEqual([cash.items[1]!.id]);
+    expect(await getInvestmentTxn(t.db, cash.items[0]!.id)).toMatchObject({ amountCents: 60000n, date: "2026-10-08" });
+
     // Deleting the group takes the derived ledger rows with it.
     await deleteInvestmentTxn(t.db, cash.items[0]!.id, { deleteGroup: true }, ctx());
     expect(await t.db.select().from(transaction).where(eq(transaction.id, ledgerA.id))).toEqual([]);

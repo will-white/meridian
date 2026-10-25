@@ -1146,11 +1146,21 @@ function firstValueAfter(ctx: Context, input: ValuationInput, acct: AccountData,
   return null;
 }
 
-/** Flows in the window that the account's end value cannot contain (positions carried from a statement, or lots without cash). */
+/**
+ * Flows in the window that the account's end value cannot contain. With cash inference off,
+ * nothing after the data is carried: every flow in the window (lots basis) or after the statement
+ * (positions basis). With it on, cash flows are carried (`inferCash`) but positions carried from a
+ * statement are the statement's: an in-kind (securities) transfer after it is in the flows and
+ * not in the value, whatever the cash setting. The lots basis carries the shares in its checkpoint.
+ */
 function flowsNotInValue(acct: AccountData, end: AccountValuation, windowStart: IsoDate): bigint {
-  if (end.cashInference !== "off") return 0n;
-  if (end.basis === "lots") return sumBetween(acct.allFlows, windowStart, end.date);
-  if (end.basis === "positions" && end.asOf !== null) return sumBetween(acct.allFlows, end.asOf > windowStart ? end.asOf : windowStart, end.date);
+  if (end.basis === "lots") return end.cashInference === "off" ? sumBetween(acct.allFlows, windowStart, end.date) : 0n;
+  if (end.basis === "positions" && end.asOf !== null) {
+    const after = end.asOf > windowStart ? end.asOf : windowStart;
+    const all = sumBetween(acct.allFlows, after, end.date);
+    if (end.cashInference === "off") return all;
+    return all - sumBetween(acct.cashFlows, after, end.date);
+  }
   return 0n;
 }
 

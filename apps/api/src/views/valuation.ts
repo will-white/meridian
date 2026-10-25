@@ -212,6 +212,8 @@ export function toPeriodChangeView(p: PeriodChangeRecord): PeriodChangeView {
     growthReason: p.growthReason,
     incomeCents: cents(p.incomeCents),
     uncategorizedRows: p.uncategorizedRows,
+    partial: p.partial,
+    missingAccountIds: [...p.missing],
     newAccounts: p.newAccounts.map((a) => ({ id: a.id, name: a.name, openingCents: cents(a.openingCents) })),
   };
 }

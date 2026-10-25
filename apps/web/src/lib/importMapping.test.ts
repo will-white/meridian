@@ -11,6 +11,7 @@ import {
   positionsCommitLabel,
   positionsMappingIssues,
   positionsResultText,
+  previewWarningText,
   reconciliationLine,
   rowOrderText,
   securityBadge,
@@ -175,6 +176,14 @@ describe("actions and rows", () => {
     expect(securityBadge({ ...ref, isNew: false })).toEqual({ text: "guessed", tone: "warn" });
     expect(securityBadge({ ...ref, isNew: false, needsReview: false })).toBeNull();
     expect(securityBadge({ ...ref, isCash: true })).toEqual({ text: "cash", tone: "neutral" });
+  });
+
+  it("spells every preview warning the server emits, including a cash transfer whose direction came from the sign", () => {
+    expect(previewWarningText("direction_from_sign")).toBe("the text names both directions (in and out); the amount's sign decided");
+    expect(previewWarningText("amount_mismatch")).toBe("the amount differs from quantity × price (± fee) by more than 5 cents");
+    expect(previewWarningText("dollar_only")).toBe("value only: the row reports no share count");
+    // An unlabelled code still reads as words, never as a slug.
+    expect(previewWarningText("some_new_code")).toBe("some new code");
   });
 
   it("marks duplicate, changed and hand-edited rows", () => {

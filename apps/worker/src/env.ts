@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
-import type { PriceProviderId } from "@meridian/shared";
+import { parsePriceProviderId, type PriceProviderId } from "@meridian/shared";
 
 /** SECRETS_KEY from the environment, or from a Docker secret file named by SECRETS_KEY_FILE. */
 export function readSecretsKey(env: NodeJS.ProcessEnv = process.env): string {
@@ -43,12 +43,13 @@ function intInRange(value: string | undefined, min: number, max: number, fallbac
 
 // ---- Price feed (prices design §6.4; plan decision 10) ----
 
-/** `PRICE_PROVIDER`: `tiingo` or `none` (the default: no fetch is ever queued, valuations use implied and manual prices). */
+/**
+ * `PRICE_PROVIDER`: `tiingo` or `none` (the default: no fetch is ever queued, valuations use
+ * implied and manual prices), read by the shared `parsePriceProviderId` so the API and the
+ * worker accept exactly the same values.
+ */
 export function readPriceProvider(env: NodeJS.ProcessEnv = process.env): PriceProviderId | null {
-  const raw = (env["PRICE_PROVIDER"] ?? "none").trim().toLowerCase();
-  if (raw === "" || raw === "none") return null;
-  if (raw === "tiingo") return "tiingo";
-  throw new Error(`PRICE_PROVIDER must be "tiingo" or "none", not "${raw}"`);
+  return parsePriceProviderId(env["PRICE_PROVIDER"]);
 }
 
 /** `TIINGO_API_KEY`, or the Docker secret file named by `TIINGO_API_KEY_FILE`; required when the provider is tiingo (boot fails otherwise). */

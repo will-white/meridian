@@ -89,6 +89,8 @@ export function toChangeSummaryView(c: ChangeSummaryRecord): ChangeSummaryView {
     growthReason: c.growthReason,
     incomeCents: cents(c.incomeCents),
     uncategorizedRows: c.uncategorizedRows,
+    partial: c.partial,
+    missingAccountIds: [...c.missingAccountIds],
   };
 }
 

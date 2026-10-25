@@ -70,7 +70,11 @@ export interface PriceUpsertRow {
   date: IsoDate;
   close: Fixed8;
   source: PriceSource;
-  /** Provider rows: the dividend/split-adjusted close; null keeps an earlier value. */
+  /**
+   * Provider rows: the dividend/split-adjusted close; null keeps an earlier provider value. A
+   * manual or implied row never carries a provider's adjusted close forward: the owner's close
+   * is the only value that date has, so an adjusted series falls back rather than mix the two.
+   */
   adjClose?: Fixed8 | null;
   /** Required on provider rows, must be absent otherwise (`price_provider_shape`). */
   provider?: PriceProviderId | null;
@@ -92,8 +96,10 @@ export const PRICE_UPSERT_BATCH = 500;
  * Insert or replace closes under the precedence rule (§3.6): a row is written when nothing
  * exists for (security, date) or the new source's rank is at least the stored one's AND
  * something differs (close, source, an adjusted close that is not just missing, the suspect
- * flag). Duplicate keys within one call collapse to the last given. A re-fetch that changes
- * nothing reports every row `kept` and moves no timestamp.
+ * flag). A provider row without an adjusted close keeps the stored provider one; a manual or
+ * implied row replacing a provider row clears `adj_close` (with `provider` and `fetched_at`,
+ * per `price_provider_shape`). Duplicate keys within one call collapse to the last given. A
+ * re-fetch that changes nothing reports every row `kept` and moves no timestamp.
  */
 export async function upsertPrices(tx: DbOrTx, rows: readonly PriceUpsertRow[]): Promise<UpsertPricesResult> {
   const byKey = new Map<string, PriceUpsertRow>();
@@ -118,7 +124,7 @@ export async function upsertPrices(tx: DbOrTx, rows: readonly PriceUpsertRow[]):
       values ${sql.join(values, sql`, `)}
       on conflict (security_id, date) do update set
         close = excluded.close,
-        adj_close = coalesce(excluded.adj_close, price.adj_close),
+        adj_close = case when excluded.source = 'provider' then coalesce(excluded.adj_close, price.adj_close) else excluded.adj_close end,
         source = excluded.source,
         provider = excluded.provider,
         suspect = excluded.suspect,
@@ -128,7 +134,7 @@ export async function upsertPrices(tx: DbOrTx, rows: readonly PriceUpsertRow[]):
          >= (case price.source when 'manual' then 3 when 'provider' then 2 else 1 end)
         and (price.close is distinct from excluded.close
           or price.source <> excluded.source
-          or price.adj_close is distinct from coalesce(excluded.adj_close, price.adj_close)
+          or price.adj_close is distinct from (case when excluded.source = 'provider' then coalesce(excluded.adj_close, price.adj_close) else excluded.adj_close end)
           or price.suspect <> excluded.suspect)
       returning (xmax = 0) as inserted
     `);

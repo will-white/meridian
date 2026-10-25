@@ -80,6 +80,8 @@ describe.skipIf(!TEST_DATABASE_URL)("investment view routes", () => {
       growthReason: null,
       incomeCents: "32435",
       uncategorizedRows: 1,
+      partial: false,
+      missingAccountIds: [],
     });
     expect(view.accounts.map((a) => a.accountName)).toEqual(["Fidelity Roth IRA", "Vanguard Brokerage"]);
     const [roth, brokerage] = view.accounts;
@@ -423,7 +425,7 @@ describe.skipIf(!TEST_DATABASE_URL)("investment view routes", () => {
   it("GET /investments/accounts/:id/changes (views test 10): price and quantity effects sum to the change; validation and 404", async () => {
     const { view: day } = await get<AccountChangesView>(`/api/investments/accounts/${B}/changes?today=${TODAY}&from=2026-10-12&to=2026-10-13`);
     expect(day).toMatchObject({ accountId: B, accountName: "Vanguard Brokerage", fidelity: "full_history", from: "2026-10-12", to: "2026-10-13", residualEffectCents: "0", flows: [], income: [], warnings: [] });
-    expect(day.summary).toEqual({ from: "2026-10-12", to: "2026-10-13", startCents: "2673200", endCents: "2705200", changeCents: "32000", changeBp: 119, netFlowsCents: "0", growthCents: "32000", growthReason: null, incomeCents: "0", uncategorizedRows: 0 });
+    expect(day.summary).toEqual({ from: "2026-10-12", to: "2026-10-13", startCents: "2673200", endCents: "2705200", changeCents: "32000", changeBp: 119, netFlowsCents: "0", growthCents: "32000", growthReason: null, incomeCents: "0", uncategorizedRows: 0, partial: false, missingAccountIds: [] });
     expect(day.holdings.map((h) => [h.ticker, h.priceEffectCents, h.quantityEffectCents, h.deltaCents])).toEqual([
       ["AAPL", "10000", "0", "10000"],
       ["VTI", "10000", "0", "10000"],

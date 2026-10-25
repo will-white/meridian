@@ -234,6 +234,7 @@ const WARNING_TEXTS: Record<string, string> = {
   price_from_value: "the price was derived from the value",
   quantity_negative: "a negative quantity was read as positive",
   reversal: "a reversal: the sign was kept",
+  direction_from_sign: "the text names both directions (in and out); the amount's sign decided",
 };
 
 export function previewWarningText(code: string): string {

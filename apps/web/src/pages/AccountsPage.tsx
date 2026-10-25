@@ -7,6 +7,7 @@ import { money, shortDate, titleCase } from "../lib/format.js";
 import { lastReconciliationText, positionsMatchText } from "../lib/investmentForms.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
 import { FidelityBadge } from "../components/investments/FidelityBadge.js";
+import { useIsViewer } from "../components/investments/queries.js";
 import "./AccountsPage.css";
 
 const GROUPS: Array<[string, AccountView["type"][]]> = [
@@ -161,6 +162,7 @@ function CashFlowEditor({ account, accounts, pending, error, onSave, onClose }: 
 
 export function AccountsPage() {
   const qc = useQueryClient();
+  const viewer = useIsViewer();
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api<AccountView[]>("/accounts") });
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ["accounts"] });
@@ -269,7 +271,7 @@ export function AccountsPage() {
                         <label className="inline">
                           <input type="checkbox" checked={a.onBudget} onChange={(e) => update.mutate({ id: a.id, onBudget: e.target.checked })} /> on budget
                         </label>
-                        {isInvestmentAccountType(a.type) && a.onBudget && (
+                        {isInvestmentAccountType(a.type) && a.onBudget && !viewer && (
                           <div className="small">
                             <button type="button" className="link small" onClick={() => update.mutate({ id: a.id, onBudget: false })} disabled={update.isPending} title="Investment accounts are usually off budget: their buys and sells are not spending">
                               move off budget?

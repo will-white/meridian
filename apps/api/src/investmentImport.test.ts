@@ -291,6 +291,9 @@ describe.skipIf(!TEST_DATABASE_URL)("positions and trades CSV import routes", ()
     expect(profile.tradesMapping).toMatchObject({ actionMap: { journaled: "skip" }, externalId: { column: "Id" } });
     tradesProfileId = profile.id;
     expect((await A.t.db.db.select().from(job).where(eq(job.type, "investments.income_feed"))).length).toBeGreaterThanOrEqual(1);
+    // The rebuilt lots are Y's value (a lots-basis account): the per-account valuation job is queued (plan decision 9), beside X's from the positions commit.
+    const valuation = await A.t.db.db.select().from(job).where(eq(job.type, "investments.valuation"));
+    expect(valuation.find((j) => j.payload["accountId"] === Y)).toMatchObject({ status: "queued", payload: { reason: "trades", accountId: Y, dedupeKey: `investments.valuation:${Y}` } });
     const txns = (await A.t.call({ method: "GET", url: `/api/investments/txns?accountId=${Y}` })).json() as InvestmentTxnList;
     expect(txns.items).toHaveLength(6);
     // Trades alone also pin the account to the investment types.

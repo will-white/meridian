@@ -58,6 +58,8 @@ describe.skipIf(!TEST_DATABASE_URL)("valuation routes", () => {
       growthReason: null,
       incomeCents: "32435",
       uncategorizedRows: 1,
+      partial: false,
+      missingAccountIds: [],
       newAccounts: [],
     });
     expect(view.accounts.map((a) => a.name)).toEqual(["Fidelity Roth IRA", "Vanguard Brokerage"]);

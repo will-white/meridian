@@ -1,7 +1,7 @@
 import { parseCsv } from "./csv.js";
 import { dayDiff, isIsoDate, type IsoDate } from "./dates.js";
 import { FIXED8_SCALE, roundDivHalfAway, type Fixed8 } from "./decimal.js";
-import type { PriceProviderId } from "./enums.js";
+import { PriceProviderId } from "./enums.js";
 import { lastTradingDayOnOrBefore, previousTradingDay } from "./marketCalendar.js";
 import { localClockInTimeZone } from "./months.js";
 
@@ -32,6 +32,22 @@ export function expectedPriceDate(now: Date): IsoDate {
 /** The close a provider-mode position on date `d` should carry, capped at what the feed can have. */
 export function expectedCloseFor(d: IsoDate, expectedThrough: IsoDate): IsoDate {
   return d > expectedThrough ? expectedThrough : lastTradingDayOnOrBefore(d);
+}
+
+// ---- PRICE_PROVIDER ----
+
+/**
+ * `PRICE_PROVIDER` as the API and the worker both read it (plan decision 10; one parser so a
+ * shared .env value boots both): trimmed and lower-cased; unset, empty or `none` means no
+ * provider (null); any other value but a known provider id is an error naming the value.
+ */
+export function parsePriceProviderId(raw: string | undefined | null): PriceProviderId | null {
+  const value = (raw ?? "").trim().toLowerCase();
+  if (value === "" || value === "none") return null;
+  const parsed = PriceProviderId.safeParse(value);
+  if (parsed.success) return parsed.data;
+  const known = PriceProviderId.options.map((id) => `"${id}"`).join(", ");
+  throw new Error(`PRICE_PROVIDER must be ${known} or "none", not "${(raw ?? "").trim()}"`);
 }
 
 // ---- Provider interface ----

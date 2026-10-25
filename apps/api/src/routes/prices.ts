@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
-import { deleteManualPrice, listPrices, pricesStatus, rebuildImpliedPrices, requestPriceRefresh, securityPriceStatus, setManualPrice, type ListPricesQuery, type PriceFeedConfig } from "@meridian/db";
+import { deleteManualPrice, listPrices, pricesStatus, rebuildImpliedPrices, requestPriceRefresh, requestValuation, securityPriceStatus, setManualPrice, type ListPricesQuery, type PriceFeedConfig } from "@meridian/db";
 import { OkResponse, parseFixed8, PriceHistoryQuery, PriceHistoryResponse, PriceParams, PricesStatusResponse, PriceView, RebuildImpliedPricesResponse, RefreshPricesBody, RefreshPricesResponse, SecurityIdParams, SetPriceBody } from "@meridian/shared";
 import { HttpError } from "../lib/errors.js";
 import { toPriceHistoryResponse, toPricesStatusResponse, toPriceView } from "../views/valuation.js";
@@ -12,7 +12,11 @@ import { priceProviderConfigured } from "./securities.js";
  * owner's manual refresh (every refresh goes through `requestPriceRefresh`), a security's price
  * history, and manual closes at `PUT/DELETE /api/prices/:securityId/:date` (the only place a
  * price is set by hand). `PRICE_PROVIDER` is read from the API config for display and the
- * `not_configured` state; the API never fetches a price itself.
+ * `not_configured` state; the API never fetches a price itself. Every write that changes a
+ * close the valuation chain reads (a manual PUT or DELETE, an implied rebuild) requests the
+ * household-wide `investments.valuation` job (plan decision 9), deduped by its key: with
+ * `PRICE_PROVIDER=none` no fetch run ever chains it, so this is what keeps the computed
+ * balance rows and the net worth in step with a hand-set price.
  */
 
 /** The feed's configuration as the API sees it (optional keys only when set, for exactOptionalPropertyTypes). */
@@ -47,7 +51,11 @@ export async function priceRoutes(app: FastifyInstance): Promise<void> {
 
   /** Owner; idempotent maintenance: one implied row per valued position lacking a provider or manual price. */
   r.post("/prices/rebuild-implied", { schema: { response: { 200: RebuildImpliedPricesResponse } } }, async () => {
-    const result = await app.db.transaction((tx) => rebuildImpliedPrices(tx, {}));
+    const result = await app.db.transaction(async (tx) => {
+      const rebuilt = await rebuildImpliedPrices(tx, {});
+      await requestValuation(tx, { reason: "rebuild_implied" });
+      return rebuilt;
+    });
     return { written: result.written };
   });
 
@@ -64,12 +72,14 @@ export async function priceRoutes(app: FastifyInstance): Promise<void> {
   r.put("/prices/:securityId/:date", { schema: { params: PriceParams, body: SetPriceBody, response: { 200: PriceView } } }, async (request) => {
     const today = await resolveToday(app, request.body.today);
     const record = await setManualPrice(app.db, request.params.securityId, { date: request.params.date, close: parseFixed8(request.body.close) }, { ...auditContext(request), today });
+    await requestValuation(app.db, { reason: "manual_price" });
     return toPriceView(record);
   });
 
   /** Owner; manual rows only (409 `manual_only`); audited; a refill fetch is queued when a provider is configured. */
   r.delete("/prices/:securityId/:date", { schema: { params: PriceParams, response: { 200: OkResponse } } }, async (request) => {
     await deleteManualPrice(app.db, request.params.securityId, request.params.date, auditContext(request), { refill: priceProviderConfigured(app), now: app.now() });
+    await requestValuation(app.db, { reason: "manual_price" });
     return { ok: true as const };
   });
 }

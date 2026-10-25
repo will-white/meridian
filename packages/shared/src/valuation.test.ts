@@ -845,6 +845,38 @@ describe("periodChange", () => {
     expect(pcOff!.accounts[0]).toMatchObject({ growthCents: null, growthReason: "flows_not_in_value" });
   });
 
+  it("an in-kind transfer after the statement is a flow the carried positions cannot contain, whatever the cash inference", () => {
+    // A (positions, auto): the 10-05 cash transfer is carried into V(10-13); 500.00 of shares
+    // received the same day are not (the positions are the 09-30 statement's), so growth is unknown.
+    const inKind = s1();
+    inKind.flows.push(flow(A, "2026-10-05", 50_000n, "securities"));
+    const pc = periodChange(inKind, [A], { period: "custom", end: "2026-10-13", from: "2026-09-30" });
+    expect(pc).toMatchObject({ changeCents: 178_063n, netFlowsCents: 150_000n, growthCents: null, growthReason: "flows_not_in_value" });
+    expect(pc!.accounts[0]).toMatchObject({ netFlowsCents: 150_000n, growthCents: null, growthReason: "flows_not_in_value" });
+
+    // A new account (C, first statement 10-12): shares received on 10-13 are in its flows, not in its carried value.
+    const newAccount = s1();
+    newAccount.flows.push(flow(C, "2026-10-13", 50_000n, "securities"));
+    const week = periodChange(newAccount, [A, B, C], { period: "1w", end: "2026-10-13" });
+    expect(week!.accounts[2]).toMatchObject({ endCents: 202_000n, netFlowsCents: 250_000n, growthCents: null, growthReason: "flows_not_in_value", isNew: true });
+    expect(week).toMatchObject({ netFlowsCents: 250_000n, growthCents: null, growthReason: "flows_not_in_value" });
+
+    // On the lots basis the checkpoint carries the shares, so the same flow stays inside the value.
+    const NEW = "sec-new";
+    const lots: ValuationInput = {
+      expectedThrough: "2026-10-20",
+      accounts: [{ id: A, name: "Brokerage", type: "brokerage", taxTreatment: "taxable", fidelity: "full_history", cashInference: "auto" }],
+      securities: [...securities(), { id: NEW, ticker: "NEW", name: "New Holding", type: "stock", assetClass: "us_stock", priceMode: "provider" }],
+      prices: [price(VTI, "2026-10-01", "100", "implied"), price(NEW, "2026-10-09", "40")],
+      snapshots: [snap(A, VTI, "2026-10-01", "10", "100", 100_000n)],
+      balances: [],
+      flows: [flow(A, "2026-10-07", 20_000n, "securities")],
+      tradePositions: [{ accountId: A, date: "2026-10-05", quantityBySecurity: new Map([[VTI, f("10")], [NEW, f("5")]]) }],
+    };
+    // V(10-01) = 1,000.00; V(10-10) = 10 × 100 + 5 × 40 = 1,200.00; the 200.00 received in kind is the whole change.
+    expect(periodChange(lots, [A], { period: "custom", end: "2026-10-10", from: "2026-10-01" })).toMatchObject({ changeCents: 20_000n, netFlowsCents: 20_000n, growthCents: 0n, growthReason: null });
+  });
+
   it("ytd at 10-13: no account has data at the start, so nothing is measured", () => {
     const pc = periodChange(s1(), [A, B, C], { period: "ytd", end: "2026-10-13" });
     expect(pc).toMatchObject({ from: "2025-12-31", startCents: null, endCents: 7_029_669n, changeCents: null, changeBp: null, netFlowsCents: 0n, growthCents: null, growthReason: null, newAccounts: [] });

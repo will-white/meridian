@@ -270,6 +270,21 @@ describe("classifyTradeAction", () => {
     expect(classifyTradeAction("DIVIDEND RECEIVED SCHWAB US DIVIDEND EQUITY ETF (SCHD) (Cash)", "", { ...row, hasQuantity: false }, defaults)).toBe("dividend");
     expect(classifyTradeAction("YOU SOLD GLOBAL X SUPERDIVIDEND (DIV) (Cash)", "", { hasQuantity: true, amountSign: 1, securityName: "GLOBAL X SUPERDIVIDEND", ticker: "DIV" }, defaults)).toBe("sell");
   });
+  it("reads a trade verb before an income word, so a symbol-only mapping cannot turn a trade into income", () => {
+    const sold = { hasQuantity: true, amountSign: 1 as const };
+    expect(classifyTradeAction("BOUGHT 10 FIDELITY DIVIDEND GROWTH FUND", "", qty, defaults)).toBe("buy");
+    expect(classifyTradeAction("YOU SOLD VANGUARD HIGH DIVIDEND YIELD ETF", "", sold, defaults)).toBe("sell");
+    expect(classifyTradeAction("BOUGHT 10 ISHARES INTEREST RATE HEDGED CORPORATE BOND ETF", "", qty, defaults)).toBe("buy");
+    expect(classifyTradeAction("Buy", "GLOBAL X SUPERDIVIDEND ETF", qty, defaults)).toBe("buy");
+    expect(classifyTradeAction("DIVIDEND RECEIVED VANGUARD HIGH DIVIDEND YIELD ETF", "", noQty, defaults)).toBe("dividend");
+    expect(classifyTradeAction("DIVIDEND RECEIVED", "FIDELITY DIVIDEND GROWTH FUND", noQty, defaults)).toBe("dividend");
+    expect(classifyTradeAction("INTEREST EARNED", "", noQty, defaults)).toBe("interest");
+    expect(classifyTradeAction("QUALIFIED DIVIDEND", "ISHARES INTEREST RATE HEDGED CORPORATE BOND ETF", noQty, defaults)).toBe("dividend");
+    // A trade verb without shares is not a trade: the income word still decides.
+    expect(classifyTradeAction("DIVIDEND RECEIVED", "ON SHARES YOU BOUGHT 10/01", noQty, defaults)).toBe("dividend");
+    // Reinvestment keeps the first word, before either.
+    expect(classifyTradeAction("REINVESTMENT", "FIDELITY DIVIDEND GROWTH FUND BOUGHT", qty, defaults)).toBe("reinvest");
+  });
   it("lets the amount's sign decide a text that names both cash directions", () => {
     const out = { hasQuantity: false, amountSign: -1 as const };
     const inn = { hasQuantity: false, amountSign: 1 as const };

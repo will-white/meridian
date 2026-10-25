@@ -64,7 +64,10 @@ import {
  *   flow (R2), valued `units × close(to)` (R1); adjusted closes when the series says so.
  * - **Household total**: values summed per date; a flow is internal only when its paired
  *   counterpart leg is itself an active flow of a selected account; `true_twr` when every
- *   selected account is full, else `modified_dietz` over the non-full accounts' valuation dates.
+ *   account in the total is full, else `modified_dietz` over the non-full accounts' valuation
+ *   dates. An account with no valuation on or before `to` is left out of the total's values and
+ *   flows (`excludedAccountIds`, a `no_valuations` warning per account) instead of being read as
+ *   a loss of its contributions.
  */
 
 // ---- Prices ----
@@ -851,6 +854,12 @@ export interface TotalPerformance extends PerformanceBlock {
   /** True when a selected account is not full history (its gains are not in the totals). */
   partialGains: boolean;
   excludedInternalFlows: number;
+  /**
+   * Selected accounts with no valuation on or before `to` (their own block says `no_valuations`):
+   * valued 0 on every date, they are left out of the total's values and flows rather than
+   * charged as a loss, and each is reported as a `no_valuations` warning on the total.
+   */
+  excludedAccountIds: string[];
 }
 
 export interface PerformanceResult {
@@ -1201,9 +1210,15 @@ export function computePerformance(input: PerformanceInput): PerformanceResult {
   const contexts = input.accounts.map((acct) => performAccount(input, acct));
   const accounts = contexts.map((c) => c.result);
 
-  // Flows of the total: every account's in-window flows; a pair whose two legs are both active
-  // flows of selected accounts is internal to the total (both legs dropped).
-  const totalFlows: FlowResult[] = accounts.flatMap((a) => a.flows.map((f) => ({ ...f })));
+  // An account with no valuation on or before `to` is valued 0 on every date: folding its flows
+  // into the total would charge them as a pure loss, so it is left out of the total's values and
+  // flows (its own block still says `no_valuations`) and named on the total.
+  const included = contexts.filter((c) => !c.noValuations);
+  const excludedAccountIds = contexts.filter((c) => c.noValuations).map((c) => c.result.accountId);
+
+  // Flows of the total: every included account's in-window flows; a pair whose two legs are both
+  // active flows of selected accounts is internal to the total (both legs dropped).
+  const totalFlows: FlowResult[] = included.flatMap((c) => c.result.flows.map((f) => ({ ...f })));
   const paired = totalFlows.filter(
     (f) =>
       !f.internal &&
@@ -1220,12 +1235,16 @@ export function computePerformance(input: PerformanceInput): PerformanceResult {
   totalFlows.sort(compareFlows);
 
   const totalWarnings: EngineWarning[] = [];
-  const allFull = contexts.every((c) => c.result.fidelity === "full_history");
-  const everyFailed = contexts.length === 0 || contexts.every((c) => c.noValuations);
+  for (const accountId of excludedAccountIds) {
+    totalWarnings.push(warning("no_valuations", { accountId, date: to, detail: `excluded from the total: no valuation on or before ${to}` }));
+  }
+  // The method follows the accounts that are in the total; `partialGains` still speaks of the selection.
+  const allFull = included.every((c) => c.result.fidelity === "full_history");
+  const everyFailed = included.length === 0;
   const valueT = memoValueAt((date) => {
     let valueCents = 0n;
     let carried = false;
-    for (const c of contexts) {
+    for (const c of included) {
       const v = c.valueAt(date);
       valueCents += v.valueCents;
       carried ||= v.carried;
@@ -1235,7 +1254,7 @@ export function computePerformance(input: PerformanceInput): PerformanceResult {
   let chain: ChainResult;
   if (everyFailed) chain = { ...failedReturn("no_valuations", to), subPeriods: [], warnings: [] };
   else if (allFull) chain = trueTwr(from, to, totalFlows, (d) => valueT(d).valueCents);
-  else chain = modifiedDietzOver(from, to, totalFlows, contexts.flatMap((c) => c.boundaries), valueT);
+  else chain = modifiedDietzOver(from, to, totalFlows, included.flatMap((c) => c.boundaries), valueT);
   totalWarnings.push(...chain.warnings);
   const failed = chainWarning(chain);
   if (failed) totalWarnings.push(failed);
@@ -1256,8 +1275,9 @@ export function computePerformance(input: PerformanceInput): PerformanceResult {
   const fullAccounts = accounts.filter((a) => a.fidelity === "full_history");
   const total: TotalPerformance = {
     accountIds: accounts.map((a) => a.accountId),
-    partialGains: !allFull,
+    partialGains: !contexts.every((c) => c.result.fidelity === "full_history"),
     excludedInternalFlows,
+    excludedAccountIds,
     method: contexts.length === 0 ? null : allFull ? "true_twr" : "modified_dietz",
     startValueCents,
     endValueCents,
