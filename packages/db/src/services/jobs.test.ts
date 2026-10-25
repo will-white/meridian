@@ -52,6 +52,25 @@ describe.skipIf(!TEST_DATABASE_URL)("job queue", () => {
     expect(row!.lastError).toBe("boom again");
   });
 
+  it("dedupes on payload.dedupeKey when present, ignoring the connection (Phase 3)", async () => {
+    const nightly = await enqueueJob(t.db, "prices.fetch", { reason: "nightly", dedupeKey: "prices:nightly:2026-10-13", connectionId: "c1" }, { dedupe: true });
+    expect(nightly.created).toBe(true);
+    const sameKey = await enqueueJob(t.db, "prices.fetch", { reason: "nightly", dedupeKey: "prices:nightly:2026-10-13", connectionId: "c2" }, { dedupe: true });
+    expect(sameKey).toMatchObject({ id: nightly.id, created: false });
+    const otherKey = await enqueueJob(t.db, "prices.fetch", { reason: "continue", dedupeKey: "prices:continue:root" }, { dedupe: true });
+    expect(otherKey.created).toBe(true);
+    expect(otherKey.id).not.toBe(nightly.id);
+    // Without a key the Phase 1 rule holds: one queued job per type (and connection).
+    const detect = await enqueueJob(t.db, "recurring.detect", { reason: "ledger" }, { dedupe: true });
+    const detectAgain = await enqueueJob(t.db, "recurring.detect", { reason: "sync" }, { dedupe: true });
+    expect(detectAgain).toMatchObject({ id: detect.id, created: false });
+    // A keyed request never matches an unkeyed job of the same type, nor the other way round.
+    const unkeyed = await enqueueJob(t.db, "prices.fetch", { reason: "manual" }, { dedupe: true });
+    expect(unkeyed.created).toBe(false);
+    expect([nightly.id, otherKey.id]).toContain(unkeyed.id);
+    for (const j of [nightly, otherKey, detect]) await completeJob(t.db, j.id);
+  });
+
   it("requeues stale running jobs", async () => {
     const j = await enqueueJob(t.db, "rules.run", {});
     await claimNextJob(t.db, "w2");

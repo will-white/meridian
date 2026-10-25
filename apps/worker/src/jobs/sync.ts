@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
-import { applyAccountSet, connection, enqueueJob, importLog, type JobRow } from "@meridian/db";
+import { applyAccountSet, connection, enqueueJob, importLog, requestPriceRefresh, type HoldingsStats, type JobRow } from "@meridian/db";
 import { addDays, decryptSecret, toIsoDate, type IsoDate } from "@meridian/shared";
+import { priceConfigOf } from "../env.js";
 import { fetchAccounts, SimplefinError } from "../simplefin/client.js";
 import type { JobContext } from "./context.js";
 
@@ -14,6 +15,9 @@ export interface SyncOutcome {
   removedPending: number;
   transfersPaired: number;
   errors: number;
+  /** Phase 3: holdings written from `account.holdings` / `extra`. */
+  holdings: HoldingsStats;
+  investmentTxnsLinked: number;
 }
 
 /** Compute the overlapping window: 7 days before the last high-water mark, or 93 days back the first time. */
@@ -21,7 +25,13 @@ export function syncWindowStart(syncedThrough: IsoDate | null, today: IsoDate, c
   return syncedThrough ? addDays(syncedThrough, -config.overlapDays) : addDays(today, -config.initialWindowDays);
 }
 
-/** GET /accounts for one connection, store the raw payload, apply it, update the connection's status. */
+/**
+ * GET /accounts for one connection, store the raw payload, apply it (accounts, balances,
+ * holdings, transactions, transfers, investment-row links), update the connection's
+ * status, then queue the follow-ups: a recurring run after every full sync, a holdings
+ * price fetch when a security was created (only with a provider configured), and the income
+ * feed when a synced investment account has one (plan decision 18).
+ */
 export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutcome> {
   const connectionId = String(job.payload["connectionId"] ?? "");
   const balancesOnly = job.type === "simplefin.balances" || job.payload["balancesOnly"] === true;
@@ -46,7 +56,7 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
     // Raw payload first, so a crash while applying never loses the data.
     await ctx.db.update(importLog).set({ rawPayload: result.raw as Record<string, unknown> }).where(eq(importLog.id, importLogId));
 
-    const applyOptions: Parameters<typeof applyAccountSet>[1] = { connectionId, importLogId, accountSet: result.set, balancesOnly };
+    const applyOptions: Parameters<typeof applyAccountSet>[1] = { connectionId, importLogId, accountSet: result.set, balancesOnly, now: ctx.now() };
     if (windowStart) applyOptions.windowStart = windowStart;
     const applied = await applyAccountSet(ctx.db, applyOptions);
 
@@ -68,6 +78,8 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
       accountsCreated: applied.accountsCreated,
       ...applied.stats,
       transfersPaired: applied.transfersPaired,
+      ...applied.holdings,
+      investmentTxnsLinked: applied.investmentTxnsLinked,
     };
     await ctx.db
       .update(importLog)
@@ -76,6 +88,14 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
 
     // Every successful full sync is followed by one recurring run (suggestions, matcher, alerts); balances-only refreshes carry no transactions.
     if (!balancesOnly) await enqueueJob(ctx.db, "recurring.detect", { reason: "sync" }, { dedupe: true });
+    // A security the feed introduced needs its closes (plan decision 10); with PRICE_PROVIDER=none nothing is queued.
+    if (applied.holdings.securitiesCreated > 0 && priceConfigOf(ctx.config).provider !== null) {
+      await requestPriceRefresh(ctx.db, { reason: "holdings", now: ctx.now() });
+    }
+    // The income feed links or creates the plan's rows for the dividends this sync may have delivered (plan decision 13).
+    if (!balancesOnly && applied.incomeFeedAccounts > 0) {
+      await enqueueJob(ctx.db, "investments.income_feed", { reason: "sync", dedupeKey: "investments.income_feed" }, { dedupe: true });
+    }
 
     const outcome: SyncOutcome = {
       importLogId,
@@ -86,6 +106,8 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
       removedPending: applied.stats.removedPending,
       transfersPaired: applied.transfersPaired,
       errors: applied.errors.length,
+      holdings: applied.holdings,
+      investmentTxnsLinked: applied.investmentTxnsLinked,
     };
     if (windowStart) outcome.windowStart = windowStart;
     return outcome;

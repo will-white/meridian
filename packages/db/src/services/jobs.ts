@@ -8,7 +8,11 @@ export type JobType = JobRow["type"];
 export interface EnqueueOptions {
   runAt?: Date;
   maxAttempts?: number;
-  /** Skip when a queued or running job of the same type and connection already exists. */
+  /**
+   * Skip when a queued or running job of the same type already exists. The match is on
+   * `payload.dedupeKey` when the payload carries one (Phase 3: a continuation and a nightly
+   * run of `prices.fetch` never swallow each other), else on `payload.connectionId` (Phase 1).
+   */
   dedupe?: boolean;
 }
 
@@ -20,6 +24,7 @@ export async function enqueueJob(
   options: EnqueueOptions = {},
 ): Promise<JobRow & { created: boolean }> {
   if (options.dedupe) {
+    const dedupeKey = typeof payload["dedupeKey"] === "string" ? payload["dedupeKey"] : undefined;
     const connectionId = typeof payload["connectionId"] === "string" ? payload["connectionId"] : undefined;
     const [existing] = await tx
       .select()
@@ -28,7 +33,11 @@ export async function enqueueJob(
         and(
           eq(job.type, type),
           inArray(job.status, ["queued", "running"]),
-          connectionId ? sql`${job.payload}->>'connectionId' = ${connectionId}` : undefined,
+          dedupeKey !== undefined
+            ? sql`${job.payload}->>'dedupeKey' = ${dedupeKey}`
+            : connectionId
+              ? sql`${job.payload}->>'connectionId' = ${connectionId}`
+              : undefined,
         ),
       )
       .limit(1);

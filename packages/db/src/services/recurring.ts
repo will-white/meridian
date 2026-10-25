@@ -38,6 +38,7 @@ import type { Db, DbOrTx } from "../index.js";
 import { account, alert, category, payee, recurring, transaction } from "../schema/index.js";
 import { PlanError, writeAudit, type AuditContext } from "./audit.js";
 import { resolvePayee } from "./payees.js";
+import { notInvestmentIncomeRow } from "./transfers.js";
 
 /**
  * Recurring persistence: the detector run, the matcher, the per-item refresh of the
@@ -211,7 +212,17 @@ export async function loadDetectionInput(db: DbOrTx, today: IsoDate): Promise<De
   const rows = await db
     .select({ id: transaction.id, accountId: transaction.accountId, payeeId: transaction.payeeId, date: transaction.date, amountCents: transaction.amountCents })
     .from(transaction)
-    .where(and(isNotNull(transaction.payeeId), eq(transaction.isTransfer, false), eq(transaction.pending, false), gte(transaction.date, from), lte(transaction.date, today)))
+    .where(
+      and(
+        isNotNull(transaction.payeeId),
+        eq(transaction.isTransfer, false),
+        eq(transaction.pending, false),
+        gte(transaction.date, from),
+        lte(transaction.date, today),
+        // Phase 3: feed rows and rows linked to income investment rows never form a series (views design §3.13).
+        notInvestmentIncomeRow(db),
+      ),
+    )
     .orderBy(asc(transaction.payeeId), asc(transaction.date), asc(transaction.id));
 
   const groups = new Map<string, ChargeLike[]>();
@@ -514,6 +525,7 @@ async function matchOne(tx: DbOrTx, item: StoredRecurring, siblings: readonly Si
         sign < 0n ? lt(transaction.amountCents, 0n) : gt(transaction.amountCents, 0n),
         dateFilter,
         restrictToAccount ? (item.accountId ? eq(transaction.accountId, item.accountId) : sql`false`) : undefined,
+        notInvestmentIncomeRow(tx),
       ),
     )
     .orderBy(asc(transaction.date), asc(transaction.id));

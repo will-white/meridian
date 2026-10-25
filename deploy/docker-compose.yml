@@ -6,6 +6,11 @@ name: meridian
 
 # The app containers assemble their database URL from POSTGRES_* (env file) and
 # MERIDIAN_DB_HOST, so nothing here depends on compose variable interpolation.
+# The shared env file also carries the Phase 3 price feed: PRICE_PROVIDER reaches both
+# containers (the API shows the feed's state, the worker runs it) and TIINGO_API_KEY (or
+# TIINGO_API_KEY_FILE) is used by the worker only. Tiingo's free terms must be confirmed at
+# signup (see .env.example). To keep the key out of .env, mount it as a Docker secret instead:
+# uncomment the `secrets:` blocks below and set TIINGO_API_KEY_FILE=/run/secrets/tiingo_api_key.
 x-app-env: &app-env
   env_file: ../.env
   environment:
@@ -53,6 +58,10 @@ services:
       dockerfile: apps/worker/Dockerfile
     restart: unless-stopped
     <<: *app-env
+    # The worker is the only container that talks to the outside world: SimpleFIN and, with
+    # PRICE_PROVIDER=tiingo and TIINGO_API_KEY (or TIINGO_API_KEY_FILE) set in ../.env, Tiingo.
+    # secrets:
+    #   - tiingo_api_key
     depends_on:
       db:
         condition: service_healthy
@@ -86,6 +95,10 @@ services:
       db:
         condition: service_healthy
     entrypoint: ["/bin/sh", "/backup.sh", "--nightly"]
+
+# secrets:
+#   tiingo_api_key:
+#     file: ./secrets/tiingo_api_key
 
 volumes:
   pg_data:

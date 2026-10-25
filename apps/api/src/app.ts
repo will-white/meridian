@@ -20,9 +20,12 @@ import { connectionRoutes } from "./routes/connections.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { goalRoutes } from "./routes/goals.js";
 import { importRoutes } from "./routes/import.js";
+import { investmentTxnRoutes } from "./routes/investmentTxns.js";
+import { performanceRoutes } from "./routes/performance.js";
 import { planRoutes } from "./routes/plan.js";
 import { recurringRoutes } from "./routes/recurring.js";
 import { ruleRoutes } from "./routes/rules.js";
+import { securityRoutes } from "./routes/securities.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { transactionRoutes } from "./routes/transactions.js";
 
@@ -83,6 +86,10 @@ export async function buildApp({ db, config, logger, now }: BuildAppOptions) {
       await api.register(cashflowRoutes);
       await api.register(dashboardRoutes);
       await api.register(auditRoutes);
+      // Phase 3
+      await api.register(securityRoutes);
+      await api.register(investmentTxnRoutes);
+      await api.register(performanceRoutes);
     },
     { prefix: "/api" },
   );

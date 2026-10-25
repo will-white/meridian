@@ -19,3 +19,8 @@ export * from "./decimal.js";
 export * from "./investments.js";
 export * from "./marketCalendar.js";
 export * from "./prices.js";
+export * from "./lots.js";
+export * from "./simplefinHoldings.js";
+export * from "./investmentsCsv.js";
+export * from "./valuation.js";
+export * from "./performance.js";

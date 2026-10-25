@@ -1,7 +1,13 @@
 import { claimNextJob, completeJob, failJob, requeueStaleJobs } from "@meridian/db";
 import { dispatchJob } from "./jobs/index.js";
 import type { JobContext } from "./jobs/context.js";
-import { SimplefinError } from "./simplefin/client.js";
+
+/** An error that marks itself as not worth retrying (`SimplefinError`, `PriceFeedError`, or any `{ permanent: true }`). */
+export function isPermanentError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const permanent = (err as { permanent?: unknown }).permanent;
+  return typeof permanent === "boolean" && permanent;
+}
 
 /** Drain the queue once: claim and run jobs until none are due. Returns how many ran. */
 export async function drainQueue(ctx: JobContext): Promise<number> {
@@ -14,10 +20,11 @@ export async function drainQueue(ctx: JobContext): Promise<number> {
     try {
       const result = await dispatchJob(ctx, job);
       await completeJob(ctx.db, job.id);
-      ctx.log.info(`[job] ${job.type} ${job.id} done in ${Date.now() - started}ms ${result ? JSON.stringify(result) : ""}`);
+      ctx.log.info(`[job] ${job.type} ${job.id} done in ${Date.now() - started}ms ${result ? JSON.stringify(result, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v)) : ""}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const retry = !(err instanceof SimplefinError && err.permanent);
+      // Plan decision 18: retry unless the error says retrying cannot help.
+      const retry = !isPermanentError(err);
       await failJob(ctx.db, job, message, { retry });
       ctx.log.error(`[job] ${job.type} ${job.id} failed (attempt ${job.attempts}/${job.maxAttempts}${retry ? "" : ", no retry"}): ${message}`);
     }

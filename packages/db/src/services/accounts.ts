@@ -1,6 +1,7 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   defaultTaxTreatment,
+  isInvestmentAccountType,
   parseDecimalToCents,
   sanitizeText,
   unixToIsoDate,
@@ -9,6 +10,15 @@ import {
 } from "@meridian/shared";
 import type { DbOrTx } from "../index.js";
 import { account, balanceSnapshot } from "../schema/index.js";
+
+/**
+ * Phase 3 (plan decision 15): investment-type accounts start off budget, so a brokerage's
+ * buys never show as uncategorized spending; every other type starts on budget. Applied by
+ * both creation paths (the SimpleFIN upsert here and `POST /api/accounts`), never by DDL.
+ */
+export function defaultOnBudget(type: AccountType): boolean {
+  return !isInvestmentAccountType(type);
+}
 
 /** SimpleFIN has no account type; guess from the name and let the user correct it. */
 export function guessAccountType(name: string): AccountType {
@@ -63,6 +73,7 @@ export async function upsertSimplefinAccount(tx: DbOrTx, connectionId: string, s
         type,
         taxTreatment: defaultTaxTreatment[type],
         currency: sanitizeText(sf.currency, 10) || "USD",
+        onBudget: defaultOnBudget(type),
         balanceCents,
         availableCents,
         balanceDate,
@@ -72,10 +83,15 @@ export async function upsertSimplefinAccount(tx: DbOrTx, connectionId: string, s
     created = true;
   }
 
+  // Phase 3 (seams C41): a hand-checked statement balance (`manual`) survives the next sync.
   await tx
     .insert(balanceSnapshot)
     .values({ accountId: id, date: balanceDate, balanceCents, availableCents, source: "simplefin" })
-    .onConflictDoUpdate({ target: [balanceSnapshot.accountId, balanceSnapshot.date], set: { balanceCents, availableCents, source: "simplefin" } });
+    .onConflictDoUpdate({
+      target: [balanceSnapshot.accountId, balanceSnapshot.date],
+      set: { balanceCents, availableCents, source: "simplefin" },
+      setWhere: sql`${balanceSnapshot.source} <> 'manual'`,
+    });
 
   return { id, created };
 }

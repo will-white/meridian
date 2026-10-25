@@ -1,14 +1,31 @@
-import { and, gte, inArray, isNull, lte, or, eq } from "drizzle-orm";
+import { and, gte, inArray, isNull, lte, ne, notExists, or, eq, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { addDays, pairTransfers, type IsoDate } from "@meridian/shared";
 import type { DbOrTx } from "../index.js";
-import { transaction } from "../schema/index.js";
+import { investmentTxn, transaction } from "../schema/index.js";
 
 export interface PairTransfersInDbOptions {
   /** Only consider rows dated on or after this (minus the pairing window). */
   since?: IsoDate;
   until?: IsoDate;
   maxDays?: number;
+}
+
+/**
+ * Phase 3 (plan decision 13, views design §3.13): synthetic income-feed rows and ledger rows
+ * linked to an income `investment_txn` (dividend, interest, reinvest, fee) are never pairing
+ * or recurring-detection candidates; a row linked to a cash `transfer` still is.
+ */
+export function notInvestmentIncomeRow(tx: DbOrTx) {
+  return and(
+    ne(transaction.source, "investment"),
+    notExists(
+      tx
+        .select({ one: sql`1` })
+        .from(investmentTxn)
+        .where(and(eq(investmentTxn.ledgerTransactionId, transaction.id), inArray(investmentTxn.type, ["dividend", "interest", "reinvest", "fee"]))),
+    ),
+  );
 }
 
 /**
@@ -25,6 +42,7 @@ export async function pairTransfersInDb(tx: DbOrTx, options: PairTransfersInDbOp
         isNull(transaction.transferPairId),
         options.since ? gte(transaction.date, addDays(options.since, -maxDays)) : undefined,
         options.until ? lte(transaction.date, addDays(options.until, maxDays)) : undefined,
+        notInvestmentIncomeRow(tx),
       ),
     );
   const pairs = pairTransfers(rows, { maxDays });

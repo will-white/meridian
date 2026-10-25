@@ -1,7 +1,7 @@
 import { and, eq, gte, inArray, notInArray } from "drizzle-orm";
-import { addDays, evaluateRules, matchPendingToPosted, normalizePayee, type IsoDate, type RuleLike } from "@meridian/shared";
-import type { Db } from "../index.js";
-import { transaction } from "../schema/index.js";
+import { addDays, classifyInvestmentInflow, evaluateRules, matchPendingToPosted, normalizePayee, type AccountType, type IsoDate, type RuleLike } from "@meridian/shared";
+import type { DbOrTx } from "../index.js";
+import { account, transaction } from "../schema/index.js";
 import { PayeeCache } from "./payees.js";
 import { addTransactionTags } from "./tags.js";
 import { applyRulesToRow } from "./rules.js";
@@ -28,6 +28,12 @@ export interface IngestOptions {
    */
   windowStart?: IsoDate;
   rules: readonly RuleLike[];
+  /**
+   * Phase 3: the account's type, for the contribution classifier (an inflow into an
+   * investment-type account that reads like a contribution is an unpaired transfer).
+   * Looked up once from the account row when the caller does not pass it.
+   */
+  accountType?: AccountType;
 }
 
 export interface IngestStats {
@@ -52,10 +58,24 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
  * - A posted item with a new id replaces a matching local pending row in place (same row id,
  *   user edits kept).
  * - New rows get a normalized payee, the rules, and the payee's default category.
+ * - Phase 3 (plan decision 15): after the rules, when no rule set a transfer or a category,
+ *   an inflow into an investment-type account that reads like a contribution is inserted
+ *   with `is_transfer = true` and no category (`classifyInvestmentInflow`); cross-account
+ *   pairing may still pair it later.
  * - Pending rows the feed stopped returning are removed (SimpleFIN only).
+ *
+ * Takes a db or a transaction handle (a nested call becomes a savepoint), so the trades
+ * importer can write the cash rows of a file inside its own transaction.
  */
-export async function ingestTransactions(db: Db, incoming: readonly IncomingTransaction[], options: IngestOptions): Promise<IngestStats> {
+export async function ingestTransactions(db: DbOrTx, incoming: readonly IncomingTransaction[], options: IngestOptions): Promise<IngestStats> {
   const stats: IngestStats = { created: 0, updated: 0, replacedPending: 0, removedPending: 0, skipped: 0, insertedIds: [] };
+  let accountType = options.accountType;
+  if (accountType === undefined) {
+    const [row] = await db.select({ type: account.type }).from(account).where(eq(account.id, options.accountId));
+    if (!row) throw new Error(`Account ${options.accountId} not found`);
+    accountType = row.type;
+  }
+  const resolvedAccountType = accountType;
 
   // Last occurrence wins when a feed repeats an id inside one payload.
   const byId = new Map<string, IncomingTransaction>();
@@ -174,7 +194,12 @@ export async function ingestTransactions(db: Db, incoming: readonly IncomingTran
         date: item.date,
       });
       const p = await payees.resolve(outcome.payee ?? baseName);
-      const categoryId = outcome.categoryId !== undefined ? outcome.categoryId : p.defaultCategoryId;
+      // The contribution classifier runs after the rules and only when no rule decided the row.
+      const contribution =
+        outcome.transfer === undefined && outcome.categoryId === undefined
+          ? classifyInvestmentInflow(resolvedAccountType, item.payee?.trim() || item.description, item.amountCents)
+          : null;
+      const categoryId = contribution !== null ? null : outcome.categoryId !== undefined ? outcome.categoryId : p.defaultCategoryId;
       const [inserted] = await tx
         .insert(transaction)
         .values({
@@ -190,7 +215,7 @@ export async function ingestTransactions(db: Db, incoming: readonly IncomingTran
           memo: item.memo ?? null,
           categoryId: categoryId ?? null,
           pending: item.pending,
-          isTransfer: outcome.transfer ?? false,
+          isTransfer: contribution !== null ? true : (outcome.transfer ?? false),
         })
         .onConflictDoNothing()
         .returning({ id: transaction.id });

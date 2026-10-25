@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, ilike, isNull, lte, or, sql } from "drizzle-orm";
 import type { IsoDate } from "@meridian/shared";
 import type { Db, DbOrTx } from "../index.js";
-import { account, category, payee, savingsGoal, transaction } from "../schema/index.js";
+import { account, category, householdSetting, payee, savingsGoal, transaction } from "../schema/index.js";
 import { resolvePayee } from "./payees.js";
 import { setTransactionTags, tagsForTransactions } from "./tags.js";
 import { unpairTransfer } from "./transfers.js";
@@ -217,12 +217,23 @@ export async function createManualTransaction(
   return (await getTransaction(db, id))!;
 }
 
-/** Count of transactions that have a category or are flagged (used by the UI summary). */
+/**
+ * Count of uncategorized, non-transfer rows (the dashboard's review count). Phase 3 (plan
+ * decision 15): rows of off-budget accounts count only in the household's investment income
+ * category, so a brokerage's buys never ask to be categorized.
+ */
 export async function countUncategorized(db: DbOrTx): Promise<number> {
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(transaction)
-    .where(and(isNull(transaction.categoryId), eq(transaction.isTransfer, false)));
+    .innerJoin(account, eq(account.id, transaction.accountId))
+    .where(
+      and(
+        isNull(transaction.categoryId),
+        eq(transaction.isTransfer, false),
+        sql`(${account.onBudget} = true or ${transaction.categoryId} = (select ${householdSetting.investmentIncomeCategoryId} from ${householdSetting} limit 1))`,
+      ),
+    );
   return row?.n ?? 0;
 }
 

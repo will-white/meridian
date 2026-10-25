@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import type { PriceProviderId } from "@meridian/shared";
 
 /** SECRETS_KEY from the environment, or from a Docker secret file named by SECRETS_KEY_FILE. */
 export function readSecretsKey(env: NodeJS.ProcessEnv = process.env): string {
@@ -37,7 +38,19 @@ const Env = z.object({
   /** Directory with the built web app; served by the API in production. */
   WEB_DIST_DIR: z.string().optional(),
   SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+  /** Phase 3 price feed, read here for display and the `not_configured` state only; the API never reads the key. */
+  PRICE_PROVIDER: z.enum(["tiingo", "none"]).default("none"),
+  PRICE_FETCH_HOUR: z.coerce.number().int().min(0).max(23).default(18),
+  PRICE_CATCHUP_HOUR: z.string().default("6"),
 });
+
+/** `PRICE_CATCHUP_HOUR`: an hour 0..23, or `off` (null) when the morning catch-up is disabled. */
+export function parseCatchupHour(value: string | undefined, fallback = 6): number | null {
+  const raw = (value ?? "").trim().toLowerCase();
+  if (raw === "off" || raw === "none" || raw === "false") return null;
+  const n = Number(raw);
+  return raw !== "" && Number.isInteger(n) && n >= 0 && n <= 23 ? n : fallback;
+}
 
 export interface ApiConfig {
   nodeEnv: "development" | "test" | "production";
@@ -48,6 +61,16 @@ export interface ApiConfig {
   webDistDir: string | undefined;
   sessionTtlDays: number;
   secureCookies: boolean;
+  /**
+   * Phase 3 price feed as the worker sees it (`PRICE_PROVIDER`; null = `none`), for the Prices
+   * page and the dashboard's feed block. loadConfig always sets these; a hand-built config
+   * without them means no provider (the routes read `config.priceProvider ?? null`).
+   */
+  priceProvider?: PriceProviderId | null;
+  /** Household-local hour of the nightly fetch (display only). */
+  priceFetchHour?: number;
+  /** Household-local hour of the conditional catch-up; null = off (display only). */
+  priceCatchupHour?: number | null;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
@@ -62,5 +85,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     webDistDir: parsed.WEB_DIST_DIR ?? (production ? path.resolve(process.cwd(), "apps/web/dist") : undefined),
     sessionTtlDays: parsed.SESSION_TTL_DAYS,
     secureCookies: production,
+    priceProvider: parsed.PRICE_PROVIDER === "none" ? null : parsed.PRICE_PROVIDER,
+    priceFetchHour: parsed.PRICE_FETCH_HOUR,
+    priceCatchupHour: parseCatchupHour(parsed.PRICE_CATCHUP_HOUR),
   };
 }

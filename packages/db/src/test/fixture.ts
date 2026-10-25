@@ -16,6 +16,20 @@ export const ACCOUNTS = {
   card: { id: "ACT-CARD-001", name: "Sapphire Visa", balance: "-842.19", org: "Example Card Services" },
 } as const;
 
+/**
+ * Phase 3: the optional fourth account, a brokerage whose Bridge puts its positions under
+ * `extra.holdings` (imports design §3.3 example A). Rendered only when `renderAccountSet` is
+ * asked for it, so the Phase 1 and 2 truth (three accounts, their transactions) is unchanged.
+ * Its balance is the sum of the example's two positions (3 094.40 + 150.25).
+ */
+export const BROKERAGE_ACCOUNT = { id: "ACT-BRK-001", name: "Example Brokerage", balance: "3244.65", org: "Example Brokerage Services" } as const;
+
+/** Imports design §3.3 worked example A: strings under `extra.holdings`, one ETF and a cash line. */
+export const HOLDINGS_EXAMPLE_A: Array<Record<string, unknown>> = [
+  { symbol: "VTI", description: "Vanguard Total Stock Market ETF", quantity: "12.345", price: "250.66", market_value: "3,094.40", cost_basis: "2500.00" },
+  { symbol: "CASH", market_value: "150.25" },
+];
+
 export interface TruthEvent {
   account: keyof typeof ACCOUNTS;
   /** Transaction date. */
@@ -126,6 +140,15 @@ export function buildTruth(end: IsoDate = FIXTURE_END): TruthEvent[] {
   return events;
 }
 
+export interface BrokerageOptions {
+  /** The `extra` object of the account; default `{ holdings: HOLDINGS_EXAMPLE_A }`. */
+  extra?: Record<string, unknown>;
+  /** The Bridge's own `holdings` array, when the institution uses it instead of `extra`. */
+  holdings?: Array<Record<string, unknown>>;
+  balance?: string;
+  transactions?: SimplefinAccountSet["accounts"][number]["transactions"];
+}
+
 export interface RenderOptions {
   /** Window requested with start-date (inclusive). */
   start: IsoDate;
@@ -133,6 +156,10 @@ export interface RenderOptions {
   asOf: IsoDate;
   /** Bank balance date and the posting time of day. */
   truth?: TruthEvent[];
+  /** Phase 3: append `BROKERAGE_ACCOUNT` (`true` = example A holdings under `extra.holdings`). */
+  brokerage?: boolean | BrokerageOptions;
+  /** Phase 3: further accounts appended as given (a second investment account with an unreadable container, say). */
+  extraAccounts?: SimplefinAccountSet["accounts"];
 }
 
 function unix(date: IsoDate, hour = 12): number {
@@ -174,23 +201,37 @@ export function renderAccountSet(options: RenderOptions): SimplefinAccountSet {
     }
   }
 
-  return {
-    errors: [],
-    errlist: [],
-    accounts: (Object.keys(ACCOUNTS) as Array<keyof typeof ACCOUNTS>).map((key) => {
-      const a = ACCOUNTS[key];
-      return {
-        org: { domain: "example.test", name: a.org, "sfin-url": "https://bridge.example.test/simplefin" },
-        id: a.id,
-        name: a.name,
-        currency: "USD",
-        balance: a.balance,
-        "available-balance": a.balance,
-        "balance-date": unix(options.asOf, 6),
-        transactions: byAccount.get(key)!,
-      };
-    }),
-  };
+  const accounts: SimplefinAccountSet["accounts"] = (Object.keys(ACCOUNTS) as Array<keyof typeof ACCOUNTS>).map((key) => {
+    const a = ACCOUNTS[key];
+    return {
+      org: { domain: "example.test", name: a.org, "sfin-url": "https://bridge.example.test/simplefin" },
+      id: a.id,
+      name: a.name,
+      currency: "USD",
+      balance: a.balance,
+      "available-balance": a.balance,
+      "balance-date": unix(options.asOf, 6),
+      transactions: byAccount.get(key)!,
+    };
+  });
+  if (options.brokerage) {
+    const b = options.brokerage === true ? {} : options.brokerage;
+    const balance = b.balance ?? BROKERAGE_ACCOUNT.balance;
+    accounts.push({
+      org: { domain: "brokerage.example.test", name: BROKERAGE_ACCOUNT.org, "sfin-url": "https://bridge.example.test/simplefin" },
+      id: BROKERAGE_ACCOUNT.id,
+      name: BROKERAGE_ACCOUNT.name,
+      currency: "USD",
+      balance,
+      "available-balance": balance,
+      "balance-date": unix(options.asOf, 6),
+      transactions: b.transactions ?? [],
+      ...(b.holdings ? { holdings: b.holdings } : {}),
+      extra: b.extra ?? (b.holdings ? {} : { holdings: HOLDINGS_EXAMPLE_A }),
+    });
+  }
+  if (options.extraAccounts) accounts.push(...options.extraAccounts);
+  return { errors: [], errlist: [], accounts };
 }
 
 /** How many distinct transactions exist once everything has posted (the void never counts). */

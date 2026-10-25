@@ -20,6 +20,8 @@ describe.skipIf(!TEST_DATABASE_URL)("dashboard on the grid-and-api seed", () => 
   let t: TestDb;
   let S: PlanSeed;
   const today = PLAN_SEED_TODAY;
+/** Phase 3: the net-worth breakdown by account kind of a household without investment accounts. */
+const ZERO_BREAKDOWN = { investmentsCents: 0n, investmentsAsOf: null, cashCents: 0n, debtCents: 0n, otherCents: 0n };
 
   beforeAll(async () => {
     t = await createTestDb();
@@ -56,7 +58,9 @@ describe.skipIf(!TEST_DATABASE_URL)("dashboard on the grid-and-api seed", () => 
       yearAgoCents: 350000n,
       changeCents: 225000n,
       newAccounts: [{ id: S.accounts.visa, name: "Visa" }],
+      breakdown: { ...ZERO_BREAKDOWN, cashCents: 620000n, debtCents: -45000n },
     });
+    expect(d.investments).toBeNull();
 
     expect(d.review).toEqual({ uncategorized: 1, suggestedRecurring: 2, alerts: 1 });
     expect(d.sync).toEqual({ lastSyncAt: null, attention: [] });
@@ -93,7 +97,17 @@ describe.skipIf(!TEST_DATABASE_URL)("dashboard on the grid-and-api seed", () => 
     expect(view.plan.committed).toEqual({ income: "500000", bills: "189648", savings: "50000", spending: "85000" });
     expect(view.plan.uncategorized).toEqual({ count: 1, cents: "-4500" });
     expect(view.billsDue).toEqual([{ recurringId: S.recurring.internet, name: "Internet", categoryName: "Internet", accountName: "Checking", dueDate: "2026-10-20", amountCents: "-7999", overdue: false }]);
-    expect(view.netWorth).toEqual({ asOf: today, todayCents: "575000", yearAgoDate: "2025-10-13", yearAgoCents: "350000", changeCents: "225000", newAccounts: [{ id: S.accounts.visa, name: "Visa" }], breakdown: null });
+    expect(view.netWorth).toEqual({
+      asOf: today,
+      todayCents: "575000",
+      yearAgoDate: "2025-10-13",
+      yearAgoCents: "350000",
+      changeCents: "225000",
+      newAccounts: [{ id: S.accounts.visa, name: "Visa" }],
+      // Phase 3: checking 320,000 + savings 300,000 cash; Visa −45,000 debt; no investment accounts.
+      breakdown: { investmentsCents: "0", investmentsAsOf: null, cashCents: "620000", debtCents: "-45000", otherCents: "0" },
+    });
+    expect(view.investments).toBeNull();
     expect(view.cashFlow.points[0]).toEqual({ date: today, cents: "-3290" });
     expect(view.cashFlow.thresholdCents).toBe("0");
     expect(view.sync).toEqual({ lastSyncAt: null, attention: [] });
@@ -152,11 +166,11 @@ describe.skipIf(!TEST_DATABASE_URL)("dashboard on the grid-and-api seed", () => 
 
   it("net worth: clamped year-ago date, closed accounts excluded, null when nothing that old exists", async () => {
     // Before any snapshot a year earlier than 2025-10: today's sum is 0 and the change is unknown.
-    expect(await netWorth(t.db, "2025-09-01")).toEqual({ asOf: "2025-09-01", todayCents: 0n, yearAgoDate: "2024-09-01", yearAgoCents: null, changeCents: null, newAccounts: [] });
+    expect(await netWorth(t.db, "2025-09-01")).toEqual({ asOf: "2025-09-01", todayCents: 0n, yearAgoDate: "2024-09-01", yearAgoCents: null, changeCents: null, newAccounts: [], breakdown: ZERO_BREAKDOWN });
     // 2028-02-29 → 2027-02-28.
     expect((await netWorth(t.db, "2028-02-29")).yearAgoDate).toBe("2027-02-28");
     // The day before the seed's current snapshots: both sums read the 2025 rows; Visa is in neither.
-    expect(await netWorth(t.db, "2026-10-12")).toEqual({ asOf: "2026-10-12", todayCents: 350000n, yearAgoDate: "2025-10-12", yearAgoCents: 350000n, changeCents: 0n, newAccounts: [] });
+    expect(await netWorth(t.db, "2026-10-12")).toEqual({ asOf: "2026-10-12", todayCents: 350000n, yearAgoDate: "2025-10-12", yearAgoCents: 350000n, changeCents: 0n, newAccounts: [], breakdown: { ...ZERO_BREAKDOWN, cashCents: 350000n } });
 
     // A closed account's snapshots never count; a year-old Visa snapshot removes it from newAccounts.
     const [closed] = await t.db
@@ -168,7 +182,7 @@ describe.skipIf(!TEST_DATABASE_URL)("dashboard on the grid-and-api seed", () => 
       { accountId: closed!.id, date: "2025-10-13", balanceCents: -99999n, source: "manual" },
       { accountId: S.accounts.visa, date: "2025-10-13", balanceCents: -10000n, source: "manual" },
     ]);
-    expect(await netWorth(t.db, today)).toEqual({ asOf: today, todayCents: 575000n, yearAgoDate: "2025-10-13", yearAgoCents: 340000n, changeCents: 235000n, newAccounts: [] });
+    expect(await netWorth(t.db, today)).toEqual({ asOf: today, todayCents: 575000n, yearAgoDate: "2025-10-13", yearAgoCents: 340000n, changeCents: 235000n, newAccounts: [], breakdown: { ...ZERO_BREAKDOWN, cashCents: 620000n, debtCents: -45000n } });
     // A snapshot dated the day after the year-ago date does not count for a year ago.
     await t.db
       .update(balanceSnapshot)

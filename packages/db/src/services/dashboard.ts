@@ -2,17 +2,20 @@ import { and, asc, desc, eq, inArray, isNotNull, lt, lte } from "drizzle-orm";
 import {
   addDays,
   addMonthsClamped,
+  isInvestmentAccountType,
   isIsoDate,
   monthKey,
   occurrencesInRange,
   paceCents,
   validateSchedule,
+  type AccountType,
   type BucketTotals,
   type ConnectionStatus,
   type DashboardView,
   type IsoDate,
   type MonthKey,
   type PaceResult,
+  type PriceProviderId,
   type Schedule,
 } from "@meridian/shared";
 import type { DbOrTx } from "../index.js";
@@ -20,6 +23,7 @@ import { account, balanceSnapshot, category, connection, recurring } from "../sc
 import { countOpenAlerts } from "./alerts.js";
 import { PlanError } from "./audit.js";
 import { projectForHousehold } from "./cashflow.js";
+import { dashboardInvestments, type DashboardInvestmentsBlock } from "./investmentViews.js";
 import { getPlan } from "./plan.js";
 import { countUncategorized } from "./transactions.js";
 
@@ -70,6 +74,20 @@ export interface BillDue {
   overdue: boolean;
 }
 
+/** Phase 3 (views design D18): today's net worth by account kind, from the same balance rows. */
+export interface NetWorthBreakdown {
+  /** brokerage, 401k, ira, roth, hsa, 529. */
+  investmentsCents: bigint;
+  /** The latest balance date among the investment accounts; null without one. */
+  investmentsAsOf: IsoDate | null;
+  /** checking, savings. */
+  cashCents: bigint;
+  /** credit, loan (signed, normally <= 0). */
+  debtCents: bigint;
+  /** asset. */
+  otherCents: bigint;
+}
+
 export interface NetWorthBlock {
   asOf: IsoDate;
   todayCents: bigint;
@@ -79,6 +97,7 @@ export interface NetWorthBlock {
   changeCents: bigint | null;
   /** Accounts counted today with no snapshot a year ago (they contribute 0 to `yearAgoCents`). */
   newAccounts: Array<{ id: string; name: string }>;
+  breakdown: NetWorthBreakdown;
 }
 
 export interface DashboardResult {
@@ -90,10 +109,16 @@ export interface DashboardResult {
   review: { uncategorized: number; suggestedRecurring: number; alerts: number };
   sync: { lastSyncAt: Date | null; attention: Array<{ connectionId: string; name: string; status: ConnectionStatus }> };
   retirement: null;
+  /** Phase 3: null without open investment accounts. */
+  investments: DashboardInvestmentsBlock | null;
 }
 
 export interface DashboardQuery {
   today: IsoDate;
+  /** The server clock (the expected price date of the investments block); default now. */
+  now?: Date;
+  /** `PRICE_PROVIDER`; null (the default) = not configured. */
+  priceProvider?: PriceProviderId | null;
 }
 
 // ---- Bills due ----
@@ -158,21 +183,44 @@ export async function listBillsDue(db: DbOrTx, q: { today: IsoDate; days?: numbe
 
 // ---- Net worth ----
 
-/** Latest balance_snapshot on/before `asOf` per open account. */
-async function latestBalances(db: DbOrTx, asOf: IsoDate): Promise<Map<string, bigint>> {
+interface LatestBalance {
+  balanceCents: bigint;
+  date: IsoDate;
+  type: AccountType;
+}
+
+/** Latest balance_snapshot on/before `asOf` per open account (any source, computed rows included). */
+async function latestBalances(db: DbOrTx, asOf: IsoDate): Promise<Map<string, LatestBalance>> {
   const rows = await db
-    .selectDistinctOn([balanceSnapshot.accountId], { accountId: balanceSnapshot.accountId, balanceCents: balanceSnapshot.balanceCents })
+    .selectDistinctOn([balanceSnapshot.accountId], { accountId: balanceSnapshot.accountId, balanceCents: balanceSnapshot.balanceCents, date: balanceSnapshot.date, type: account.type })
     .from(balanceSnapshot)
     .innerJoin(account, eq(account.id, balanceSnapshot.accountId))
     .where(and(eq(account.closed, false), lte(balanceSnapshot.date, asOf)))
     .orderBy(balanceSnapshot.accountId, desc(balanceSnapshot.date));
-  return new Map(rows.map((r) => [r.accountId, r.balanceCents]));
+  return new Map(rows.map((r) => [r.accountId, { balanceCents: r.balanceCents, date: r.date, type: r.type }]));
 }
 
-function sumValues(m: ReadonlyMap<string, bigint>): bigint {
+function sumValues(m: ReadonlyMap<string, LatestBalance>): bigint {
   let sum = 0n;
-  for (const v of m.values()) sum += v;
+  for (const v of m.values()) sum += v.balanceCents;
   return sum;
+}
+
+const CASH_TYPES: ReadonlySet<AccountType> = new Set(["checking", "savings"]);
+const DEBT_TYPES: ReadonlySet<AccountType> = new Set(["credit", "loan"]);
+
+/** The same rows grouped by account kind (views design D18); `todayCents` is their sum. */
+export function netWorthBreakdown(current: ReadonlyMap<string, LatestBalance>): NetWorthBreakdown {
+  const out: NetWorthBreakdown = { investmentsCents: 0n, investmentsAsOf: null, cashCents: 0n, debtCents: 0n, otherCents: 0n };
+  for (const v of current.values()) {
+    if (isInvestmentAccountType(v.type)) {
+      out.investmentsCents += v.balanceCents;
+      if (out.investmentsAsOf === null || v.date > out.investmentsAsOf) out.investmentsAsOf = v.date;
+    } else if (CASH_TYPES.has(v.type)) out.cashCents += v.balanceCents;
+    else if (DEBT_TYPES.has(v.type)) out.debtCents += v.balanceCents;
+    else out.otherCents += v.balanceCents;
+  }
+  return out;
 }
 
 /**
@@ -186,7 +234,8 @@ export async function netWorth(db: DbOrTx, today: IsoDate): Promise<NetWorthBloc
   const current = await latestBalances(db, today);
   const yearAgo = await latestBalances(db, yearAgoDate);
   const todayCents = sumValues(current);
-  if (yearAgo.size === 0) return { asOf: today, todayCents, yearAgoDate, yearAgoCents: null, changeCents: null, newAccounts: [] };
+  const breakdown = netWorthBreakdown(current);
+  if (yearAgo.size === 0) return { asOf: today, todayCents, yearAgoDate, yearAgoCents: null, changeCents: null, newAccounts: [], breakdown };
   const yearAgoCents = sumValues(yearAgo);
   const newIds = [...current.keys()].filter((id) => !yearAgo.has(id));
   const newAccounts =
@@ -197,7 +246,7 @@ export async function netWorth(db: DbOrTx, today: IsoDate): Promise<NetWorthBloc
           .from(account)
           .where(inArray(account.id, newIds))
           .orderBy(asc(account.name), asc(account.id));
-  return { asOf: today, todayCents, yearAgoDate, yearAgoCents, changeCents: todayCents - yearAgoCents, newAccounts };
+  return { asOf: today, todayCents, yearAgoDate, yearAgoCents, changeCents: todayCents - yearAgoCents, newAccounts, breakdown };
 }
 
 // ---- Review counts and sync ----
@@ -266,8 +315,9 @@ export async function getDashboard(db: DbOrTx, q: DashboardQuery): Promise<Dashb
     alerts: await countOpenAlerts(db),
   };
   const sync = await syncStatus(db);
+  const investments = await dashboardInvestments(db, { today, now: q.now ?? new Date(), priceProvider: q.priceProvider ?? null });
 
-  return { today, plan: planBlock, cashFlow, billsDue, netWorth: worth, review, sync, retirement: null };
+  return { today, plan: planBlock, cashFlow, billsDue, netWorth: worth, review, sync, retirement: null, investments };
 }
 
 // ---- View ----
@@ -317,8 +367,13 @@ export function toDashboardView(d: DashboardResult): DashboardView {
       yearAgoCents: d.netWorth.yearAgoCents === null ? null : d.netWorth.yearAgoCents.toString(),
       changeCents: d.netWorth.changeCents === null ? null : d.netWorth.changeCents.toString(),
       newAccounts: d.netWorth.newAccounts,
-      // Phase 3 skeleton: the type breakdown and the investments block arrive with the investments services (step 9).
-      breakdown: null,
+      breakdown: {
+        investmentsCents: d.netWorth.breakdown.investmentsCents.toString(),
+        investmentsAsOf: d.netWorth.breakdown.investmentsAsOf,
+        cashCents: d.netWorth.breakdown.cashCents.toString(),
+        debtCents: d.netWorth.breakdown.debtCents.toString(),
+        otherCents: d.netWorth.breakdown.otherCents.toString(),
+      },
     },
     review: d.review,
     sync: {
@@ -326,6 +381,21 @@ export function toDashboardView(d: DashboardResult): DashboardView {
       attention: d.sync.attention,
     },
     retirement: null,
-    investments: null,
+    investments: d.investments === null ? null : toDashboardInvestmentsView(d.investments),
+  };
+}
+
+/** The wire shape of the investments block (cents as strings). */
+export function toDashboardInvestmentsView(b: DashboardInvestmentsBlock): NonNullable<DashboardView["investments"]> {
+  return {
+    asOf: b.asOf,
+    totalCents: b.totalCents.toString(),
+    dayChangeCents: b.dayChangeCents === null ? null : b.dayChangeCents.toString(),
+    dayChangeBp: b.dayChangeBp,
+    staleAccounts: b.staleAccounts,
+    fidelityCounts: b.fidelityCounts,
+    awaitingReconcile: b.awaitingReconcile,
+    securitiesNeedingReview: b.securitiesNeedingReview,
+    priceFeed: b.priceFeed,
   };
 }

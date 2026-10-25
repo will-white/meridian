@@ -12,8 +12,9 @@ import { runRecurringDetectJob } from "./recurringDetect.js";
 
 /**
  * The Phase 2 worker pieces: `recurring.detect` and `plan.close_month` with `today` in
- * the household time zone, the scheduler's once-per-UTC-day tick, and the detect job a
- * full sync queues (recurring design C6; docs/phase-2-plan.md §16–17).
+ * the household time zone, the scheduler's once-per-UTC-day tick (which Phase 3 extends
+ * with `investments.income_feed`, plan decision 18), and the detect job a full sync queues
+ * (recurring design C6; docs/phase-2-plan.md §16–17).
  */
 
 const ACCESS = "https://alice:s3cret@bridge.example.test/simplefin";
@@ -138,37 +139,39 @@ describe.skipIf(!TEST_DATABASE_URL)("recurring.detect, plan.close_month and the 
     expect(await db.select().from(recurring)).toHaveLength(1);
   });
 
-  it("the scheduler queues recurring.detect and plan.close_month once per UTC day, at or after the detect hour", async () => {
+  it("the scheduler queues recurring.detect, investments.income_feed and plan.close_month once per UTC day, at or after the detect hour", async () => {
     await db.delete(job);
     now = new Date("2026-10-13T07:59:59Z");
     expect(await scheduleDailyJobs(ctx)).toBe(0);
     expect(await allJobs()).toHaveLength(0);
 
     now = new Date("2026-10-13T08:00:00Z");
-    expect(await scheduleDailyJobs(ctx)).toBe(2);
+    expect(await scheduleDailyJobs(ctx)).toBe(3);
     expect(await scheduleDailyJobs(ctx)).toBe(0);
     let queued = await allJobs();
     expect(queued.map((j) => [j.type, j.status, j.payload])).toEqual([
       ["recurring.detect", "queued", { reason: "nightly", day: "2026-10-13" }],
+      ["investments.income_feed", "queued", { reason: "nightly", day: "2026-10-13", dedupeKey: "investments.income_feed" }],
       ["plan.close_month", "queued", { reason: "nightly", day: "2026-10-13" }],
     ]);
 
-    // Both run; the same day never queues again, even late in the day or after they finished.
-    expect(await drainQueue(ctx)).toBe(2);
-    expect((await allJobs()).map((j) => j.status)).toEqual(["done", "done"]);
+    // All three run; the same day never queues again, even late in the day or after they finished.
+    expect(await drainQueue(ctx)).toBe(3);
+    expect((await allJobs()).map((j) => j.status)).toEqual(["done", "done", "done"]);
     now = new Date("2026-10-13T23:59:00Z");
     expect(await scheduleDailyJobs(ctx)).toBe(0);
 
     // A sync-triggered detect still queued on the next day holds the nightly detect back (dedupe) until the next tick after it ran.
     now = new Date("2026-10-14T08:00:00Z");
     await enqueueJob(db, "recurring.detect", { reason: "sync" });
-    expect(await scheduleDailyJobs(ctx)).toBe(1);
+    expect(await scheduleDailyJobs(ctx)).toBe(2);
     queued = (await allJobs()).filter((j) => j.status === "queued");
     expect(queued.map((j) => [j.type, j.payload])).toEqual([
       ["recurring.detect", { reason: "sync" }],
+      ["investments.income_feed", { reason: "nightly", day: "2026-10-14", dedupeKey: "investments.income_feed" }],
       ["plan.close_month", { reason: "nightly", day: "2026-10-14" }],
     ]);
-    expect(await drainQueue(ctx)).toBe(2);
+    expect(await drainQueue(ctx)).toBe(3);
     expect(await scheduleDailyJobs(ctx)).toBe(1);
     expect((await allJobs()).filter((j) => j.status === "queued").map((j) => [j.type, j.payload])).toEqual([["recurring.detect", { reason: "nightly", day: "2026-10-14" }]]);
     expect(await scheduleDailyJobs(ctx)).toBe(0);
@@ -177,8 +180,8 @@ describe.skipIf(!TEST_DATABASE_URL)("recurring.detect, plan.close_month and the 
     // The hour is configurable.
     now = new Date("2026-10-15T02:00:00Z");
     expect(await scheduleDailyJobs({ ...ctx, config: { ...config, detectHourUtc: 3 } })).toBe(0);
-    expect(await scheduleDailyJobs({ ...ctx, config: { ...config, detectHourUtc: 2 } })).toBe(2);
-    expect(await drainQueue(ctx)).toBe(2);
+    expect(await scheduleDailyJobs({ ...ctx, config: { ...config, detectHourUtc: 2 } })).toBe(3);
+    expect(await drainQueue(ctx)).toBe(3);
     expect((await allJobs()).every((j) => j.status === "done")).toBe(true);
   });
 

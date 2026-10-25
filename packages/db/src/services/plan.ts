@@ -33,7 +33,7 @@ import {
   type UncategorizedInput,
 } from "@meridian/shared";
 import type { Db, DbOrTx } from "../index.js";
-import { account, category, categoryGroup, monthPlan, recurring, savingsGoal, split, transaction } from "../schema/index.js";
+import { account, category, categoryGroup, householdSetting, monthPlan, recurring, savingsGoal, split, transaction } from "../schema/index.js";
 import { PlanError, writeAudit, type AuditContext } from "./audit.js";
 import { getHouseholdSetting } from "./settings.js";
 import { listTransactions, type ListTransactionsQuery, type TransactionListRow } from "./transactions.js";
@@ -122,6 +122,15 @@ async function loadRows(db: DbOrTx, fromMonth: MonthKey, toMonth: MonthKey): Pro
   }));
 }
 
+/**
+ * Phase 3 (plan decision 15, seams P3): the plan reads on-budget accounts only, except rows
+ * in the household's investment income category (the feed), which count from any account.
+ * `categoryExpr` is the row's effective category (a split's, else the transaction's).
+ */
+function onBudgetOrFeedCategory(categoryExpr: ReturnType<typeof sql>) {
+  return sql`(${account.onBudget} = true or ${categoryExpr} = (select ${householdSetting.investmentIncomeCategoryId} from ${householdSetting} limit 1))`;
+}
+
 /** Categorized non-transfer rows (splits replace their parent), signed, per (category, month). [lo, hi) are dates. */
 async function loadActuals(db: DbOrTx, lo: IsoDate, hi: IsoDate): Promise<ActualInput[]> {
   const cat = sql<string>`coalesce(${split.categoryId}, ${transaction.categoryId})`;
@@ -136,8 +145,9 @@ async function loadActuals(db: DbOrTx, lo: IsoDate, hi: IsoDate): Promise<Actual
       count: sql<number>`count(*)::int`,
     })
     .from(transaction)
+    .innerJoin(account, eq(account.id, transaction.accountId))
     .leftJoin(split, eq(split.transactionId, transaction.id))
-    .where(and(eq(transaction.isTransfer, false), gte(transaction.date, lo), lt(transaction.date, hi), isNotNull(cat)))
+    .where(and(eq(transaction.isTransfer, false), gte(transaction.date, lo), lt(transaction.date, hi), isNotNull(cat), onBudgetOrFeedCategory(cat)))
     .groupBy(cat, month);
 }
 
@@ -163,6 +173,7 @@ async function loadUncategorized(db: DbOrTx, lo: IsoDate, hi: IsoDate): Promise<
   return db
     .select({ month, count: sql<number>`count(*)::int`, signedCents: sql<bigint>`sum(${transaction.amountCents})::bigint` })
     .from(transaction)
+    .innerJoin(account, eq(account.id, transaction.accountId))
     .where(
       and(
         sql`${transaction.categoryId} is null`,
@@ -170,6 +181,7 @@ async function loadUncategorized(db: DbOrTx, lo: IsoDate, hi: IsoDate): Promise<
         gte(transaction.date, lo),
         lt(transaction.date, hi),
         notExists(db.select({ one: sql`1` }).from(split).where(eq(split.transactionId, transaction.id))),
+        onBudgetOrFeedCategory(sql`${transaction.categoryId}`),
       ),
     )
     .groupBy(month);
