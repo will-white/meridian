@@ -78,6 +78,16 @@ Steps 1–2 are the skeleton (task 14); 3–12 the implementation workflow (task
 - Wash sales, return of capital and capital-gain distributions are not special-cased; multi-currency is not supported (a non-USD holding is a preview warning); money-weighted return for sub-year ranges is shown unannualized beside Excel's XIRR.
 - The free price source (Tiingo) needs a free API key; its current terms and fund coverage must be confirmed by the owner at signup.
 
+## Recorded during implementation
+
+Decisions the build settled where the plan or a design left room, all consistent with the decisions above:
+
+- Prices: a persistent 429 records `price_fetch_status = 'rate_limited'` on the security that hit it; a run in which every request died on the network writes no per-security backoff (so the queue's retry finds the same plan), a stated exception to prices design §3.11 step 4; the API and worker share one `PRICE_PROVIDER` parser; `GET /api/prices/:securityId` and `POST /api/prices/rebuild-implied` exist beyond decision 17's list; the valuation job is also requested after manual price writes, trade imports and manual investment transactions.
+- Valuation: on the positions basis the cash plug is not anchored on a reported balance older than the snapshot in use (a `negative_residual` warning names the date instead); the period change reports `partial` and `missingAccountIds` when an account valued at the start cannot be valued at the end; the valuation job rewrites computed balance rows from the earliest computed row forward, and dates between two older reported rows that never received computed rows stay unfilled (an owner call on widening the window to the first data date).
+- Reconciliation: a total-only accept (no rows) records a manual balance for the date and never deletes the positions; the preview computes the alternative cash-inference reading in the off → auto direction.
+- Transactions: a ledger row is treated as derived from an investment cash transfer only when the service wrote it (`inv:<id>` external id or the same import log), so a bank row merely linked to a transfer is never rewritten or deleted; paired cash transfers mirror amount and date edits onto the counterpart leg.
+- Views and web: `PUT /api/investments/securities/:id/allocation` lives in `routes/securities.ts`; the GET performance presentation shows an unpriced benchmark with reason `no_benchmark_price`; `PATCH /api/accounts/:id` audits `lotMethod` and `cashInference` changes as entity `account`; the Investments sub-navigation gains a Securities entry; the cross-account investment-transactions list page is not built (the per-account Trades tab covers it); allocation bars are a CSS component.
+
 ## Open questions (owner decisions, not blockers)
 
 1. Tiingo's free limits and mutual-fund NAV coverage (Twelve Data is the documented fallback for stocks and ETFs).

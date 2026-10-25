@@ -4,6 +4,8 @@ Self-hosted personal finance for one household: spending plan, multi-month budge
 
 Phase 1 (foundation and ledger) is built: auth, SimpleFIN sync, accounts, a transaction register, payee normalization, rules, transfer pairing, CSV import, and encrypted nightly backups. See `docs/phase-1-plan.md` for what was built and why.
 
+Phase 3 (investments) is built: securities and daily prices behind a provider interface (Tiingo, with implied and manual prices), holdings from SimpleFIN `extra` and positions CSV, trade-history import, lots and cost basis, reconciliation to brokerage statements to the dollar, and the Portfolio, Allocation, Holdings, Performance and Income views. See `docs/phase-3-plan.md` and `docs/design/phase-3/`.
+
 Phase 2 (spending plan) is built: category groups, a virtualized multi-month plan grid with rollovers and plan-from-average, savings goals, recurring detection with suggestions and alerts, a subscriptions page, a cash-flow projection with what-ifs, and a dashboard. See `docs/phase-2-plan.md` for the binding decisions and `docs/design/phase-2/` for the area designs.
 
 ## Quick start (development)
@@ -49,9 +51,9 @@ The `backup` service runs `deploy/backup.sh` nightly at `BACKUP_HOUR` UTC: an en
 | --- | --- |
 | `apps/web` | React + Vite UI (PWA) |
 | `apps/api` | Fastify API; serves the built UI in production |
-| `apps/worker` | SimpleFIN sync, job runner, scheduler, recurring detection, nightly month close; later prices and simulations |
+| `apps/worker` | SimpleFIN sync, job runner, scheduler, recurring detection, nightly month close, price fetch and valuation jobs; later simulations |
 | `packages/db` | Drizzle schema, migrations, data services |
-| `packages/shared` | Zod contracts and the pure engines (payee normalization, rules, transfers, CSV, schedules, plan math, recurring detection, cash flow) |
+| `packages/shared` | Zod contracts and the pure engines (payee normalization, rules, transfers, CSV, schedules, plan math, recurring detection, cash flow, lots and cost basis, valuation, performance) |
 | `deploy/` | Compose, Caddy, backup and restore scripts |
 
 Design spec and build phases: see `CLAUDE.md`.
