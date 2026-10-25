@@ -1,5 +1,5 @@
 import type { BucketTotals, CashFlowProjectionResponse, CashFlowResult, CashFlowSeries, DashboardView } from "@meridian/shared";
-import type { DashboardResult } from "@meridian/db";
+import type { DashboardInvestmentsBlock, DashboardResult } from "@meridian/db";
 
 /**
  * Cash-flow and dashboard view mappers: the engines' bigint results → the wire
@@ -72,7 +72,22 @@ function toBucketTotalsView(t: BucketTotals): DashboardView["plan"]["planned"] {
   return { income: cents(t.income), bills: cents(t.bills), savings: cents(t.savings), spending: cents(t.spending) };
 }
 
-/** The dashboard on the wire (docs/phase-2-plan.md §15, grid-and-api `DashboardView`). */
+/** Phase 3 (views design §4, seams C47): the dashboard's investments block on the wire. */
+export function toDashboardInvestmentsView(b: DashboardInvestmentsBlock): NonNullable<DashboardView["investments"]> {
+  return {
+    asOf: b.asOf,
+    totalCents: cents(b.totalCents),
+    dayChangeCents: nullableCents(b.dayChangeCents),
+    dayChangeBp: b.dayChangeBp,
+    staleAccounts: b.staleAccounts.map((a) => ({ id: a.id, name: a.name, valuationDate: a.valuationDate })),
+    fidelityCounts: { ...b.fidelityCounts },
+    awaitingReconcile: b.awaitingReconcile,
+    securitiesNeedingReview: b.securitiesNeedingReview,
+    priceFeed: { ...b.priceFeed },
+  };
+}
+
+/** The dashboard on the wire (docs/phase-2-plan.md §15, grid-and-api `DashboardView`; Phase 3 adds the net-worth breakdown and the investments block). */
 export function toDashboardView(d: DashboardResult): DashboardView {
   return {
     today: d.today,
@@ -113,8 +128,13 @@ export function toDashboardView(d: DashboardResult): DashboardView {
       yearAgoCents: nullableCents(d.netWorth.yearAgoCents),
       changeCents: nullableCents(d.netWorth.changeCents),
       newAccounts: d.netWorth.newAccounts.map((a) => ({ id: a.id, name: a.name })),
-      // Phase 3 skeleton: the type breakdown and the investments block arrive with the investments services (step 9).
-      breakdown: null,
+      breakdown: {
+        investmentsCents: cents(d.netWorth.breakdown.investmentsCents),
+        investmentsAsOf: d.netWorth.breakdown.investmentsAsOf,
+        cashCents: cents(d.netWorth.breakdown.cashCents),
+        debtCents: cents(d.netWorth.breakdown.debtCents),
+        otherCents: cents(d.netWorth.breakdown.otherCents),
+      },
     },
     review: { uncategorized: d.review.uncategorized, suggestedRecurring: d.review.suggestedRecurring, alerts: d.review.alerts },
     sync: {
@@ -122,6 +142,6 @@ export function toDashboardView(d: DashboardResult): DashboardView {
       attention: d.sync.attention.map((c) => ({ connectionId: c.connectionId, name: c.name, status: c.status })),
     },
     retirement: null,
-    investments: null,
+    investments: d.investments === null ? null : toDashboardInvestmentsView(d.investments),
   };
 }

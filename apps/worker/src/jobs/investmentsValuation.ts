@@ -17,10 +17,14 @@ import type { JobContext } from "./context.js";
  * `investments.valuation` (plan decision 9; seams decision 8): write `balance_snapshot` rows
  * with `source = 'computed'` from the valuation chain for every open investment account (or
  * the payload's one), on the dates after its last reported row through the expected price
- * date. `ON CONFLICT … WHERE source = 'computed'` never overwrites a reported row, so Phase 2's
- * net worth stays on `balance_snapshot` and agrees with the Portfolio on every date. A date
- * the chain cannot value loses its stale computed row. `account.balance_*` (the latest
- * reported balance) is not touched. Idempotent.
+ * date. The window also reaches back to the earliest computed row the account already carries:
+ * a reconcile commit or a backdated statement makes a later date reported, and the computed
+ * rows before it must still follow a corrected close (the overlap re-fetch, a manual price) or
+ * a backdated import. `ON CONFLICT … WHERE source = 'computed'` never overwrites a reported
+ * row (and reported dates are not written at all), so Phase 2's net worth stays on
+ * `balance_snapshot` and agrees with the Portfolio on every date. A date the chain cannot
+ * value loses its stale computed row. `account.balance_*` (the latest reported balance) is not
+ * touched. Idempotent.
  */
 
 export interface ValuationSkip {
@@ -72,21 +76,29 @@ export async function runInvestmentsValuationJob(ctx: JobContext, job: JobRow): 
   if (open.length === 0) return outcome;
   const ids = open.map((a) => a.id);
 
-  // Where each account's computed rows start: the day after its last reported row, else its first data date.
-  const lastReported = await ctx.db
-    .select({ accountId: balanceSnapshot.accountId, date: sql<string>`max(${balanceSnapshot.date})::text` })
+  // Where each account's computed rows start: the day after its last reported row, else its first data
+  // date, and never after the earliest computed row it already carries (those rows are this job's to
+  // refresh or remove whatever reported rows arrived after them).
+  const bounds = await ctx.db
+    .select({
+      accountId: balanceSnapshot.accountId,
+      lastReported: sql<string | null>`(max(${balanceSnapshot.date}) filter (where ${balanceSnapshot.source} <> 'computed'))::text`,
+      firstComputed: sql<string | null>`(min(${balanceSnapshot.date}) filter (where ${balanceSnapshot.source} = 'computed'))::text`,
+    })
     .from(balanceSnapshot)
-    .where(and(inArray(balanceSnapshot.accountId, ids), ne(balanceSnapshot.source, "computed")))
+    .where(inArray(balanceSnapshot.accountId, ids))
     .groupBy(balanceSnapshot.accountId);
-  const lastReportedBy = new Map(lastReported.map((r) => [r.accountId, r.date]));
+  const boundsBy = new Map(bounds.map((r) => [r.accountId, r]));
   const fidelities = await accountFidelities(ctx.db, ids);
   const firsts = await firstDataDates(ctx.db, ids, fidelities);
 
   const windows: Array<{ accountId: string; from: IsoDate }> = [];
   for (const id of ids) {
-    const reported = lastReportedBy.get(id) ?? null;
+    const reported = boundsBy.get(id)?.lastReported ?? null;
+    const firstComputed = boundsBy.get(id)?.firstComputed ?? null;
     const first = firsts.get(id) ?? null;
     let from = reported ? addDays(reported, 1) : first;
+    if (firstComputed !== null && (from === null || firstComputed < from)) from = firstComputed;
     if (from === null) {
       outcome.skipped.push({ accountId: id, reason: "no_data" });
       continue;
@@ -103,15 +115,28 @@ export async function runInvestmentsValuationJob(ctx: JobContext, job: JobRow): 
   outcome.accounts = windows.length;
 
   const earliest = windows.reduce((acc, w) => (w.from < acc ? w.from : acc), windows[0]!.from);
-  const input = await loadValuationInput(ctx.db, { accountIds: windows.map((w) => w.accountId), from: earliest, to: through, now, fidelities });
+  const windowIds = windows.map((w) => w.accountId);
+  const input = await loadValuationInput(ctx.db, { accountIds: windowIds, from: earliest, to: through, now, fidelities });
+  // Reported dates inside the windows are never written (the upsert's guard would refuse them anyway).
+  const reportedRows = await ctx.db
+    .select({ accountId: balanceSnapshot.accountId, date: balanceSnapshot.date })
+    .from(balanceSnapshot)
+    .where(and(inArray(balanceSnapshot.accountId, windowIds), ne(balanceSnapshot.source, "computed"), gte(balanceSnapshot.date, earliest), lte(balanceSnapshot.date, through)));
+  const reportedDates = new Map<string, Set<IsoDate>>();
+  for (const r of reportedRows) {
+    const set = reportedDates.get(r.accountId) ?? new Set<IsoDate>();
+    set.add(r.date);
+    reportedDates.set(r.accountId, set);
+  }
 
   for (const w of windows) {
     const series = valueSeries(input, [w.accountId], w.from, through, "day");
     const values = series.accounts[0]!.values;
+    const reported = reportedDates.get(w.accountId);
     const rows: Array<{ date: IsoDate; balanceCents: bigint }> = [];
     series.dates.forEach((date, i) => {
       const v = values[i];
-      if (v !== null && v !== undefined) rows.push({ date, balanceCents: v });
+      if (v !== null && v !== undefined && !reported?.has(date)) rows.push({ date, balanceCents: v });
     });
     for (let i = 0; i < rows.length; i += WRITE_BATCH) {
       const batch = rows.slice(i, i + WRITE_BATCH);

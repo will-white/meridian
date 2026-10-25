@@ -437,7 +437,7 @@ const SELL_RE = /\b(SELL|SOLD|YOU SOLD|REDEMPTION|SELL SHORT)\b/;
 const SHARE_TRANSFER_RE = /TRANSFER (OF )?(SHARES|SECURITIES)|JOURNAL|ACATS|RECEIVED|DELIVERED|IN KIND|SECURITIES (RECEIVED|DELIVERED)/;
 const SHARE_TRANSFER_OUT_RE = /\bOUT\b|DELIVERED|\bTO\b/;
 const CASH_IN_RE = /CONTRIBUTION|DEPOSIT|EFT (IN|RECEIVED)|ELECTRONIC FUNDS TRANSFER RECEIVED|\bACH\b|WIRE IN|FUNDS RECEIVED|TRANSFER IN|ROLLOVER|EMPLOYER MATCH/;
-const CASH_OUT_RE = /WITHDRAWAL|EFT OUT|TRANSFER OUT|WIRE OUT|DISBURSEMENT|REDEMPTION TO BANK/;
+const CASH_OUT_RE = /WITHDRAWAL|ACH (WITHDRAWAL|DEBIT)|EFT OUT|TRANSFER OUT|WIRE OUT|DISBURSEMENT|REDEMPTION TO BANK/;
 const SWEEP_RE = /SWEEP|CORE FUND|MONEY MARKET (PURCHASE|REDEMPTION)|JOURNALED CASH|ADJUSTMENT/;
 const REVERSAL_RE = /REVERSAL|ADJUSTMENT|CORRECTION/;
 
@@ -456,10 +456,29 @@ function classificationText(action: string, description: string, row: ClassifyRo
 }
 
 /**
+ * The cash direction of a row's text: the one pattern that matches; when both do ("ACH
+ * WITHDRAWAL", "ROLLOVER DISBURSEMENT") the amount's sign decides (`bySign`), and without a
+ * usable sign the inflow pattern wins, as the imports design's rule order says.
+ */
+function classifyCash(text: string, amountSign: ClassifyRow["amountSign"]): { kind: "cash_in" | "cash_out"; bySign: boolean } | undefined {
+  const inflow = CASH_IN_RE.test(text);
+  const outflow = CASH_OUT_RE.test(text);
+  if (inflow && outflow) {
+    if (amountSign === -1) return { kind: "cash_out", bySign: true };
+    if (amountSign === 1) return { kind: "cash_in", bySign: true };
+    return { kind: "cash_in", bySign: false };
+  }
+  if (inflow) return { kind: "cash_in", bySign: false };
+  if (outflow) return { kind: "cash_out", bySign: false };
+  return undefined;
+}
+
+/**
  * Classify a trade-file row (imports design §3.8): the mapping's `actionMap` first (exact key, then
  * the longest key that is a prefix of the action), then the regex rules in order. Undefined means
  * unclassified: the row is listed under `actionsFound` and nothing is imported until it is mapped.
  * Buys and sells need a quantity (a "PURCHASE CREDIT" journal line without shares is not a trade).
+ * A cash row whose text names both directions goes the way of the amount's sign.
  */
 export function classifyTradeAction(action: string, description: string, row: ClassifyRow, mapping: Pick<TradesCsvMapping, "actionMap" | "reinvestRows">): TradeKind | undefined {
   const fromMap = lookupActionMap(action, mapping.actionMap);
@@ -477,8 +496,8 @@ export function classifyTradeAction(action: string, description: string, row: Cl
   if (row.hasQuantity && BUY_RE.test(text)) return "buy";
   if (row.hasQuantity && SELL_RE.test(text)) return "sell";
   if (row.hasQuantity && SHARE_TRANSFER_RE.test(text)) return SHARE_TRANSFER_OUT_RE.test(text) ? "transfer_out" : "transfer_in";
-  if (CASH_IN_RE.test(text)) return "cash_in";
-  if (CASH_OUT_RE.test(text)) return "cash_out";
+  const cash = classifyCash(text, row.amountSign);
+  if (cash) return cash.kind;
   if (SWEEP_RE.test(text)) return "skip";
   return undefined;
 }
@@ -798,7 +817,8 @@ function mapTradeRow(r: RowInput): RowOutcome {
   const cusip = normalizeCusip(r.cusipRaw);
   const hasIdentity = r.symbolRaw !== "" || r.nameRaw !== "" || cusip !== null;
   const fromProfile = lookupActionMap(r.action, mapping.actionMap) !== undefined;
-  const kind = classifyTradeAction(r.action, r.description, { hasQuantity, amountSign, securityName: r.nameRaw, ticker }, mapping);
+  const classifyRow: ClassifyRow = { hasQuantity, amountSign, securityName: r.nameRaw, ticker };
+  const kind = classifyTradeAction(r.action, r.description, classifyRow, mapping);
   r.noteAction(r.action, rowIndex, kind, fromProfile);
   if (kind === undefined) return { kind: "unclassified" };
   if (kind === "skip") return { kind: "skipped", skip: { rowIndex, reason: "skip", text: rawDescription } };
@@ -889,6 +909,9 @@ function mapTradeRow(r: RowInput): RowOutcome {
     case "cash_in":
     case "cash_out": {
       if (A === undefined) return fail("amount_required", "A cash transfer needs an amount");
+      const warnings: string[] = [];
+      // The text named both directions and the file's sign chose: the preview says so.
+      if (!fromProfile && classifyCash(classificationText(r.action, r.description, classifyRow), amountSign)?.bySign) warnings.push("direction_from_sign");
       return one({
         type: "transfer",
         ticker: null,
@@ -900,7 +923,7 @@ function mapTradeRow(r: RowInput): RowOutcome {
         amountCents: kind === "cash_in" ? abs(A) : -abs(A),
         transferDirection: kind === "cash_in" ? "in" : "out",
         derived: [],
-        warnings: [],
+        warnings,
       });
     }
   }

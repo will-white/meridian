@@ -1,0 +1,29 @@
+/* Reconcile: the statement rows form, the preview with its headline and the two cash-inference readings, the history. */
+.rec-form { display: flex; flex-direction: column; gap: 0.6rem; }
+.rec-form-actions { gap: 0.4rem 0.75rem; }
+.rec-paste textarea { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; padding: 0.45rem 0.6rem; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); margin-bottom: 0.4rem; }
+.rec-rows input.rec-ticker { width: 9rem; }
+.rec-rows input.rec-num { width: 7.5rem; text-align: right; }
+.rec-rows tr.rec-row-error td { background: color-mix(in srgb, var(--bad) 6%, transparent); }
+.rec-rows .error.small { margin: 0.2rem 0 0; }
+.rec-total { max-width: 34rem; }
+.rec-total input { width: 10rem; }
+.rec-preview { display: flex; flex-direction: column; gap: 0.6rem; }
+.rec-headline-row { display: flex; flex-direction: column; gap: 0.15rem; }
+.rec-headline { font-size: 1.4rem; font-weight: 700; line-height: 1.2; }
+.rec-bar { margin: 0; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.9em; }
+.rec-bar.info { background: color-mix(in srgb, var(--info) 12%, transparent); }
+.rec-bar.hint { background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.rec-table td { white-space: nowrap; }
+.rec-readings { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: 0.75rem; }
+.rec-reading { border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem 0.75rem; display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.9em; }
+.rec-reading.current { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.rec-commit { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: flex-end; border-top: 1px solid var(--line); padding-top: 0.75rem; }
+.rec-commit label { min-width: 16rem; }
+.rec-result { margin: 0; }
+.rec-result.warn { background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.rec-history { font-size: 0.95em; }
+@media (max-width: 800px) {
+  .rec-headline { font-size: 1.15rem; }
+  .rec-rows input.rec-num { width: 5.5rem; }
+}

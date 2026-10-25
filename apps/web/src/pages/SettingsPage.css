@@ -7,3 +7,5 @@
 .settings-check { max-width: none; }
 .settings-actions { margin: 0.25rem 0 1rem; }
 .settings-actions .notice { padding: 0.35rem 0.6rem; }
+.settings-fields .settings-short { width: 7rem; }
+.settings-note { margin: 0; }

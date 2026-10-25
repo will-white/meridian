@@ -91,6 +91,17 @@ export async function connectionRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  /**
+   * Phase 3 (imports design §4, plan decision 18): replay the connection's stored sync payloads
+   * through the holdings parser (after a parser change), deduped per connection like a sync.
+   */
+  r.post("/connections/:id/reprocess-holdings", { schema: { params: UuidParams, response: { 200: JobView } } }, async (request) => {
+    const [row] = await app.db.select({ id: connection.id, type: connection.type }).from(connection).where(eq(connection.id, request.params.id));
+    if (!row) throw notFound("Connection not found");
+    if (row.type !== "simplefin") throw badRequest("Only SimpleFIN connections carry holdings payloads to re-process", "not_simplefin");
+    return toJobView(await enqueueJob(app.db, "simplefin.reprocess_holdings", { connectionId: row.id }, { dedupe: true }));
+  });
+
   r.get("/connections/:id/imports", { schema: { params: UuidParams, response: { 200: z.array(ImportLogView) } } }, async (request) => {
     const rows = await app.db
       .select({

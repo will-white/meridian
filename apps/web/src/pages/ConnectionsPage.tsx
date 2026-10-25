@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ConnectionView, ImportLogView } from "@meridian/shared";
+import type { ConnectionView, ImportLogView, JobView } from "@meridian/shared";
 import { api } from "../lib/api.js";
 import { relativeTime } from "../lib/format.js";
+import { csvKindLabel } from "../lib/importMapping.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
 
 const STATUS_TONE: Record<ConnectionView["status"], "ok" | "warn" | "bad" | "info" | "neutral"> = {
@@ -47,6 +48,15 @@ export function ConnectionsPage() {
     onSuccess: invalidate,
   });
   const remove = useMutation({ mutationFn: (id: string) => api(`/connections/${id}`, { method: "DELETE" }), onSuccess: invalidate });
+  // Phase 3: replay the stored sync payloads through the holdings parser (plan decision 18).
+  const reprocess = useMutation({
+    mutationFn: (id: string) => api<JobView>(`/connections/${id}/reprocess-holdings`, { method: "POST", body: {} }),
+    onSuccess: () => {
+      invalidate();
+      void qc.invalidateQueries({ queryKey: ["investments"] });
+      void qc.invalidateQueries({ queryKey: ["valuation"] });
+    },
+  });
   const toggle = useMutation({
     mutationFn: ({ id, status }: { id: string; status: "ok" | "disabled" }) => api(`/connections/${id}`, { method: "PATCH", body: { status } }),
     onSuccess: invalidate,
@@ -81,6 +91,7 @@ export function ConnectionsPage() {
         </form>
         <ErrorText error={add.error} />
         <ErrorText error={sync.error} />
+        <ErrorText error={reprocess.error} />
         {connections.isLoading && <p className="muted">Loading…</p>}
         {simplefin.length === 0 && !connections.isLoading && <Empty>No SimpleFIN connections yet.</Empty>}
         <ul className="list">
@@ -101,14 +112,17 @@ export function ConnectionsPage() {
                   </span>
                 </div>
                 {c.lastError && <p className="error small">{c.lastError}</p>}
-                {c.lastErrors.length > 0 && (
+                <HoldingsLine connection={c} />
+                {c.lastErrors.filter((e) => !e.code.startsWith("holdings.")).length > 0 && (
                   <ul className="errors">
-                    {c.lastErrors.map((e, i) => (
-                      <li key={i}>
-                        <code>{e.code}</code> {e.message}
-                        {e.accountId ? ` (account ${e.accountId})` : ""}
-                      </li>
-                    ))}
+                    {c.lastErrors
+                      .filter((e) => !e.code.startsWith("holdings."))
+                      .map((e, i) => (
+                        <li key={i}>
+                          <code>{e.code}</code> {e.message}
+                          {e.accountId ? ` (account ${e.accountId})` : ""}
+                        </li>
+                      ))}
                   </ul>
                 )}
                 {openLog === c.id && <ImportLogs connectionId={c.id} />}
@@ -119,6 +133,14 @@ export function ConnectionsPage() {
                 </button>
                 <button className="secondary" onClick={() => sync.mutate({ id: c.id, balancesOnly: true })} disabled={sync.isPending || !!c.activeJob || c.status !== "ok"}>
                   Balances only
+                </button>
+                <button
+                  className="secondary"
+                  onClick={() => reprocess.mutate(c.id)}
+                  disabled={reprocess.isPending || !!c.activeJob || c.status === "disabled"}
+                  title="Re-read the holdings in the stored sync payloads (after a parser change); no bank call is made"
+                >
+                  Re-process holdings
                 </button>
                 <button className="secondary" onClick={() => setOpenLog(openLog === c.id ? null : c.id)}>
                   {openLog === c.id ? "Hide log" : "Log"}
@@ -147,11 +169,25 @@ export function ConnectionsPage() {
             {profiles.map((p) => (
               <li key={p.id} className="list-item">
                 <div className="grow">
-                  <strong>{p.name}</strong> <span className="muted">· last import {relativeTime(p.lastSyncAt)}</span>
+                  <strong>{p.name}</strong> <span className="muted">· {csvKindLabel(p.csvKind)} · last import {relativeTime(p.lastSyncAt)}</span>
                   {p.csvMapping && (
                     <div className="muted small">
                       date: {String(p.csvMapping.date.column)} ({p.csvMapping.date.format}) · description: {String(p.csvMapping.description.column)} · amount:{" "}
                       {p.csvMapping.amount.mode === "single" ? String(p.csvMapping.amount.column) : `${String(p.csvMapping.amount.debitColumn)} / ${String(p.csvMapping.amount.creditColumn)}`}
+                    </div>
+                  )}
+                  {p.positionsMapping && (
+                    <div className="muted small">
+                      symbol: {p.positionsMapping.symbol ? String(p.positionsMapping.symbol.column) : "—"} · name: {p.positionsMapping.name ? String(p.positionsMapping.name.column) : "—"} · quantity:{" "}
+                      {p.positionsMapping.quantity ? String(p.positionsMapping.quantity.column) : "—"} · value: {p.positionsMapping.value ? String(p.positionsMapping.value.column) : "—"} · date:{" "}
+                      {p.positionsMapping.asOf.mode === "column" ? `${String(p.positionsMapping.asOf.column)} (${p.positionsMapping.asOf.format})` : "entered at import"}
+                    </div>
+                  )}
+                  {p.tradesMapping && (
+                    <div className="muted small">
+                      date: {String(p.tradesMapping.date.column)} ({p.tradesMapping.date.format}) · action: {String(p.tradesMapping.action.column)} · symbol: {p.tradesMapping.symbol ? String(p.tradesMapping.symbol.column) : "—"} · amount:{" "}
+                      {p.tradesMapping.amount ? String(p.tradesMapping.amount.column) : "derived"} · {Object.keys(p.tradesMapping.actionMap).length} mapped action{Object.keys(p.tradesMapping.actionMap).length === 1 ? "" : "s"} · reinvest rows{" "}
+                      {p.tradesMapping.reinvestRows}
                     </div>
                   )}
                 </div>
@@ -164,6 +200,25 @@ export function ConnectionsPage() {
         )}
       </Card>
     </>
+  );
+}
+
+/** The holdings read by the last sync: accounts with positions from the stats, and the `holdings.*` notes (unrecognised or partial `extra` shapes) per account. */
+function HoldingsLine({ connection }: { connection: ConnectionView }) {
+  const notes = connection.lastErrors.filter((e) => e.code.startsWith("holdings."));
+  if (notes.length === 0) return null;
+  return (
+    <div className="muted small">
+      Holdings: {notes.length} account{notes.length === 1 ? "" : "s"} with notes
+      <ul className="errors">
+        {notes.map((e, i) => (
+          <li key={i}>
+            <code>{e.code}</code> {e.message}
+            {e.accountId ? ` (account ${e.accountId})` : ""}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

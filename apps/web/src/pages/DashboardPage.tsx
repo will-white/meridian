@@ -7,6 +7,7 @@ import { localToday } from "../lib/plan.js";
 import { ErrorText } from "../components/ui.js";
 import { BillsDueCard } from "../components/dashboard/BillsDueCard.js";
 import { CashFlowCard } from "../components/dashboard/CashFlowCard.js";
+import { InvestmentsCard } from "../components/dashboard/InvestmentsCard.js";
 import { NetWorthCard } from "../components/dashboard/NetWorthCard.js";
 import { PlanCard } from "../components/dashboard/PlanCard.js";
 import { ReviewCard } from "../components/dashboard/ReviewCard.js";
@@ -44,6 +45,7 @@ export function DashboardPage() {
         <div className="dash-grid">
           <PlanCard plan={d.plan} />
           <NetWorthCard netWorth={d.netWorth} />
+          {d.investments && <InvestmentsCard investments={d.investments} />}
           <div className="wide">
             <CashFlowCard cashFlow={d.cashFlow} />
           </div>

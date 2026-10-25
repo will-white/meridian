@@ -1,0 +1,14 @@
+/* Securities: the master table with inline edit, alias and merge rows. */
+.sec-search { width: 14rem; }
+.sec-table td.actions button { margin-left: 0.25rem; }
+.sec-edit { display: flex; flex-direction: column; gap: 0.75rem; padding: 0.25rem 0; }
+.sec-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.6rem 1rem; align-items: start; }
+.sec-fields .sec-name { grid-column: span 2; }
+.sec-fields .sec-notes { grid-column: 1 / -1; }
+.sec-fields .sec-check { align-self: end; padding-bottom: 0.5rem; }
+.sec-fields .sec-ratio { width: 7rem; }
+.sec-alias, .sec-merge { padding: 0.25rem 0; }
+@media (max-width: 800px) {
+  .sec-fields .sec-name { grid-column: 1 / -1; }
+  .sec-search { width: 100%; }
+}

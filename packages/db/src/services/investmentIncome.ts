@@ -31,8 +31,11 @@ import { earliestDataDate, firstDataDates, listInvestmentAccounts, valueAccounts
  * investment row is linked to (never double counting), and the per-account feed into the plan
  * (`link` categorizes the bank twin, `create` adds a synthetic `source = 'investment'` row for
  * accounts without a bank feed, an upgrade pass swaps the synthetic row for the bank's own row
- * when it arrives). Reinvested dividends are never fed. Fees and `reinvestedCents` come from
- * the engine's `incomeByMonth`.
+ * when it arrives). The investment-transaction writers keep a synthetic row in step with its
+ * row (`ownedLedgerTwin` in `investmentTxns.ts`); each feed pass also heals what slipped
+ * through: an unlocked synthetic row no row points at, or one out of step with its row, is
+ * deleted and re-created when still owed. Reinvested dividends are never fed. Fees and
+ * `reinvestedCents` come from the engine's `incomeByMonth`.
  */
 
 // ---- Period bounds and the default as-of date (views design §3.11, D21) ----
@@ -477,10 +480,36 @@ async function findBankTwin(tx: DbOrTx, accountId: string, date: IsoDate, amount
   return best ? { id: best.id } : undefined;
 }
 
+/**
+ * Delete the account's unlocked synthetic rows that mirror nothing any more: no investment
+ * row links to them (deleted, or relinked to the bank's row), or the linked row's date or
+ * amount moved. The pass that follows re-creates the ones still owed (`deleted` + `created`).
+ */
+async function deleteStaleSyntheticRows(tx: DbOrTx, accountId: string): Promise<number> {
+  const deleted = await tx
+    .delete(transaction)
+    .where(
+      and(
+        eq(transaction.accountId, accountId),
+        eq(transaction.source, "investment"),
+        eq(transaction.categoryLocked, false),
+        notExists(
+          tx
+            .select({ one: sql`1` })
+            .from(investmentTxn)
+            .where(and(eq(investmentTxn.ledgerTransactionId, transaction.id), eq(investmentTxn.date, transaction.date), eq(investmentTxn.amountCents, transaction.amountCents))),
+        ),
+      ),
+    )
+    .returning({ id: transaction.id });
+  return deleted.length;
+}
+
 /** One account's feed pass (the caller owns the transaction). */
 export async function feedAccount(tx: DbOrTx, acct: { id: string; investmentIncomeFeed: InvestmentIncomeFeed }, feedCategoryId: string, now: Date = new Date()): Promise<IncomeFeedCounts> {
   const counts = zeroCounts();
   if (acct.investmentIncomeFeed === "off") return counts;
+  counts.deleted = await deleteStaleSyntheticRows(tx, acct.id);
   const reinvested = await loadReinvestKeys(tx, [acct.id], null, null);
   const candidates = await tx
     .select({

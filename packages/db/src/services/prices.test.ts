@@ -144,6 +144,26 @@ describe.skipIf(!TEST_DATABASE_URL)("prices", () => {
     expect(await upsertPrices(t.db, [])).toEqual({ inserted: 0, updated: 0, kept: 0 });
   });
 
+  it("implied → provider → implied kept → manual → provider kept; an identical re-write moves nothing (imports test 20)", async () => {
+    const sec = (await createSecurity(t.db, { ticker: "IMP20", name: "Implied Twenty ETF", type: "etf", assetClass: "us_stock" }, ctx())).id;
+    const d = "2026-10-13";
+    expect(await upsertPrices(t.db, [{ securityId: sec, date: d, close: f8("250.66"), source: "implied" }])).toEqual({ inserted: 1, updated: 0, kept: 0 });
+    expect(await upsertPrices(t.db, [{ securityId: sec, date: d, close: f8("250.7"), source: "provider", provider: "tiingo" }])).toEqual({ inserted: 0, updated: 1, kept: 0 });
+    expect((await getPrice(t.db, sec, d))!).toMatchObject({ close: f8("250.7"), source: "provider", provider: "tiingo" });
+    expect(await upsertPrices(t.db, [{ securityId: sec, date: d, close: f8("250.66"), source: "implied" }])).toEqual({ inserted: 0, updated: 0, kept: 1 });
+    expect((await getPrice(t.db, sec, d))!.close).toBe(f8("250.7"));
+    expect(await upsertPrices(t.db, [{ securityId: sec, date: d, close: f8("251"), source: "manual" }])).toEqual({ inserted: 0, updated: 1, kept: 0 });
+    expect(await upsertPrices(t.db, [{ securityId: sec, date: d, close: f8("250.7"), source: "provider", provider: "tiingo" }])).toEqual({ inserted: 0, updated: 0, kept: 1 });
+    const before = (await getPrice(t.db, sec, d))!;
+    expect(before).toMatchObject({ close: f8("251"), source: "manual", provider: null });
+    // The same implied write again, and the same manual write again: both kept, nothing moves.
+    expect(await upsertPrices(t.db, [{ securityId: sec, date: d, close: f8("250.66"), source: "implied" }])).toEqual({ inserted: 0, updated: 0, kept: 1 });
+    expect(await upsertPrices(t.db, [{ securityId: sec, date: d, close: f8("251"), source: "manual" }])).toEqual({ inserted: 0, updated: 0, kept: 1 });
+    expect((await getPrice(t.db, sec, d))!.updatedAt.getTime()).toBe(before.updatedAt.getTime());
+    // One row per (security, date): the manual close is the one every reader sees.
+    expect((await listPrices(t.db, sec)).map((p) => [p.date, p.source, p.close])).toEqual([[d, "manual", f8("251")]]);
+  });
+
   it("manual prices and refresh requests (prices test 25)", async () => {
     const VTI = S.securities.vti;
     const batch = randomUUID();

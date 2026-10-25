@@ -1,0 +1,12 @@
+/* Holdings: one row per security with per-account sub-rows, the concentration notes and the inline class/split editor. */
+.hold-table td.name { min-width: 13rem; }
+.hold-table td.actions button + button { margin-left: 0.35rem; }
+.hold-concentration { list-style: none; margin: 0.75rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.9em; }
+.inv-split-editor { display: flex; flex-wrap: wrap; gap: 0.75rem 1.5rem; align-items: flex-start; padding: 0.25rem 0; }
+.inv-split-editor > label { min-width: 12rem; }
+.inv-split-rows { display: flex; flex-direction: column; gap: 0.4rem; flex: 1 1 320px; }
+.inv-split-rows select { max-width: 12rem; }
+.inv-split-pct { width: 5.5rem; }
+@media (max-width: 800px) {
+  .hold-table .muted.small { display: none; }
+}

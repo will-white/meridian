@@ -49,8 +49,11 @@ import { expectedCloseFor } from "./prices.js";
  * plug is a `cash_plug` line "Cash (from balance)"; a negative one is a `negative_residual`
  * warning and never negative cash. Cash transfers after the anchor are carried as a
  * `carried_flows` line; on the lots basis the trades' own cash legs after the anchor (buys −,
- * sells +, dividends, interest, fees) are a `cash` line "Cash (from trades)". `cash_inference =
- * off` disables all of it: the value is the positions alone.
+ * sells +, dividends, interest, fees) are a `cash` line "Cash (from trades)". A balance OLDER
+ * than the statement in use cannot plug cash on top of it (the statement's own value is the
+ * value on its date and the flows up to that date are inside it): a stale anchor adds no plug,
+ * carried cash starts at the statement, and the anchor only warns when the holdings exceed it.
+ * `cash_inference = off` disables all of it: the value is the positions alone.
  *
  * Price status (§3.4, C26) is user-facing freshness: trading days behind the expected close,
  * for `provider`-mode securities only; `implied` and `manual` modes report their mode;
@@ -675,7 +678,8 @@ interface CashBlock {
 /**
  * The anchored plug, the lots basis' trade cash and the carried transfers. `securitiesAt(d)` is
  * Σ of the current basis' positions priced on `d`; `carriedFrom` is where carried cash starts
- * without an anchor (the snapshot date for the snapshot/positions bases, inception for lots).
+ * without an anchor, or with one older than it (the snapshot date for the snapshot/positions
+ * bases, inception for lots).
  */
 function inferCash(
   ctx: Context,
@@ -689,6 +693,10 @@ function inferCash(
   const lines: LineValuation[] = [];
   const warnings: ValuationWarning[] = [];
   const anchor = latestBalance(acct, date);
+  // A balance older than the statement is stale for it (decision 8: the statement is the value
+  // on its date, and the transfers up to that date are already in it): no plug is added on top
+  // and carried cash starts at the statement; the balance still says when the holdings exceed it.
+  const stale = anchor !== null && carriedFrom !== null && anchor.date < carriedFrom;
   if (anchor) {
     const securities = securitiesAt(anchor.date);
     if (securities === null) {
@@ -699,8 +707,9 @@ function inferCash(
       });
     } else {
       const plug = anchor.balanceCents - securities;
-      if (plug > 0n) lines.push(syntheticLine("cash_plug", CASH_PLUG_NAME, anchor.date, plug));
-      else if (plug < 0n) {
+      if (plug > 0n) {
+        if (!stale) lines.push(syntheticLine("cash_plug", CASH_PLUG_NAME, anchor.date, plug));
+      } else if (plug < 0n) {
         warnings.push({
           code: "negative_residual",
           message: `Holdings exceed the account value by $${formatCents(-plug)}: the positions are newer than the balance, or the balance is stale`,
@@ -709,7 +718,7 @@ function inferCash(
       }
     }
   }
-  const after = anchor ? anchor.date : carriedFrom;
+  const after = anchor && !stale ? anchor.date : carriedFrom;
   if (basis === "lots") {
     const tradeCash = sumBetween(acct.cashEffects, after, date);
     if (tradeCash !== 0n) lines.push(syntheticLine("cash", TRADE_CASH_NAME, after, tradeCash));
@@ -1097,24 +1106,33 @@ export interface NewAccount {
   openingCents: bigint;
 }
 
-/** `ChangeSummaryView` minus `incomeCents` and `uncategorizedRows`, which the service fills. */
+/**
+ * `ChangeSummaryView` minus `incomeCents` and `uncategorizedRows`, which the service fills.
+ * The totals cover the accounts valued at the end: those also valued at the start are measured,
+ * the others enter as new; an account valued at the start but not at the end is `missing` and
+ * in no total (as in `valueSeries`), never read as a fall to zero.
+ */
 export interface PeriodChange {
   period: InvestmentPeriod;
   from: IsoDate;
   to: IsoDate;
-  /** Σ over the accounts valued at the start; null when none is. */
+  /** Σ over the accounts valued at both ends; null when none is valued at the start, or none of those at the end. */
   startCents: bigint | null;
   /** Σ over the accounts valued at the end. */
   endCents: bigint;
   changeCents: bigint | null;
   changeBp: number | null;
-  /** External flows in (from, to] over the accounts valued at the start, plus new accounts' opening values. */
+  /** External flows in (from, to] over the accounts valued at both ends, plus new accounts' opening values (and later flows). */
   netFlowsCents: bigint;
   /** change − net flows; null with a reason when a value cannot contain its flows. */
   growthCents: bigint | null;
   growthReason: GrowthReason | null;
   newAccounts: NewAccount[];
   accounts: AccountPeriodChange[];
+  /** True when `missing` is non-empty. */
+  partial: boolean;
+  /** Accounts valued at the start but not at the end, left out of every total. */
+  missing: string[];
 }
 
 /** The account's first non-null value on a data date in (`after`, `through`]. */
@@ -1139,10 +1157,12 @@ function flowsNotInValue(acct: AccountData, end: AccountValuation, windowStart: 
 /**
  * One computation of a period's change (decision 12): `start = periodStart(period, end)`,
  * `change = V(end) − V(start)`, `netFlows` = external flows in (start, end] over the accounts
- * valued at the start plus the opening value of every account that enters after the start
- * (and its flows after that opening), `growth = change − netFlows`. When no selected account
- * is valued at the start the change is null and nothing is "new". Null when the period has no
- * start (`all` without data, `custom` without `from`).
+ * valued at both ends plus the opening value of every account that enters after the start
+ * (and its flows after that opening), `growth = change − netFlows`. An account valued at the
+ * start but not at the end (a lots-basis position without a price) keeps its own row but is
+ * left out of the totals, which are marked `partial`. When no selected account is valued at
+ * the start the change is null and nothing is "new". Null when the period has no start (`all`
+ * without data, `custom` without `from`).
  */
 export function periodChange(input: ValuationInput, accountIds: readonly string[], opts: PeriodChangeOptions): PeriodChange | null {
   const ctx = contextOf(input);
@@ -1159,9 +1179,11 @@ export function periodChange(input: ValuationInput, accountIds: readonly string[
   const anyAtStart = rows.some((r) => r.atStart.valueCents !== null);
   const accounts: AccountPeriodChange[] = [];
   const newAccounts: NewAccount[] = [];
+  const missing: string[] = [];
   let startCents = 0n;
   let endCents = 0n;
   let netFlowsCents = 0n;
+  let measured = 0;
   let uncontained = false;
 
   for (const { acct, atStart, atEnd } of rows) {
@@ -1175,11 +1197,18 @@ export function periodChange(input: ValuationInput, accountIds: readonly string[
     }
     if (atStart.valueCents !== null) {
       const flows = sumBetween(acct.allFlows, start, end);
-      startCents += atStart.valueCents;
-      netFlowsCents += flows;
       const change = endValue === null ? null : endValue - atStart.valueCents;
       const missingFlows = flowsNotInValue(acct, atEnd, start);
-      if (missingFlows !== 0n) uncontained = true;
+      if (endValue === null) {
+        // Unvalued at the end: the change cannot be measured, so neither the start value nor
+        // the flows enter the totals (a start value alone would read as a fall to zero).
+        missing.push(acct.account.id);
+      } else {
+        measured += 1;
+        startCents += atStart.valueCents;
+        netFlowsCents += flows;
+        if (missingFlows !== 0n) uncontained = true;
+      }
       accounts.push({
         ...base,
         startCents: atStart.valueCents,
@@ -1214,9 +1243,10 @@ export function periodChange(input: ValuationInput, accountIds: readonly string[
     }
   }
 
-  if (!anyAtStart) {
-    return { period: opts.period, from: start, to: end, startCents: null, endCents, changeCents: null, changeBp: null, netFlowsCents: 0n, growthCents: null, growthReason: null, newAccounts: [], accounts };
-  }
+  const unmeasured = { period: opts.period, from: start, to: end, startCents: null, endCents, changeCents: null, changeBp: null, netFlowsCents: 0n, growthCents: null, growthReason: null, newAccounts: [], accounts };
+  if (!anyAtStart) return { ...unmeasured, partial: false, missing: [] };
+  // Every account valued at the start is unvalued at the end: nothing is measured (null, not 0).
+  if (measured === 0 && newAccounts.length === 0) return { ...unmeasured, partial: true, missing };
   const changeCents = endCents - startCents;
   return {
     period: opts.period,
@@ -1231,5 +1261,7 @@ export function periodChange(input: ValuationInput, accountIds: readonly string[
     growthReason: uncontained ? "flows_not_in_value" : null,
     newAccounts,
     accounts,
+    partial: missing.length > 0,
+    missing,
   };
 }

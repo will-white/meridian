@@ -8,6 +8,8 @@ import { money, shortDate } from "../../lib/format.js";
  */
 
 export type NetWorthView = DashboardView["netWorth"];
+export type NetWorthBreakdown = NonNullable<NetWorthView["breakdown"]>;
+export type InvestmentsBlock = NonNullable<DashboardView["investments"]>;
 export type BillDue = DashboardView["billsDue"][number];
 export type ReviewView = DashboardView["review"];
 export type SyncAttention = DashboardView["sync"]["attention"][number];
@@ -100,4 +102,61 @@ export function syncStatusText(status: SyncAttention["status"]): string {
     default:
       return "ok";
   }
+}
+
+// ---- Phase 3: the net-worth breakdown and the investments block (views design §5, seams C47) ----
+
+/** "Investments $45,252.00 (as of 10/13/26) · Cash $5,000.00 · Debt $0.00" (plus "· Other $X" when any). */
+export function breakdownText(b: NetWorthBreakdown): string {
+  const parts = [`Investments ${money(b.investmentsCents)}${b.investmentsAsOf ? ` (as of ${shortDate(b.investmentsAsOf)})` : ""}`, `Cash ${money(b.cashCents)}`, `Debt ${money(b.debtCents)}`];
+  if (BigInt(b.otherCents) !== 0n) parts.push(`Other ${money(b.otherCents)}`);
+  return parts.join(" · ");
+}
+
+/** "2 accounts: 1 full history, 1 positions" (zero counts omitted). */
+export function fidelityCountsText(c: InvestmentsBlock["fidelityCounts"]): string {
+  const total = c.balance_only + c.positions + c.full_history;
+  const parts: string[] = [];
+  if (c.full_history > 0) parts.push(`${c.full_history} full history`);
+  if (c.positions > 0) parts.push(`${c.positions} positions`);
+  if (c.balance_only > 0) parts.push(`${c.balance_only} balance only`);
+  return `${total} account${total === 1 ? "" : "s"}${parts.length > 0 ? `: ${parts.join(", ")}` : ""}`;
+}
+
+/** "+$360.00 (+0.8%) today" from the price movement on today's quantities; a neutral note when no account could be priced. */
+export function investmentsDayChangeText(inv: Pick<InvestmentsBlock, "dayChangeCents" | "dayChangeBp">): ChangeText {
+  if (inv.dayChangeCents === null) return { text: "No day change yet: prices or positions are pending", tone: "neutral" };
+  const change = BigInt(inv.dayChangeCents);
+  const signed = `${change > 0n ? "+" : ""}${money(inv.dayChangeCents)}`;
+  const pct = inv.dayChangeBp === null ? "" : ` (${inv.dayChangeBp > 0 ? "+" : ""}${percentText(inv.dayChangeBp)})`;
+  return { text: `${signed}${pct} today`, tone: change > 0n ? "ok" : change < 0n ? "bad" : "neutral" };
+}
+
+/** "2 accounts not yet checked against a statement"; null when every positions account has a reconciliation. */
+export function awaitingReconcileText(n: number): string | null {
+  if (n === 0) return null;
+  return `${n} account${n === 1 ? "" : "s"} not yet checked against a statement`;
+}
+
+/** "3 securities to review"; null when none. */
+export function securitiesReviewText(n: number): string | null {
+  if (n === 0) return null;
+  return `${n} securit${n === 1 ? "y" : "ies"} to review`;
+}
+
+/** "Stale: Old 401k (10/01/26), Roth (no value)"; null when every account is current. */
+export function staleAccountsText(stale: InvestmentsBlock["staleAccounts"]): string | null {
+  if (stale.length === 0) return null;
+  return `Stale: ${stale.map((a) => `${a.name} (${a.valuationDate ? shortDate(a.valuationDate) : "no value"})`).join(", ")}`;
+}
+
+/** The price feed's health: current through the expected close, behind with counts, or not configured. */
+export function priceFeedText(pf: InvestmentsBlock["priceFeed"]): ChangeText {
+  if (!pf.configured) return { text: "Price feed not configured: values use statement, implied and manual prices", tone: "neutral" };
+  const issues: string[] = [];
+  if (pf.stale > 0) issues.push(`${pf.stale} stale`);
+  if (pf.notFound > 0) issues.push(`${pf.notFound} not found`);
+  if (pf.error > 0) issues.push(`${pf.error} error${pf.error === 1 ? "" : "s"}`);
+  if (issues.length === 0) return { text: `Price feed current through ${shortDate(pf.expectedDate)}`, tone: "ok" };
+  return { text: `Price feed behind ${shortDate(pf.expectedDate)}: ${issues.join(", ")}`, tone: "bad" };
 }

@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router";
 import { formatCents, localDateInTimeZone, parseDecimalToCents } from "@meridian/shared";
-import type { AccountView, HouseholdSettingView } from "@meridian/shared";
+import type { AccountView, CategoryView, HouseholdSettingView, SecurityView } from "@meridian/shared";
 import { api } from "../lib/api.js";
 import { money, titleCase } from "../lib/format.js";
+import { bpToPpInput, dollarsToCents, ppToBp } from "../lib/investments.js";
+import { securityLabel } from "../lib/investmentForms.js";
 import { Card, ErrorText } from "../components/ui.js";
 import "./SettingsPage.css";
 
@@ -14,6 +17,13 @@ interface Form {
   primaryAccountId: string;
   projectionDefaultDays: string;
   timezone: string;
+  /** Phase 3: the investments card. */
+  benchmarkSecurityId: string;
+  investmentIncomeCategoryId: string;
+  /** Percentage points with one decimal ("5.0"). */
+  rebalanceBand: string;
+  /** Dollars. */
+  rebalanceMinTrade: string;
 }
 
 /** Wire shape of PATCH /settings (UpdateHouseholdSettingBody); only changed fields are sent. */
@@ -24,11 +34,15 @@ interface Patch {
   primaryAccountId?: string | null;
   projectionDefaultDays?: number;
   timezone?: string;
+  benchmarkSecurityId?: string | null;
+  investmentIncomeCategoryId?: string | null;
+  rebalanceBandBp?: number;
+  rebalanceMinTradeCents?: string;
 }
 
 const HORIZON_PRESETS = [30, 60, 90, 180, 365] as const;
-/** Keys that depend on the settings: plan start month moves carried-in, threshold and horizon move the projection. */
-const DEPENDENT_KEYS = [["settings"], ["plan"], ["dashboard"], ["cashflow"]] as const;
+/** Keys that depend on the settings: plan start month moves carried-in, threshold and horizon move the projection; the benchmark, band and feed category move the investments views. */
+const DEPENDENT_KEYS = [["settings"], ["plan"], ["dashboard"], ["cashflow"], ["investments"], ["valuation"]] as const;
 
 function fromView(v: HouseholdSettingView): Form {
   return {
@@ -38,6 +52,10 @@ function fromView(v: HouseholdSettingView): Form {
     primaryAccountId: v.primaryAccountId ?? "",
     projectionDefaultDays: String(v.projectionDefaultDays),
     timezone: v.timezone,
+    benchmarkSecurityId: v.benchmarkSecurityId ?? "",
+    investmentIncomeCategoryId: v.investmentIncomeCategoryId ?? "",
+    rebalanceBand: bpToPpInput(v.rebalanceBandBp),
+    rebalanceMinTrade: formatCents(BigInt(v.rebalanceMinTradeCents)),
   };
 }
 
@@ -62,6 +80,16 @@ function buildPatch(form: Form, current: HouseholdSettingView): { ok: true; patc
   const tz = form.timezone.trim();
   if (tz === "") return { ok: false, error: "Time zone is required" };
   if (tz !== current.timezone) patch.timezone = tz;
+  const benchmark = form.benchmarkSecurityId === "" ? null : form.benchmarkSecurityId;
+  if (benchmark !== current.benchmarkSecurityId) patch.benchmarkSecurityId = benchmark;
+  const category = form.investmentIncomeCategoryId === "" ? null : form.investmentIncomeCategoryId;
+  if (category !== current.investmentIncomeCategoryId) patch.investmentIncomeCategoryId = category;
+  const bandBp = ppToBp(form.rebalanceBand);
+  if (bandBp === null) return { ok: false, error: "The rebalance band is a number of percentage points from 0 to 50 with at most one decimal" };
+  if (bandBp !== current.rebalanceBandBp) patch.rebalanceBandBp = bandBp;
+  const minTrade = dollarsToCents(form.rebalanceMinTrade);
+  if (minTrade === null) return { ok: false, error: "The minimum trade is a dollar amount" };
+  if (minTrade !== current.rebalanceMinTradeCents) patch.rebalanceMinTradeCents = minTrade;
   return { ok: true, patch };
 }
 
@@ -92,6 +120,8 @@ export function SettingsPage() {
   const qc = useQueryClient();
   const settings = useQuery({ queryKey: ["settings"], queryFn: () => api<HouseholdSettingView>("/settings") });
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api<AccountView[]>("/accounts") });
+  const securities = useQuery({ queryKey: ["securities", "all"], queryFn: () => api<SecurityView[]>("/investments/securities") });
+  const categories = useQuery({ queryKey: ["categories"], queryFn: () => api<CategoryView[]>("/categories") });
   const [form, setForm] = useState<Form | null>(null);
   const [dirty, setDirty] = useState(false);
   const [clientError, setClientError] = useState<string | null>(null);
@@ -137,6 +167,9 @@ export function SettingsPage() {
   const primaryMissing = form !== null && form.primaryAccountId !== "" && accounts.data !== undefined && !candidates.some((a) => a.id === form.primaryAccountId);
   const tzKnown = form === null || form.timezone.trim() === "" || zoneKnownHere(form.timezone.trim());
   const tzToday = form && tzKnown && form.timezone.trim() !== "" ? localDateInTimeZone(new Date(), form.timezone.trim()) : null;
+  const benchmarks = (securities.data ?? []).filter((s) => s.type !== "cash" && !s.archived);
+  const benchmarkMissing = form !== null && form.benchmarkSecurityId !== "" && securities.data !== undefined && !benchmarks.some((s) => s.id === form.benchmarkSecurityId);
+  const incomeCategories = (categories.data ?? []).filter((c) => c.bucket === "income" && !c.hidden);
 
   return (
     <>
@@ -210,6 +243,59 @@ export function SettingsPage() {
                   {!tzKnown ? " This browser does not recognise that zone; the server will say whether it is valid." : ""}
                 </span>
               </label>
+            </div>
+          </Card>
+          <Card title="Investments">
+            <div className="settings-fields">
+              <label>
+                Benchmark
+                <select value={form.benchmarkSecurityId} onChange={(e) => edit({ benchmarkSecurityId: e.target.value })}>
+                  <option value="">— none —</option>
+                  {benchmarks.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {securityLabel(s)}
+                    </option>
+                  ))}
+                  {benchmarkMissing && <option value={form.benchmarkSecurityId}>(current: not an active security)</option>}
+                </select>
+                <span className="muted small">
+                  The Performance page compares every account with the same deposits made into this fund (a shadow portfolio). It is priced nightly even when nothing holds it; add one on the{" "}
+                  <Link to="/investments/securities">Securities page</Link> if it is missing.
+                </span>
+              </label>
+              <label>
+                Investment income category
+                <select value={form.investmentIncomeCategoryId} onChange={(e) => edit({ investmentIncomeCategoryId: e.target.value })}>
+                  <option value="">— none (income feeds stay off) —</option>
+                  {incomeCategories.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+                <span className="muted small">
+                  An income-bucket category that dividends and interest fed into the plan land in; each account chooses its feed mode on its{" "}
+                  <Link to="/investments/income">Income page</Link>. {incomeCategories.length === 0 && categories.data !== undefined ? <Link to="/plan">Create one on the Plan page.</Link> : null}
+                </span>
+              </label>
+              <label>
+                Rebalance when a class drifts more than
+                <span className="row wrap">
+                  <input inputMode="decimal" value={form.rebalanceBand} onChange={(e) => edit({ rebalanceBand: e.target.value })} className="settings-short" aria-label="Rebalance band in percentage points" />
+                  <span className="muted">percentage points</span>
+                </span>
+                <span className="muted small">The Allocation page flags a class outside this band around its target and suggests trades (never executed).</span>
+              </label>
+              <label>
+                Ignore rebalance trades under
+                <span className="row wrap">
+                  <span className="muted">$</span>
+                  <input inputMode="decimal" value={form.rebalanceMinTrade} onChange={(e) => edit({ rebalanceMinTrade: e.target.value })} className="settings-short" aria-label="Minimum rebalance trade in dollars" />
+                </span>
+              </label>
+              <p className="muted small settings-note">
+                Prices: the provider, its schedule and each security's pricing mode are on the <Link to="/investments/prices">Prices page</Link> (PRICE_PROVIDER and TIINGO_API_KEY come from the environment, never from here).
+              </p>
             </div>
           </Card>
           <div className="row wrap settings-actions">

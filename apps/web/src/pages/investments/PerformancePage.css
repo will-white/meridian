@@ -1,0 +1,20 @@
+/* Performance: the returns table with per-row flows and the engine's detail, the growth chart legend. */
+.perf-filter select { max-width: 14rem; }
+.perf-table td.name { min-width: 14rem; }
+.perf-table tr.perf-total td { font-weight: 600; background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.perf-table tr.perf-total td .muted { font-weight: 400; }
+.perf-row-detail { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.25rem 0; font-weight: 400; }
+.perf-row-detail h4, .perf-detail h4 { margin: 0.5rem 0 0.25rem; font-size: 0.9rem; }
+.perf-flows tr.perf-flow-internal td { text-decoration: line-through; color: var(--muted); }
+.perf-flows tr.perf-flow-internal td .badge { text-decoration: none; }
+.perf-detail { display: flex; flex-direction: column; gap: 0.35rem; padding: 0.5rem 0 0; border-top: 1px dashed var(--line); margin-top: 0.5rem; }
+.perf-detail-head { gap: 0.4rem 1.25rem; font-size: 0.9em; }
+.perf-detail tr.perf-skipped td { color: var(--muted); font-style: italic; }
+.perf-investor-flows { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); gap: 0.15rem 1rem; font-size: 0.85em; }
+.perf-investor-flows li { display: flex; justify-content: space-between; gap: 0.5rem; }
+.perf-statement-check { margin: 0; font-size: 0.9em; }
+.perf-raw-warnings summary { cursor: pointer; }
+.inv-swatch.dashed { background-image: repeating-linear-gradient(90deg, transparent 0 3px, var(--panel) 3px 6px); }
+@media (max-width: 800px) {
+  .perf-table .muted.small { display: none; }
+}

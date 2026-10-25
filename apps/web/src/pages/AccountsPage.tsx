@@ -1,9 +1,12 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AccountType, TaxTreatment, formatCents, parseDecimalToCents, type AccountView } from "@meridian/shared";
-import { api } from "../lib/api.js";
+import { Link } from "react-router";
+import { AccountType, TaxTreatment, formatCents, isInvestmentAccountType, parseDecimalToCents, type AccountView } from "@meridian/shared";
+import { api, query } from "../lib/api.js";
 import { money, shortDate, titleCase } from "../lib/format.js";
+import { lastReconciliationText, positionsMatchText } from "../lib/investmentForms.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
+import { FidelityBadge } from "../components/investments/FidelityBadge.js";
 import "./AccountsPage.css";
 
 const GROUPS: Array<[string, AccountView["type"][]]> = [
@@ -238,6 +241,7 @@ export function AccountsPage() {
                         <div className="muted small">
                           {a.transactionCount} txns{a.connectionName ? ` · ${a.connectionName}` : " · manual"}
                         </div>
+                        {isInvestmentAccountType(a.type) && <InvestmentBlock a={a} />}
                       </td>
                       <td>{a.institution ?? "—"}</td>
                       <td>
@@ -265,6 +269,13 @@ export function AccountsPage() {
                         <label className="inline">
                           <input type="checkbox" checked={a.onBudget} onChange={(e) => update.mutate({ id: a.id, onBudget: e.target.checked })} /> on budget
                         </label>
+                        {isInvestmentAccountType(a.type) && a.onBudget && (
+                          <div className="small">
+                            <button type="button" className="link small" onClick={() => update.mutate({ id: a.id, onBudget: false })} disabled={update.isPending} title="Investment accounts are usually off budget: their buys and sells are not spending">
+                              move off budget?
+                            </button>
+                          </div>
+                        )}
                       </td>
                       <td className="acct-cf">
                         <button className="link small" onClick={() => setEditing(editing === a.id ? null : a.id)} aria-expanded={editing === a.id}>
@@ -342,4 +353,32 @@ export function AccountsPage() {
 /** A fragment with a key: lets one account render its row and its editor row as siblings in the tbody. */
 function RowGroup({ children }: { children: ReactNode }) {
   return <>{children}</>;
+}
+
+/**
+ * The Phase 3 block under an investment account (plan decision 7): the derived
+ * fidelity badge, the positions check, the last statement check, securities to
+ * review, and links to the account's positions and trades, the importers and
+ * the Reconcile page.
+ */
+function InvestmentBlock({ a }: { a: AccountView }) {
+  const inv = a.investment;
+  const match = inv ? positionsMatchText(inv) : null;
+  const rec = inv ? lastReconciliationText(inv.lastReconciliation) : null;
+  return (
+    <div className="acct-inv small">
+      <div className="row wrap">
+        <FidelityBadge fidelity={inv?.fidelity ?? "balance_only"} fidelityNote={inv?.fidelityNote ?? null} positionsDate={inv?.lastSnapshotDate ?? null} accountId={a.id} />
+        {match && !inv?.fidelityNote && <span className={`tone-${match.tone}`}>{match.text}</span>}
+        {rec ? <span className={`tone-${rec.tone}`}>{rec.text}</span> : inv && inv.fidelity !== "balance_only" ? <Badge tone="warn">not reconciled</Badge> : null}
+        {inv && inv.needsReviewCount > 0 && <Link to="/investments/securities?chip=review">{inv.needsReviewCount} securit{inv.needsReviewCount === 1 ? "y" : "ies"} to review</Link>}
+      </div>
+      <div className="row wrap acct-inv-links">
+        <Link to={`/investments/accounts/${a.id}`}>Positions</Link>
+        <Link to={`/investments/accounts/${a.id}?tab=trades`}>Trades</Link>
+        <Link to="/import?kind=positions">Import</Link>
+        <Link to={`/investments/reconcile${query({ accountId: a.id, ...(inv?.lastSnapshotDate ? { date: inv.lastSnapshotDate } : {}) })}`}>Reconcile to statement</Link>
+      </div>
+    </div>
+  );
 }

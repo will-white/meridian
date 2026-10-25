@@ -15,6 +15,16 @@ import { RulesPage } from "./pages/RulesPage.js";
 import { SettingsPage } from "./pages/SettingsPage.js";
 import { SubscriptionsPage } from "./pages/SubscriptionsPage.js";
 import { TransactionsPage } from "./pages/TransactionsPage.js";
+import { AccountInvestmentsPage } from "./pages/investments/AccountInvestmentsPage.js";
+import { AllocationPage } from "./pages/investments/AllocationPage.js";
+import { HoldingsPage } from "./pages/investments/HoldingsPage.js";
+import { IncomePage } from "./pages/investments/IncomePage.js";
+import { InvestmentsLayout } from "./pages/investments/InvestmentsLayout.js";
+import { PerformancePage } from "./pages/investments/PerformancePage.js";
+import { PortfolioPage } from "./pages/investments/PortfolioPage.js";
+import { PricesPage } from "./pages/investments/PricesPage.js";
+import { ReconcilePage } from "./pages/investments/ReconcilePage.js";
+import { SecuritiesPage } from "./pages/investments/SecuritiesPage.js";
 
 export function App() {
   const status = useAuthStatus();
@@ -43,6 +53,19 @@ export function App() {
         <Route path="/connections" element={<ConnectionsPage />} />
         <Route path="/rules" element={<RulesPage />} />
         <Route path="/import" element={<ImportPage />} />
+        {/* Phase 3: the Investments shell with its sub-pages (views design §5); securities and the per-account page mount under it. */}
+        <Route path="/investments" element={<InvestmentsLayout />}>
+          <Route index element={<PortfolioPage />} />
+          <Route path="allocation" element={<AllocationPage />} />
+          <Route path="holdings" element={<HoldingsPage />} />
+          <Route path="performance" element={<PerformancePage />} />
+          <Route path="income" element={<IncomePage />} />
+          <Route path="prices" element={<PricesPage />} />
+          <Route path="reconcile" element={<ReconcilePage />} />
+          <Route path="securities" element={<SecuritiesPage />} />
+          <Route path="accounts/:id" element={<AccountInvestmentsPage />} />
+        </Route>
+        <Route path="/prices" element={<Navigate to="/investments/prices" replace />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Route>
     </Routes>

@@ -52,7 +52,9 @@ import { INCEPTION_DATE, listInvestmentAccounts, loadValuationInput, type Loaded
  *   those two kinds themselves, so feeding them the full union never double counts).
  * - `loadPerformanceInput`: full-history accounts (derived fidelity) get their securities rows,
  *   picks, stored lot ids and transfer sources (from the lots service's build), reported balance
- *   anchors and the latest snapshot for the position check; every other account gets the
+ *   anchors, a price series reaching back to the two latest anchors on or before `from` (the
+ *   engine prices the anchor's securities for the cash plug and the statement check) and the
+ *   latest snapshot for the position check; every other account gets the
  *   valuation chain's points (`valueAccountOn` on its data dates and the window's ends), so the
  *   Performance page's values are the Portfolio's on every date (seams §1.8).
  * - `getPerformance`: validation, defaults (`from` = the day before the selected accounts'
@@ -337,7 +339,8 @@ async function securityMeta(db: DbOrTx, ids: Iterable<string>): Promise<Map<stri
  * Everything `computePerformance` needs for `accountIds` over `(from, to]` with holdings as of
  * `asOf` (lots design §6.2 under decisions 7 and 8): full-history accounts from their rows and
  * reported balances, the others from the chain's points; price series for the full accounts'
- * securities and the benchmark (adjusted closes when every row has one).
+ * securities (from the earlier of `from` and their two latest anchors on or before it) and the
+ * benchmark (adjusted closes when every row has one).
  */
 export async function loadPerformanceInput(db: DbOrTx, q: LoadPerformanceInputQuery): Promise<LoadedPerformanceInput> {
   if (q.to <= q.from) throw new PlanError(400, "validation", `to ${q.to} must be after from ${q.from}`);
@@ -363,6 +366,11 @@ export async function loadPerformanceInput(db: DbOrTx, q: LoadPerformanceInputQu
   const chain = nonFull.length === 0 ? null : await loadValuationInput(db, { accountIds: nonFull.map((a) => a.id), from: q.from, to: q.to, now, fidelities });
 
   const securityIds = new Set<string>();
+  // The engine prices a full account's securities at its cash anchor (D19) and, for the statement
+  // check, at the anchor before the one it checks; the latest two reported balances on or before
+  // `from` can predate it, so the price series must reach back to them (a close between such an
+  // anchor and `from` would otherwise hide the anchor's own close and misprice the cash plug).
+  let priceFrom = q.from;
   const inputs: PerformanceAccountInput[] = [];
   for (const a of accounts) {
     const fidelity = fidelities.get(a.id)?.fidelity ?? "balance_only";
@@ -384,6 +392,7 @@ export async function loadPerformanceInput(db: DbOrTx, q: LoadPerformanceInputQu
         .where(and(eq(balanceSnapshot.accountId, a.id), ne(balanceSnapshot.source, "computed"), lte(balanceSnapshot.date, through)))
         .orderBy(asc(balanceSnapshot.date));
       const cashAnchors: BalanceAnchorInput[] = anchors.map((r) => ({ date: r.date, balanceCents: r.balanceCents }));
+      for (const r of cashAnchors.filter((r) => r.date <= q.from).slice(-2)) if (r.date < priceFrom) priceFrom = r.date;
       inputs.push({
         ...base,
         txns: build.txns,
@@ -399,7 +408,7 @@ export async function loadPerformanceInput(db: DbOrTx, q: LoadPerformanceInputQu
     }
   }
 
-  const series = await loadPriceSeries(db, [...securityIds], q.from, through);
+  const series = await loadPriceSeries(db, [...securityIds], priceFrom, through);
   const prices: PriceSeriesInput[] = [...series.values()].map((s) => ({ securityId: s.securityId, points: s.points.map((p) => ({ date: p.date, close: p.close, source: p.source })) }));
 
   let benchmark: BenchmarkSeriesInput | null = null;

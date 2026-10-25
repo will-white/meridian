@@ -19,9 +19,9 @@ import {
   type ValueSource,
 } from "@meridian/shared";
 import type { Db, DbOrTx } from "../index.js";
-import { accountReconciliation, balanceSnapshot, holdingSnapshot, security } from "../schema/index.js";
+import { account, accountReconciliation, balanceSnapshot, holdingSnapshot, security } from "../schema/index.js";
 import { PlanError, writeAudit, type AuditContext } from "./audit.js";
-import { loadInvestmentAccount, positionsAuditJson, rebuildImpliedPrices, replaceHoldingSnapshot, requestValuation, type SnapshotPosition } from "./holdings.js";
+import { loadInvestmentAccount, positionsAuditJson, rebuildImpliedPrices, replaceHoldingSnapshot, requestValuation, writeReportedBalance, type SnapshotPosition } from "./holdings.js";
 import { requestPriceRefresh } from "./prices.js";
 import { cashSecurity, listHeldSecurityIds, requireSecurity, resolveSecurity } from "./securities.js";
 import { loadValuationInput } from "./valuation.js";
@@ -442,7 +442,10 @@ export interface ReconcileCommitRecord {
  * Record the attempt and, with `accept`, make the statement the app's truth for the date
  * (§3.10 commit): a `manual` holding snapshot and balance row through `replaceHoldingSnapshot`
  * (cash rows on the cash security, quantity = dollars), implied prices rebuilt, the valuation
- * job queued, a price refresh for newly referenced provider securities, one audit batch.
+ * job queued, a price refresh for newly referenced provider securities, one audit batch. A
+ * total-only statement (no rows) has no positions to write: its total becomes the date's
+ * `manual` balance row and the date's holding snapshot is left as it is (the chain then
+ * anchors cash on that balance), `holding_snapshot_date` stays null.
  */
 export async function commitReconciliation(db: Db, input: ReconcileCommitInput, ctx: AuditContext & ReconcileCommitOptions): Promise<ReconcileCommitRecord> {
   const accept = input.accept ?? true;
@@ -453,6 +456,7 @@ export async function commitReconciliation(db: Db, input: ReconcileCommitInput, 
       if (unknown.length > 0) throw new PlanError(400, "unknown_ticker", `Unknown securities: ${unknown.map((r) => r.ticker ?? r.name ?? "?").join(", ")}. Create them first.`);
     }
     const acceptedBefore = preview.alreadyReconciled;
+    const totalOnly = preview.statementRows.length === 0;
     const [reconciliation] = await tx
       .insert(accountReconciliation)
       .values({
@@ -470,7 +474,7 @@ export async function commitReconciliation(db: Db, input: ReconcileCommitInput, 
         reconciled: preview.matchesToDollar,
         rows: preview.rows.map(toView) as unknown as Record<string, unknown>[],
         accepted: accept,
-        holdingSnapshotDate: accept ? input.date : null,
+        holdingSnapshotDate: accept && !totalOnly ? input.date : null,
         note: input.note ?? null,
         userId: ctx.userId,
       })
@@ -492,17 +496,26 @@ export async function commitReconciliation(db: Db, input: ReconcileCommitInput, 
         if (securityId === null) continue;
         positions.push({ securityId, quantity: r.quantity, price: r.isCash ? 100_000_000n : r.price, valueCents: r.valueCents, reportedCostBasisCents: null });
       }
-      const written = await replaceHoldingSnapshot(tx, {
-        accountId: input.accountId,
-        date: input.date,
-        source: "manual",
-        positions,
-        setBalance: true,
-        statementTotalCents: preview.statementTotalCents,
-        today: ctx.today,
-      });
-      rowsWritten = written.inserted + written.updated;
-      impliedPricesWritten = (await rebuildImpliedPrices(tx, { securityIds: written.securityIds, dates: [input.date] })).written;
+      if (totalOnly) {
+        // No positions to write: the total is the date's manual balance (`account.balance_*` follows when the date is the newest); the snapshot stays.
+        const balanceWritten = await writeReportedBalance(tx, input.accountId, input.date, preview.statementTotalCents, "manual");
+        const acct = await loadInvestmentAccount(tx, input.accountId);
+        if (balanceWritten && (acct.balanceDate === null || input.date >= acct.balanceDate)) {
+          await tx.update(account).set({ balanceCents: preview.statementTotalCents, balanceDate: input.date, updatedAt: new Date() }).where(eq(account.id, input.accountId));
+        }
+      } else {
+        const written = await replaceHoldingSnapshot(tx, {
+          accountId: input.accountId,
+          date: input.date,
+          source: "manual",
+          positions,
+          setBalance: true,
+          statementTotalCents: preview.statementTotalCents,
+          today: ctx.today,
+        });
+        rowsWritten = written.inserted + written.updated;
+        impliedPricesWritten = (await rebuildImpliedPrices(tx, { securityIds: written.securityIds, dates: [input.date] })).written;
+      }
       const after = await tx
         .select()
         .from(holdingSnapshot)
@@ -513,7 +526,9 @@ export async function commitReconciliation(db: Db, input: ReconcileCommitInput, 
         entityId: `${input.accountId}:${input.date}`,
         action: acceptedBefore ? "update" : "create",
         before: before.length === 0 ? null : positionsAuditJson(before),
-        after: { rows: positionsAuditJson(after), statementTotalCents: preview.statementTotalCents, differenceCents: preview.differenceCents, accepted: true },
+        after: totalOnly
+          ? { rows: positionsAuditJson(after), balanceCents: preview.statementTotalCents, statementTotalCents: preview.statementTotalCents, differenceCents: preview.differenceCents, accepted: true, totalOnly: true }
+          : { rows: positionsAuditJson(after), statementTotalCents: preview.statementTotalCents, differenceCents: preview.differenceCents, accepted: true },
       });
       await requestValuation(tx, { reason: "reconcile", accountId: input.accountId });
       if (ctx.queuePriceRefresh) {

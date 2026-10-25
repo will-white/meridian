@@ -1,0 +1,9 @@
+/* Account investments: the header strip with the fidelity badge and settings, the tab switch, the snapshot and trades tables. */
+.acct-inv-head { gap: 0.5rem 1.25rem; align-items: center; margin-bottom: 0.5rem; }
+.acct-inv-settings { gap: 0.5rem 1.25rem; align-items: center; }
+.acct-inv-settings label.inline { font-size: 0.9rem; }
+.acct-inv-tabs { margin-bottom: 0.75rem; }
+.acct-inv-line { font-weight: 600; margin: 0.5rem 0; }
+.acct-inv-current td { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.acct-inv-txns td.name { min-width: 10rem; }
+.acct-inv-edit { padding: 0.25rem 0; gap: 0.5rem 1rem; }

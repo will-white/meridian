@@ -1,0 +1,15 @@
+/* Prices: the feed banner, the status table with inline pricing controls, and the history drawer with the manual price form. */
+.prices-banner { background: color-mix(in srgb, var(--warn) 12%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); padding: 0.6rem 0.8rem; border-radius: 8px; margin: 0 0 1rem; font-size: 0.9em; }
+.prices-table td.name { min-width: 14rem; }
+.prices-table select { max-width: 9rem; }
+.prices-symbol { width: 7rem; }
+.prices-msg { max-width: 18rem; word-break: break-word; }
+.prices-drawer { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.25rem 0; }
+.prices-drawer-head { gap: 0.4rem 1rem; font-size: 0.9em; }
+.prices-manual { align-items: flex-end; gap: 0.5rem 0.75rem; }
+.prices-manual input { width: 9rem; }
+.prices-recent { max-width: 40rem; }
+.notice.small { padding: 0.3rem 0.6rem; }
+@media (max-width: 800px) {
+  .prices-table .hide-narrow { display: none; }
+}

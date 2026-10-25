@@ -20,7 +20,8 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
 
   r.get("/dashboard", { schema: { querystring: TodayQuery, response: { 200: DashboardView } } }, async (request, reply) => {
     const today = await resolveToday(app, request.query.today);
-    const view = toDashboardView(await getDashboard(app.db, { today }));
+    // Phase 3: the investments block values the chain on the expected price date (the server clock) and reports the feed's state.
+    const view = toDashboardView(await getDashboard(app.db, { today, now: app.now(), priceProvider: app.config.priceProvider ?? null }));
     reply.header("Cache-Control", "no-store");
     return view;
   });

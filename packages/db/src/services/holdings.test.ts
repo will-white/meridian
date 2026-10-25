@@ -252,6 +252,19 @@ describe.skipIf(!TEST_DATABASE_URL)("holding snapshots", () => {
     expect(deleted).toMatchObject({ deleted: 1, impliedPricesRemoved: 1 });
     expect(await getPrice(t.db, tgt, "2026-11-01")).toBeUndefined();
     expect((await getPrice(t.db, tgt, "2026-10-31"))!.source).toBe("manual");
+
+    // A dollar-only row (quantity null) derives no price (imports test 20); its value still reaches the balance row.
+    const dollarOnly = await replaceHoldingSnapshot(t.db, {
+      accountId: M2,
+      date: "2026-11-01",
+      source: "csv",
+      positions: [{ securityId: tgt, quantity: null, price: null, valueCents: 38000n, reportedCostBasisCents: null }],
+      today: "2026-11-01",
+    });
+    expect(dollarOnly).toMatchObject({ inserted: 1, totalValueCents: 38000n, balanceWritten: true, balanceCents: 38000n });
+    expect(await rebuildImpliedPrices(t.db, { securityIds: [tgt], dates: ["2026-11-01"] })).toEqual({ written: 0, removed: 0 });
+    expect(await getPrice(t.db, tgt, "2026-11-01")).toBeUndefined();
+    expect((await getSnapshot(t.db, M2, "2026-11-01"))!.rows).toMatchObject([{ securityId: tgt, quantity: null, price: null, valueCents: 38000n }]);
   });
 
   it("SimpleFIN-fed accounts: the Bridge balance is the comparison; balances are written only on request (imports test 24)", async () => {

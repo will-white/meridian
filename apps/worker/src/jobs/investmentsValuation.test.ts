@@ -1,6 +1,6 @@
 import { and, asc, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { account, balanceSnapshot, enqueueJob, job, type Db, type JobRow } from "@meridian/db";
+import { account, balanceSnapshot, enqueueJob, job, price, type Db, type JobRow } from "@meridian/db";
 import { createTestDb, INV_SEED_NOW, seedInvestmentFixture, seedInvestmentLots, TEST_DATABASE_URL, type InvestmentSeed, type TestDb } from "@meridian/db/testing";
 import { generateSecretsKey } from "@meridian/shared";
 import type { WorkerConfig } from "../env.js";
@@ -10,7 +10,8 @@ import { runInvestmentsValuationJob } from "./investmentsValuation.js";
 
 /**
  * `investments.valuation` on the INV seed (plan decision 9): computed balance rows from the
- * chain after each account's last reported row through the expected price date. Hand values
+ * chain after each account's last reported row through the expected price date, refreshing
+ * the computed rows the account already carries before that row as well. Hand values
  * (views §7.0 / step 8): R is anchored on its 10-09 csv statement (1 810 000) and repriced
  * 1 816 000 on 10-12 and 1 820 000 on 10-13 (10-10 and 10-11 carry 10-09's closes); B's last
  * reported row is 10-13 (2 705 200), so nothing is due until the clock moves on.
@@ -76,13 +77,14 @@ describe.skipIf(!TEST_DATABASE_URL)("investments.valuation", () => {
     expect(await runInvestmentsValuationJob(ctx, fakeJob({ reason: "snapshot", accountId: S.accounts.roth }))).toMatchObject({ accounts: 1, written: 1, kept: 3 });
     expect((await rowsOf(S.accounts.roth)).find((r) => r.date === "2026-10-12")).toEqual({ date: "2026-10-12", balanceCents: 1816000n, source: "computed" });
 
-    // A statement the owner checked on 10-11 becomes the last reported row: the window starts after it and the row stays.
+    // A statement the owner checked on 10-11 becomes the last reported row: the row stays, and the window still covers
+    // the computed rows around it (10-10, 10-12, 10-13; the anchor moved but the chain's values did not).
     await db
       .update(balanceSnapshot)
       .set({ balanceCents: 1000000n, source: "manual" })
       .where(and(eq(balanceSnapshot.accountId, S.accounts.roth), eq(balanceSnapshot.date, "2026-10-11")));
     const outcome = await runInvestmentsValuationJob(ctx, fakeJob({ reason: "reconcile", accountId: S.accounts.roth }));
-    expect(outcome).toMatchObject({ accounts: 1, written: 0, kept: 2, removed: 0 });
+    expect(outcome).toMatchObject({ accounts: 1, written: 0, kept: 3, removed: 0 });
     const rows = await rowsOf(S.accounts.roth);
     expect(rows.find((r) => r.date === "2026-10-11")).toEqual({ date: "2026-10-11", balanceCents: 1000000n, source: "manual" });
     expect(rows.find((r) => r.date === "2026-10-10")).toEqual({ date: "2026-10-10", balanceCents: 1810000n, source: "computed" });
@@ -90,6 +92,42 @@ describe.skipIf(!TEST_DATABASE_URL)("investments.valuation", () => {
       { date: "2026-10-12", balanceCents: 1816000n, source: "computed" },
       { date: "2026-10-13", balanceCents: 1820000n, source: "computed" },
     ]);
+  });
+
+  it("refreshes a computed row dated before a newer reported row when a close it depends on changes", async () => {
+    // A reconcile commit on 10-13 makes that date's row reported (the chain still says 1 820 000; a distinct
+    // value proves the guard). The computed rows of 10-10 and 10-12 stay this job's.
+    await db
+      .update(balanceSnapshot)
+      .set({ balanceCents: 1825000n, source: "manual" })
+      .where(and(eq(balanceSnapshot.accountId, S.accounts.roth), eq(balanceSnapshot.date, "2026-10-13")));
+    // The overlap re-fetch (or a manual price) doubles VTI's 10-12 close: 310 → 620. R holds 20 VTI, so its
+    // 10-12 value moves by 20 × 310 = +620 000: 1 816 000 → 2 436 000. 10-10 (10-09's closes) is unchanged.
+    await db
+      .update(price)
+      .set({ close: "620" })
+      .where(and(eq(price.securityId, S.securities.vti), eq(price.date, "2026-10-12")));
+    const outcome = await runInvestmentsValuationJob(ctx, fakeJob({ reason: "prices", dedupeKey: "investments.valuation" }));
+    expect(outcome).toMatchObject({ accounts: 1, written: 1, kept: 1, removed: 0 });
+    expect(outcome.skipped).toEqual([{ accountId: S.accounts.brokerage, reason: "up_to_date" }]);
+    expect((await rowsOf(S.accounts.roth)).slice(-4)).toEqual([
+      { date: "2026-10-10", balanceCents: 1810000n, source: "computed" },
+      { date: "2026-10-11", balanceCents: 1000000n, source: "manual" },
+      { date: "2026-10-12", balanceCents: 2436000n, source: "computed" },
+      { date: "2026-10-13", balanceCents: 1825000n, source: "manual" },
+    ]);
+    // Running it again changes nothing.
+    expect(await runInvestmentsValuationJob(ctx, fakeJob({ reason: "prices" }))).toMatchObject({ accounts: 1, written: 0, kept: 2, removed: 0 });
+    // Back to the fixture for the tests that follow: the 10-12 close, and 10-13 as the job's own row again
+    // (left reported at 1 825 000 it would anchor a +5 000 cash plug into every later carry-forward).
+    await db
+      .update(price)
+      .set({ close: "310" })
+      .where(and(eq(price.securityId, S.securities.vti), eq(price.date, "2026-10-12")));
+    await db
+      .update(balanceSnapshot)
+      .set({ balanceCents: 1820000n, source: "computed" })
+      .where(and(eq(balanceSnapshot.accountId, S.accounts.roth), eq(balanceSnapshot.date, "2026-10-13")));
   });
 
   it("a payload naming an up-to-date, unknown or non-investment account is a skip, never a failure", async () => {

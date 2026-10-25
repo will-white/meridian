@@ -1,10 +1,12 @@
 import { randomBytes } from "node:crypto";
+import { and, eq } from "drizzle-orm";
 import * as OTPAuth from "otpauth";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { session, user } from "@meridian/db";
-import { PLAN_SEED_TODAY, seedPlanFixture, type PlanSeed } from "@meridian/db/testing";
+import { balanceSnapshot, session, user } from "@meridian/db";
+import { INV_SEED_TODAY, PLAN_SEED_TODAY, seedPlanFixture, type PlanSeed } from "@meridian/db/testing";
 import type { DashboardView } from "@meridian/shared";
 import { createTestApp, TEST_DATABASE_URL, type TestApp } from "./test/helpers.js";
+import { freshInvestmentApp, type InvestmentApp } from "./test/investments.js";
 
 /**
  * GET /api/dashboard on the grid-and-api seed (docs/design/phase-2/grid-and-api.md,
@@ -12,6 +14,8 @@ import { createTestApp, TEST_DATABASE_URL, type TestApp } from "./test/helpers.j
  * (noon in America/Denver) and as the client's `today`. The seed carries balance
  * snapshots but no account balances, so the cash-flow line starts from the pending
  * sum (Visa −2500) and only falls; the dashboard service test derives its numbers.
+ * Phase 3 adds the net-worth breakdown by account kind (zero investments here) and the
+ * investments block (null without investment accounts; the INV seed below fills it).
  */
 
 const TODAY = PLAN_SEED_TODAY;
@@ -85,12 +89,14 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /api/dashboard", () => {
       yearAgoCents: "350000",
       changeCents: "225000",
       newAccounts: [{ id: S.accounts.visa, name: "Visa" }],
-      breakdown: null,
+      // Checking 350 000 + Savings 270 000 cash, Visa −45 000 debt; no investment accounts in this seed.
+      breakdown: { investmentsCents: "0", investmentsAsOf: null, cashCents: "620000", debtCents: "-45000", otherCents: "0" },
     });
 
     expect(view.review).toEqual({ uncategorized: 1, suggestedRecurring: 2, alerts: 1 });
     expect(view.sync).toEqual({ lastSyncAt: null, attention: [] });
     expect(view.retirement).toBeNull();
+    expect(view.investments).toBeNull();
 
     expect(view.cashFlow.asOf).toBe(TODAY);
     expect(view.cashFlow.horizonDays).toBe(30);
@@ -165,5 +171,62 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /api/dashboard", () => {
     // The other cards are unchanged by a review action.
     expect(view.billsDue.map((b) => b.name)).toEqual(["Internet"]);
     expect(view.netWorth.todayCents).toBe("575000");
+  });
+});
+
+/**
+ * Views design test 17 at the route: the INV seed's net worth is the balance rows by account kind
+ * (the computed rows included, plan decision 9) and the investments block is the chain on the
+ * expected price date; a recorded statement check lowers `awaitingReconcile`, and a later
+ * computed row moves net worth but not the block.
+ */
+describe.skipIf(!TEST_DATABASE_URL)("GET /api/dashboard on the INV seed", () => {
+  let A: InvestmentApp;
+
+  beforeAll(async () => {
+    A = await freshInvestmentApp({ lots: true });
+  });
+  afterAll(async () => {
+    await A?.t.cleanup();
+  });
+
+  const getDashboard = async () => {
+    const res = await A.t.call({ method: "GET", url: `/api/dashboard?today=${INV_SEED_TODAY}` });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    return res.json() as DashboardView;
+  };
+
+  it("fills the net-worth breakdown and the investments block (views test 17)", async () => {
+    const B = A.S.accounts.brokerage;
+    const view = await getDashboard();
+    expect(view.netWorth).toMatchObject({
+      asOf: INV_SEED_TODAY,
+      todayCents: "5025200",
+      breakdown: { investmentsCents: "4525200", investmentsAsOf: "2026-10-13", cashCents: "500000", debtCents: "0", otherCents: "0" },
+    });
+    expect(view.investments).toEqual({
+      asOf: "2026-10-13",
+      totalCents: "4525200",
+      dayChangeCents: "36000",
+      dayChangeBp: 80,
+      staleAccounts: [],
+      fidelityCounts: { balance_only: 0, positions: 1, full_history: 1 },
+      awaitingReconcile: 2,
+      securitiesNeedingReview: 0,
+      priceFeed: { configured: false, expectedDate: "2026-10-13", stale: 0, notFound: 0, error: 0 },
+    });
+
+    // Recording B's statement check (even unaccepted) satisfies its latest statement date.
+    const recorded = await A.t.call({ method: "POST", url: "/api/reconcile/commit", payload: { accountId: B, date: "2026-10-13", rows: [], statementTotalCents: "2705200", accept: false, today: INV_SEED_TODAY } });
+    expect(recorded.statusCode, recorded.body).toBe(200);
+    expect((await getDashboard()).investments!.awaitingReconcile).toBe(1);
+
+    // A computed row for 10-14 moves net worth (Phase 2's balance rows) but not the block (the chain on the expected close).
+    await A.t.db.db.insert(balanceSnapshot).values({ accountId: B, date: "2026-10-14", balanceCents: 2710000n, source: "computed" });
+    const later = await getDashboard();
+    expect(later.netWorth).toMatchObject({ todayCents: "5030000", breakdown: { investmentsCents: "4530000", investmentsAsOf: "2026-10-14" } });
+    expect(later.investments).toMatchObject({ asOf: "2026-10-13", totalCents: "4525200", awaitingReconcile: 1 });
+    await A.t.db.db.delete(balanceSnapshot).where(and(eq(balanceSnapshot.accountId, B), eq(balanceSnapshot.date, "2026-10-14")));
   });
 });

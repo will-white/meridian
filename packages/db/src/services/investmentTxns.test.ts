@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { and, asc, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { csvExternalId, mapTradesCsvRows, parseFixed8, type TradesCsvMappingInput } from "@meridian/shared";
-import { account, investmentTxn, job, lot, lotDisposal, lotPick, transaction } from "../schema/index.js";
+import { account, importLog, investmentTxn, job, lot, lotDisposal, lotPick, transaction } from "../schema/index.js";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "../test/db.js";
 import { INV_SEED_TODAY, seedInvestmentFixture, type InvestmentSeed } from "../test/investmentSeed.js";
 import { listAudit } from "./audit.js";
 import { createGoal, listGoals } from "./goals.js";
+import { runInvestmentIncomeFeed } from "./investmentIncome.js";
 import {
   assertTxnShape,
   createInvestmentTxn,
@@ -268,6 +269,33 @@ describe.skipIf(!TEST_DATABASE_URL)("investment transactions (imports tests 13â€
     expect(await t.db.select().from(transaction).where(eq(transaction.id, ledgerB.id))).toEqual([]);
   });
 
+  it("PATCH { transferGroupId: null } unpairs both legs (each audited in the batch) so either can be edited and deleted alone (tests 15, 23)", async () => {
+    const created = await createInvestmentTxn(t.db, { accountId: A15, date: "2026-10-08", type: "transfer", direction: "out", securityId: VTI, quantity: f8("3"), counterpartyAccountId: C15 }, ctx());
+    const [out, inLeg] = created.items;
+    expect(inLeg!.transferGroupId).toBe(out!.transferGroupId);
+    const batch = randomUUID();
+    const unpaired = await updateInvestmentTxn(t.db, inLeg!.id, { transferGroupId: null }, ctx(batch));
+    expect(unpaired.item).toMatchObject({ transferGroupId: null, counterpartyAccountId: null, userEdited: false, quantity: f8("3") });
+    expect(await getInvestmentTxn(t.db, out!.id)).toMatchObject({ transferGroupId: null, counterpartyAccountId: null });
+    // One investment_txn audit row per affected row under the request's batch id: the patched leg and the other leg.
+    const audit = await listAudit(t.db, { batchId: batch, limit: 10 });
+    expect(audit.items.map((e) => [e.entity, e.action, e.entityId]).sort()).toEqual(
+      [
+        ["investment_txn", "update", inLeg!.id],
+        ["investment_txn", "update", out!.id],
+      ].sort(),
+    );
+    const outEntry = audit.items.find((e) => e.entityId === out!.id)!;
+    expect((outEntry.before as { transferGroupId: string | null }).transferGroupId).toBe(out!.transferGroupId);
+    expect((outEntry.after as { transferGroupId: string | null }).transferGroupId).toBeNull();
+    // Unpaired legs are ordinary rows again.
+    const resized = await updateInvestmentTxn(t.db, inLeg!.id, { quantity: f8("2") }, ctx());
+    expect(resized.item.quantity).toBe(f8("2"));
+    expect((await deleteInvestmentTxn(t.db, out!.id, {}, ctx())).deleted).toBe(1);
+    expect((await deleteInvestmentTxn(t.db, inLeg!.id, {}, ctx())).deleted).toBe(1);
+    expect(await getInvestmentTxn(t.db, inLeg!.id)).toBeUndefined();
+  });
+
   it("refuses unknown actions; mapping them to skip lets the commit through (test 14)", async () => {
     const mapped = await mapFile(FILE38);
     expect(mapped.unknownActions).toBe(1);
@@ -421,6 +449,106 @@ describe.skipIf(!TEST_DATABASE_URL)("investment transactions (imports tests 13â€
     const all = await listInvestmentTxns(t.db, { accountId: man, limit: 100 });
     const keys = all.items.map((i) => `${i.date}|${i.sequence}|${i.id}`);
     expect([...keys].sort().reverse()).toEqual(keys);
+  });
+
+  it("edits and deletes touch only the ledger rows this side wrote: a linked bank row stays, a derived row follows and goes (plan decision 15)", async () => {
+    const own = await newAccount("CSV Roth", "ira");
+    const ledgerRow = async (id: string) => (await t.db.select().from(transaction).where(eq(transaction.id, id)))[0];
+    // The owner's own bank row (a bank CSV) is linked, not duplicated.
+    const [bank] = await t.db
+      .insert(transaction)
+      .values({ accountId: own, source: "csv", externalId: "OWN-BANK-1", date: "2026-10-10", amountCents: 50000n, rawDescription: "CONTRIBUTION", isTransfer: true })
+      .returning({ id: transaction.id });
+    const linked = await createInvestmentTxn(t.db, { accountId: own, date: "2026-10-10", type: "transfer", direction: "in", amountCents: 50000n }, ctx());
+    expect(linked.items[0]!.ledgerTransactionId).toBe(bank!.id);
+    expect(await t.db.select().from(transaction).where(eq(transaction.accountId, own))).toHaveLength(1);
+    await updateInvestmentTxn(t.db, linked.items[0]!.id, { amountCents: 60000n, date: "2026-10-11" }, ctx());
+    expect(await ledgerRow(bank!.id)).toMatchObject({ amountCents: 50000n, date: "2026-10-10", isTransfer: true, source: "csv" });
+    const flipped = await updateInvestmentTxn(t.db, linked.items[0]!.id, { type: "dividend" }, ctx());
+    expect(flipped.item.ledgerTransactionId).toBe(bank!.id);
+    expect(await ledgerRow(bank!.id)).toMatchObject({ amountCents: 50000n, isTransfer: true });
+    await deleteInvestmentTxn(t.db, linked.items[0]!.id, {}, ctx());
+    expect(await ledgerRow(bank!.id)).toMatchObject({ amountCents: 50000n, date: "2026-10-10", isTransfer: true });
+
+    // A derived row (no bank twin) is keyed inv:<row id>, follows the row's date and amount, and goes when the row stops being a cash transfer.
+    const derived = await createInvestmentTxn(t.db, { accountId: own, date: "2026-10-12", type: "transfer", direction: "in", amountCents: 70000n }, ctx());
+    const derivedId = derived.items[0]!.ledgerTransactionId!;
+    expect(await ledgerRow(derivedId)).toMatchObject({ source: "manual", externalId: `inv:${derived.items[0]!.id}`, amountCents: 70000n, date: "2026-10-12", isTransfer: true });
+    await updateInvestmentTxn(t.db, derived.items[0]!.id, { amountCents: 75000n, date: "2026-10-13" }, ctx());
+    expect(await ledgerRow(derivedId)).toMatchObject({ amountCents: 75000n, date: "2026-10-13" });
+    const asDividend = await updateInvestmentTxn(t.db, derived.items[0]!.id, { type: "dividend" }, ctx());
+    expect(asDividend.item.ledgerTransactionId).toBeNull();
+    expect(await ledgerRow(derivedId)).toBeUndefined();
+
+    // A trades import: the cash row that found the owner's bank row is linked to it; the other gets a derived row under the import's log id.
+    const [log] = await t.db.insert(importLog).values({ kind: "csv.trades", status: "ok" }).returning({ id: importLog.id });
+    const [bank2] = await t.db
+      .insert(transaction)
+      .values({ accountId: own, source: "csv", externalId: "OWN-BANK-2", date: "2026-09-02", amountCents: 100000n, rawDescription: "EFT", isTransfer: true })
+      .returning({ id: transaction.id });
+    const mapped = await mapFile([
+      ["2026-09-01", "ELECTRONIC FUNDS TRANSFER RECEIVED", "", "", "", "", "1000.00", "E1"],
+      ["2026-09-15", "ELECTRONIC FUNDS TRANSFER RECEIVED", "", "", "", "", "2000.00", "E2"],
+    ]);
+    const imported = await importTrades(t.db, { accountId: own, trades: mapped.trades, importLogId: log!.id, today: TODAY, ctx: ctx() });
+    expect(imported).toMatchObject({ created: 2, linked: 1, ledgerCreated: 1 });
+    const e1 = await rowByExt(own, "csvid:E1");
+    const e2 = await rowByExt(own, "csvid:E2");
+    expect(e1.ledgerTransactionId).toBe(bank2!.id);
+    expect(await ledgerRow(e2.ledgerTransactionId!)).toMatchObject({ source: "csv", importLogId: log!.id, amountCents: 200000n, isTransfer: true });
+    await deleteInvestmentTxn(t.db, e1.id, {}, ctx());
+    expect(await ledgerRow(bank2!.id)).toMatchObject({ amountCents: 100000n, isTransfer: true });
+    await deleteInvestmentTxn(t.db, e2.id, {}, ctx());
+    expect(await ledgerRow(e2.ledgerTransactionId!)).toBeUndefined();
+  });
+
+  it("a fed dividend's synthetic ledger row follows the row through re-imports, edits and deletion; the feed heals an orphan (plan decision 13)", async () => {
+    const fed = await newAccount("Fed IRA", "ira", { investmentIncomeFeed: "create" });
+    const synthetic = () => t.db.select().from(transaction).where(and(eq(transaction.accountId, fed), eq(transaction.source, "investment"))).orderBy(asc(transaction.date));
+    const first = await commit(fed, [["2026-10-01", "DIVIDEND RECEIVED", "VTI", "", "", "", "12.34", "F1"]]);
+    expect(first.jobs.incomeFeed).not.toBeNull();
+    expect(await runInvestmentIncomeFeed(t.db, { accountIds: [fed] })).toMatchObject({ created: 1, deleted: 0 });
+    const f1 = await rowByExt(fed, "csvid:F1");
+    expect(await synthetic()).toMatchObject([{ id: f1.ledgerTransactionId, externalId: `inv:${f1.id}`, amountCents: 1234n, date: "2026-10-01", categoryId: S.categories.dividends }]);
+
+    // A re-import that moves the dividend updates the synthetic row in place.
+    expect(await commit(fed, [["2026-10-02", "DIVIDEND RECEIVED", "VTI", "", "", "", "15.00", "F1"]])).toMatchObject({ updated: 1, warnings: [] });
+    expect(await synthetic()).toMatchObject([{ id: f1.ledgerTransactionId, amountCents: 1500n, date: "2026-10-02" }]);
+    // So does a manual edit; the feed then has nothing to do.
+    await updateInvestmentTxn(t.db, f1.id, { amountCents: 2000n }, ctx());
+    expect(await synthetic()).toMatchObject([{ id: f1.ledgerTransactionId, amountCents: 2000n, date: "2026-10-02" }]);
+    expect(await runInvestmentIncomeFeed(t.db, { accountIds: [fed] })).toMatchObject({ created: 0, deleted: 0, unchanged: 1 });
+
+    // Deleting the dividend removes its synthetic row at once; re-entering it creates exactly one, so the plan never double counts.
+    await deleteInvestmentTxn(t.db, f1.id, {}, ctx());
+    expect(await synthetic()).toEqual([]);
+    const reentered = await createInvestmentTxn(t.db, { accountId: fed, date: "2026-10-02", type: "dividend", securityId: VTI, amountCents: 2000n }, ctx());
+    expect(reentered.jobs.incomeFeed).not.toBeNull();
+    expect(await runInvestmentIncomeFeed(t.db, { accountIds: [fed] })).toMatchObject({ created: 1, deleted: 0 });
+    const reenteredRow = (await getInvestmentTxn(t.db, reentered.items[0]!.id))!;
+    expect(reenteredRow.ledgerTransactionId).not.toBeNull();
+    expect(await synthetic()).toMatchObject([{ id: reenteredRow.ledgerTransactionId, amountCents: 2000n, externalId: `inv:${reenteredRow.id}` }]);
+
+    // A re-import that turns a fed dividend into a buy removes its synthetic row and says so.
+    await commit(fed, [["2026-10-03", "DIVIDEND RECEIVED", "VTI", "", "", "", "5.00", "F2"]]);
+    expect(await runInvestmentIncomeFeed(t.db, { accountIds: [fed] })).toMatchObject({ created: 1 });
+    expect(await synthetic()).toHaveLength(2);
+    const asBuy = await commit(fed, [["2026-10-03", "YOU BOUGHT", "VTI", "1", "100.00", "", "-100.00", "F2"]]);
+    expect(asBuy).toMatchObject({ updated: 1, warnings: [{ rowIndex: 1, code: "ledger_row_removed", message: expect.any(String) }] });
+    expect((await rowByExt(fed, "csvid:F2")).ledgerTransactionId).toBeNull();
+    expect((await synthetic()).map((r) => r.amountCents)).toEqual([2000n]);
+
+    // The feed deletes a synthetic row whose investment row vanished underneath it (a raw delete), and one out of step with its row.
+    await t.db.delete(investmentTxn).where(eq(investmentTxn.id, reentered.items[0]!.id));
+    expect(await runInvestmentIncomeFeed(t.db, { accountIds: [fed] })).toMatchObject({ deleted: 1, created: 0 });
+    expect(await synthetic()).toEqual([]);
+    const again = await createInvestmentTxn(t.db, { accountId: fed, date: "2026-10-05", type: "dividend", securityId: VTI, amountCents: 300n }, ctx());
+    expect(await runInvestmentIncomeFeed(t.db, { accountIds: [fed] })).toMatchObject({ created: 1 });
+    const againRow = (await getInvestmentTxn(t.db, again.items[0]!.id))!;
+    await t.db.update(transaction).set({ amountCents: 299n }).where(eq(transaction.id, againRow.ledgerTransactionId!));
+    expect(await runInvestmentIncomeFeed(t.db, { accountIds: [fed] })).toMatchObject({ deleted: 1, created: 1 });
+    expect(await synthetic()).toMatchObject([{ amountCents: 300n, date: "2026-10-05", externalId: `inv:${again.items[0]!.id}` }]);
+    expect((await getInvestmentTxn(t.db, again.items[0]!.id))!.ledgerTransactionId).toBe((await synthetic())[0]!.id);
   });
 
   it("assertTxnShape names the rule it mirrors", () => {

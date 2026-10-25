@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { billsSummary, changePercentBp, netWorthChangeText, newAccountsNote, percentText, reviewLinks, sumCents, syncTone } from "./dashboard.js";
+import {
+  awaitingReconcileText,
+  billsSummary,
+  breakdownText,
+  changePercentBp,
+  fidelityCountsText,
+  investmentsDayChangeText,
+  netWorthChangeText,
+  newAccountsNote,
+  percentText,
+  priceFeedText,
+  reviewLinks,
+  securitiesReviewText,
+  staleAccountsText,
+  sumCents,
+  syncTone,
+} from "./dashboard.js";
 
 describe("changePercentBp / percentText", () => {
   it("truncates toward zero and handles a zero base", () => {
@@ -52,5 +68,39 @@ describe("bills and review", () => {
     expect(syncTone("auth_required")).toBe("warn");
     expect(syncTone("error")).toBe("bad");
     expect(syncTone("ok")).toBe("neutral");
+  });
+});
+
+describe("investments block (Phase 3)", () => {
+  it("writes the net-worth breakdown line", () => {
+    expect(breakdownText({ investmentsCents: "4525200", investmentsAsOf: "2026-10-13", cashCents: "500000", debtCents: "0", otherCents: "0" })).toBe("Investments $45,252.00 (as of 10/13/26) · Cash $5,000.00 · Debt $0.00");
+    expect(breakdownText({ investmentsCents: "0", investmentsAsOf: null, cashCents: "620000", debtCents: "-45000", otherCents: "1000000" })).toBe("Investments $0.00 · Cash $6,200.00 · Debt -$450.00 · Other $10,000.00");
+  });
+
+  it("counts fidelities and spells the day change", () => {
+    expect(fidelityCountsText({ balance_only: 0, positions: 1, full_history: 1 })).toBe("2 accounts: 1 full history, 1 positions");
+    expect(fidelityCountsText({ balance_only: 1, positions: 0, full_history: 0 })).toBe("1 account: 1 balance only");
+    expect(fidelityCountsText({ balance_only: 0, positions: 0, full_history: 0 })).toBe("0 accounts");
+    expect(investmentsDayChangeText({ dayChangeCents: "36000", dayChangeBp: 80 })).toEqual({ text: "+$360.00 (+0.8%) today", tone: "ok" });
+    expect(investmentsDayChangeText({ dayChangeCents: "-1200", dayChangeBp: -3 })).toEqual({ text: "-$12.00 (-0.0%) today", tone: "bad" });
+    expect(investmentsDayChangeText({ dayChangeCents: "0", dayChangeBp: 0 })).toEqual({ text: "$0.00 (0.0%) today", tone: "neutral" });
+    expect(investmentsDayChangeText({ dayChangeCents: null, dayChangeBp: null })).toEqual({ text: "No day change yet: prices or positions are pending", tone: "neutral" });
+  });
+
+  it("writes the attention lines", () => {
+    expect(awaitingReconcileText(0)).toBeNull();
+    expect(awaitingReconcileText(1)).toBe("1 account not yet checked against a statement");
+    expect(awaitingReconcileText(2)).toBe("2 accounts not yet checked against a statement");
+    expect(securitiesReviewText(0)).toBeNull();
+    expect(securitiesReviewText(1)).toBe("1 security to review");
+    expect(securitiesReviewText(3)).toBe("3 securities to review");
+    expect(staleAccountsText([])).toBeNull();
+    expect(staleAccountsText([{ id: "a", name: "Old 401k", valuationDate: "2026-10-01" }, { id: "b", name: "Roth", valuationDate: null }])).toBe("Stale: Old 401k (10/01/26), Roth (no value)");
+  });
+
+  it("describes the price feed's health", () => {
+    expect(priceFeedText({ configured: false, expectedDate: "2026-10-13", stale: 0, notFound: 0, error: 0 })).toEqual({ text: "Price feed not configured: values use statement, implied and manual prices", tone: "neutral" });
+    expect(priceFeedText({ configured: true, expectedDate: "2026-10-13", stale: 0, notFound: 0, error: 0 })).toEqual({ text: "Price feed current through 10/13/26", tone: "ok" });
+    expect(priceFeedText({ configured: true, expectedDate: "2026-10-13", stale: 2, notFound: 1, error: 0 })).toEqual({ text: "Price feed behind 10/13/26: 2 stale, 1 not found", tone: "bad" });
   });
 });

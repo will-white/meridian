@@ -7,3 +7,11 @@
 @media (max-width: 800px) {
   .acct-form label { max-width: none; flex: 1 1 100%; }
 }
+/* Phase 3: the investment block under an investment account's name. */
+.acct-inv { margin-top: 0.35rem; display: flex; flex-direction: column; gap: 0.2rem; }
+.acct-inv .row { gap: 0.25rem 0.6rem; }
+.acct-inv .badge { margin-left: 0; }
+.acct-inv .tone-ok { color: var(--ok); }
+.acct-inv .tone-warn { color: var(--warn); }
+.acct-inv .tone-neutral { color: var(--muted); }
+.acct-inv-links a + a { margin-left: 0.25rem; }

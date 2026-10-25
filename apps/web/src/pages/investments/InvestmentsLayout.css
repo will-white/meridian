@@ -1,0 +1,21 @@
+/* Investments shell: the title with the sub-nav beside it (wrapping under it on narrow screens); the pages render their own toolbars below. */
+.inv-shell-head { margin-bottom: 0.75rem; align-items: baseline; }
+.inv-shell-head h1 { margin: 0; }
+.inv-subnav { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.inv-subnav a { padding: 0.4rem 0.7rem; text-decoration: none; color: var(--ink); font-size: 0.95rem; }
+.inv-subnav a + a { border-left: 1px solid var(--line); }
+.inv-subnav a.active { background: var(--accent); color: var(--accent-ink); }
+.inv-subnav a:hover:not(.active) { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+
+/* Shared by the new pages' editors: inline cell inputs, pickers and row errors. */
+.inv-cell-input { width: 7.5rem; padding: 0.25rem 0.4rem; text-align: right; }
+.inv-picker { display: flex; flex-direction: column; gap: 0.3rem; min-width: 14rem; }
+.inv-picker-new .inv-picker-ticker { width: 6rem; }
+.inv-row-error td { background: color-mix(in srgb, var(--bad) 8%, transparent); }
+.inv-positions-editor, .inv-trade-form, .inv-lot-picks { display: flex; flex-direction: column; gap: 0.75rem; padding: 0.25rem 0; }
+.inv-positions-total { width: 9rem; }
+.inv-trade-form label { min-width: 10rem; }
+.inv-ratio-input { width: 5rem; }
+@media (max-width: 800px) {
+  .inv-subnav a { padding: 0.35rem 0.5rem; font-size: 0.85rem; }
+}

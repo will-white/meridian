@@ -2,7 +2,7 @@ import { Link } from "react-router";
 import type { DashboardView } from "@meridian/shared";
 import { money, shortDate } from "../../lib/format.js";
 import { Card } from "../ui.js";
-import { netWorthChangeText, newAccountsNote } from "./dashboard.js";
+import { breakdownText, netWorthChangeText, newAccountsNote } from "./dashboard.js";
 
 /** Net worth from the latest balance snapshots with the 12-month change. */
 export function NetWorthCard({ netWorth }: { netWorth: DashboardView["netWorth"] }) {
@@ -17,6 +17,7 @@ export function NetWorthCard({ netWorth }: { netWorth: DashboardView["netWorth"]
           {money(netWorth.yearAgoCents)} on {shortDate(netWorth.yearAgoDate)} · {money(netWorth.todayCents)} as of {shortDate(netWorth.asOf)}
         </p>
       )}
+      {netWorth.breakdown && <p className="small muted dash-note">{breakdownText(netWorth.breakdown)}</p>}
       {note && <p className="small muted dash-note">{note}</p>}
     </Card>
   );

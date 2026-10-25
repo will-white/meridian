@@ -1,6 +1,6 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { account, enqueueJob, holdingSnapshot, importLog, job, price, security, type Db, type JobRow } from "@meridian/db";
+import { account, claimNextJob, completeJob, enqueueJob, holdingSnapshot, importLog, job, price, security, type Db, type JobRow } from "@meridian/db";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "@meridian/db/testing";
 import { generateSecretsKey, type IsoDate } from "@meridian/shared";
 import type { PriceConfig, WorkerConfig } from "../env.js";
@@ -17,6 +17,12 @@ import { BACKOFF_BASE_MS, CONTINUATION_DELAY_MS, runPricesFetchJob } from "./pri
  */
 
 const NOW0 = new Date("2026-10-14T18:00:00Z");
+/**
+ * When the securities were created. The plan re-tries a `not_found` symbol when the security was
+ * edited after its last fetch (`updated_at > price_fetched_at`), so the fixture's rows must predate
+ * the fake clock: inserted at the real wall clock they would look edited after every fake-dated run.
+ */
+const SEEDED_AT = new Date("2026-10-01T00:00:00Z");
 const SNAPSHOT_DATE: IsoDate = "2026-10-09";
 const TRADING: IsoDate[] = ["2026-10-02", "2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09", "2026-10-12", "2026-10-13"];
 const HEADER = "date,close,high,low,open,volume,adjClose,adjHigh,adjLow,adjOpen,divCash,splitFactor";
@@ -104,7 +110,7 @@ describe.skipIf(!TEST_DATABASE_URL)("prices.fetch", () => {
     const [acct] = await db.insert(account).values({ name: "Test Brokerage", type: "brokerage", taxTreatment: "taxable", onBudget: false }).returning({ id: account.id });
     const rows = await db
       .insert(security)
-      .values(SYMBOLS.map((ticker, i) => ({ ticker, name: `Security ${i + 1}`, type: "etf" as const, assetClass: "us_stock" as const, priceMode: "provider" as const, needsReview: false })))
+      .values(SYMBOLS.map((ticker, i) => ({ ticker, name: `Security ${i + 1}`, type: "etf" as const, assetClass: "us_stock" as const, priceMode: "provider" as const, needsReview: false, createdAt: SEEDED_AT, updatedAt: SEEDED_AT })))
       .returning({ id: security.id, ticker: security.ticker });
     for (const r of rows) ids.set(r.ticker!, r.id);
     await db.insert(holdingSnapshot).values(rows.map((r) => ({ accountId: acct!.id, securityId: r.id, date: SNAPSHOT_DATE, quantity: "10", price: "100", valueCents: 100000n, source: "csv" as const })));
@@ -239,15 +245,24 @@ describe.skipIf(!TEST_DATABASE_URL)("prices.fetch", () => {
     expect(requests).toHaveLength(59);
     expect(requests.some((r) => r.symbol === "S007")).toBe(false);
 
+    // Editing the security (its ticker or feed symbol, say) brings the retry forward; still missing, it is recorded not_found again.
     requests.length = 0;
-    now = new Date(NOW0.getTime() + 7 * 86_400_000);
+    await db.update(security).set({ updatedAt: now }).where(eq(security.id, idOf("S007")));
+    await runFetch(c, { reason: "manual", dedupeKey: "prices:manual" });
+    expect(requests.filter((r) => r.symbol === "S007")).toHaveLength(1);
+    expect(await securityRow("S007")).toMatchObject({ priceFetchStatus: "not_found", priceFetchedAt: now });
+    await db.update(security).set({ updatedAt: SEEDED_AT }).where(eq(security.id, idOf("S007")));
+
+    // Seven days after that record it is tried again on its own.
+    requests.length = 0;
+    now = new Date(now.getTime() + 7 * 86_400_000);
     missing = false;
     await runFetch(c, { reason: "manual", dedupeKey: "prices:manual" });
     expect(requests).toHaveLength(60);
     expect(await securityRow("S007")).toMatchObject({ priceFetchStatus: "ok", priceFetchMessage: null });
   });
 
-  it("every request dying on the network: the job throws, the queue requeues it, the log says error, nothing is continued", async () => {
+  it("every request dying on the network: the job throws, the queue requeues it, the log says error, nothing is continued, and the retry fetches", async () => {
     await resetFeed();
     responder = () => {
       throw new TypeError("fetch failed: ECONNRESET");
@@ -263,8 +278,44 @@ describe.skipIf(!TEST_DATABASE_URL)("prices.fetch", () => {
     expect(log!.stats).toMatchObject({ securities: 45, requests: 135, errors: 45 });
     expect(await continuations()).toHaveLength(0);
     expect(await jobsOf("investments.valuation")).toHaveLength(0);
-    expect(await securityRow("S001")).toMatchObject({ priceFetchStatus: "error", priceFetchFailures: 1, priceNextAttemptAt: new Date(NOW0.getTime() + BACKOFF_BASE_MS) });
-    expect((await securityRow("S001")).priceFetchMessage).toMatch(/ECONNRESET/);
+    // The outage is the run's, not any security's: no per-security error or backoff is recorded, so the
+    // queue's retry finds the same plan (with a backoff, the retry would find nothing to fetch and finish "done").
+    expect(await securityRow("S001")).toMatchObject({ priceFetchStatus: null, priceFetchMessage: null, priceFetchFailures: 0, priceNextAttemptAt: null, priceFetchedAt: null });
+    expect(await securityRow("S045")).toMatchObject({ priceFetchStatus: null, priceFetchFailures: 0, priceNextAttemptAt: null });
+
+    // The network is back two minutes later and the queue's retry claims the job (attempt 2): it fetches the 45
+    // as the first run would have. (Claimed and completed by hand rather than drained: the fake clock dates the
+    // continuation and the chained valuation before the database's `now()`, so a drain would run those too.)
+    responder = ok;
+    requests.length = 0;
+    now = new Date(NOW0.getTime() + 2 * 60_000);
+    await db.update(job).set({ runAt: new Date(0) }).where(eq(job.id, requeued!.id));
+    const claimed = await claimNextJob(db, config.workerId);
+    expect(claimed).toMatchObject({ id: requeued!.id, attempts: 2 });
+    const retried = await runPricesFetchJob(ctx, claimed!);
+    await completeJob(db, claimed!.id);
+    expect(retried.stats).toMatchObject({ securities: 45, requests: 45, rowsInserted: 360, errors: 0, deferred: 15 });
+    expect(requests.map((r) => r.symbol)).toEqual(SYMBOLS.slice(0, 45));
+    expect(await priceRows()).toHaveLength(360);
+    expect(await securityRow("S001")).toMatchObject({ priceFetchStatus: "ok", priceFetchMessage: null, priceFetchFailures: 0, priceNextAttemptAt: null, priceFetchedAt: now });
+    expect((await logOf(retried.importLogId)).status).toBe("ok");
+    expect((await db.select().from(job).where(eq(job.id, requeued!.id)))[0]).toMatchObject({ status: "done", attempts: 2 });
+    expect(await continuations()).toHaveLength(1);
+    expect(await jobsOf("investments.valuation")).toHaveLength(1);
+  });
+
+  it("a network failure in a run where another request got through is that security's own: backoff applies", async () => {
+    await resetFeed();
+    responder = (symbol, range) => {
+      if (symbol === "S002") throw new TypeError("fetch failed: ECONNRESET");
+      return ok(symbol, range);
+    };
+    const { outcome } = await runFetch(ctx, { reason: "refill", securityIds: [idOf("S001"), idOf("S002")], dedupeKey: "prices:refill:n" });
+    expect(outcome.stats).toMatchObject({ securities: 2, requests: 4, errors: 1, rowsInserted: 8 });
+    expect((await logOf(outcome.importLogId)).status).toBe("ok");
+    expect(await securityRow("S001")).toMatchObject({ priceFetchStatus: "ok", priceFetchFailures: 0 });
+    expect(await securityRow("S002")).toMatchObject({ priceFetchStatus: "error", priceFetchFailures: 1, priceNextAttemptAt: new Date(NOW0.getTime() + BACKOFF_BASE_MS) });
+    expect((await securityRow("S002")).priceFetchMessage).toMatch(/ECONNRESET/);
   });
 
   it("one symbol timing out three times backs off 6 h, then 12 h, and a success resets it", async () => {

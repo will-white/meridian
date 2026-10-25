@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { impliedPrice, mulToCents, parseFixed8, quantityForCents, type IsoDate } from "@meridian/shared";
-import { account, allocationTarget, auditLog, balanceSnapshot, holdingSnapshot, job, price, security } from "../schema/index.js";
+import { account, allocationTarget, auditLog, balanceSnapshot, holdingSnapshot, investmentTxn, job, price, security } from "../schema/index.js";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "../test/db.js";
 import { INV_SEED_NOW, INV_SEED_TODAY, seedInvestmentFixture, seedInvestmentLots, type InvestmentSeed } from "../test/investmentSeed.js";
 import { setAllocationTargets } from "./allocationTargets.js";
 import { getDashboard } from "./dashboard.js";
 import { deleteInvestmentTxn } from "./investmentTxns.js";
+import { rebuildLotsForAccounts } from "./lots.js";
 import {
   bp,
   classifiedLines,
@@ -585,5 +586,58 @@ describe.skipIf(!TEST_DATABASE_URL)("investment views on the INV seed (views tes
     expect(p.fidelityCounts).toEqual({ balance_only: 0, positions: 2, full_history: 0 });
     const remaining = await t.db.select().from(security).where(inArray(security.id, [S.securities.vti]));
     expect(remaining).toHaveLength(1);
+  });
+
+  it("an account with trades and no statement is full history with a note, valued from its lots (test 3)", async () => {
+    // One buy, no holding snapshot; the 10-13 balance equals the position at the 10-13 close, so the plug is 0 and no cash line appears.
+    const [solo] = await t.db.insert(account).values({ name: "Solo Brokerage", type: "brokerage", taxTreatment: "taxable", onBudget: false }).returning({ id: account.id });
+    const K2 = solo!.id;
+    await t.db.insert(investmentTxn).values({ accountId: K2, securityId: S.securities.vti, date: "2026-10-01", type: "buy", quantity: "10", price: "300", amountCents: -300000n, source: "manual", rawDescription: "BUY VTI" });
+    await t.db.insert(balanceSnapshot).values({ accountId: K2, date: "2026-10-13", balanceCents: 312500n, source: "manual" });
+    await t.db.transaction((tx) => rebuildLotsForAccounts(tx, [K2]));
+
+    const h = await getHoldings(t.db, { ...q, accountId: K2 });
+    expect(h).toMatchObject({ totalCents: 312500n, holdingsCents: 312500n, cashCents: 0n, residualCents: 0n, excludedAccounts: [], accountWarnings: [] });
+    expect(h.rows.map((r) => r.ticker)).toEqual(["VTI"]);
+    expect(h.rows[0]!.accounts).toEqual([
+      expect.objectContaining({
+        accountId: K2,
+        fidelity: "full_history",
+        fidelityNote: "no positions statement to check against",
+        kind: "position",
+        quantity: f8("10"),
+        valueCents: 312500n,
+        costBasisCents: 300000n,
+        basisSource: "lots",
+        gainCents: 12500n,
+        lotCount: 1,
+        snapshotDate: null,
+        snapshotSource: null,
+        priceSource: "provider",
+      }),
+    ]);
+    expect(h.rows[0]).toMatchObject({ coverage: "full", gainBp: 416, priceDate: "2026-10-13", priceStatus: "current" });
+
+    const p = await getPortfolio(t.db, { ...q, period: "1m" });
+    const kp = p.accounts.find((x) => x.accountId === K2)!;
+    expect(kp).toMatchObject({
+      fidelity: "full_history",
+      fidelityNote: "no positions statement to check against",
+      basis: "lots",
+      valueCents: 312500n,
+      valuationDate: "2026-10-13",
+      valuationSource: "computed",
+      positionsDate: null,
+      positionsStale: false,
+      holdingsCount: 1,
+      cashCents: 0n,
+      residualCents: 0n,
+      warnings: [],
+    });
+    // VTI 310.00 → 312.50 on ten shares (the bp is against the unanchored 10-12 value, an engine detail not asserted here);
+    // B was demoted by the previous case, so this is the only full-history account.
+    expect(kp.dayChangeCents).toBe(2500n);
+    expect(p.fidelityCounts).toEqual({ balance_only: 0, positions: 2, full_history: 1 });
+    await t.db.delete(account).where(eq(account.id, K2));
   });
 });

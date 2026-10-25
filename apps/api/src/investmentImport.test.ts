@@ -73,6 +73,8 @@ describe.skipIf(!TEST_DATABASE_URL)("positions and trades CSV import routes", ()
     B = A.S.accounts.brokerage;
     const created = await A.t.call({ method: "POST", url: "/api/accounts", payload: { name: "Schwab", type: "brokerage" } });
     expect(created.statusCode).toBe(200);
+    // Investment-type accounts start off-budget (plan decision 15; imports test 26).
+    expect((created.json() as AccountView).onBudget).toBe(false);
     X = (created.json() as AccountView).id;
     const trades = await A.t.call({ method: "POST", url: "/api/accounts", payload: { name: "Schwab trades", type: "brokerage" } });
     expect(trades.statusCode).toBe(200);
@@ -187,6 +189,13 @@ describe.skipIf(!TEST_DATABASE_URL)("positions and trades CSV import routes", ()
     expect(replaced).toMatchObject({ positions: 1, inserted: 0, updated: 1, deleted: 1, totalValueCents: "16000", balanceWritten: true });
     expect(((await A.t.call({ method: "GET", url: "/api/accounts" })).json() as AccountView[]).find((a) => a.id === X)).toMatchObject({ balanceCents: "16000" });
 
+    // With a snapshot on file, X cannot leave the investment types; a move between them is fine.
+    const toChecking = await A.t.call({ method: "PATCH", url: `/api/accounts/${X}`, payload: { type: "checking" } });
+    expect(toChecking.statusCode).toBe(409);
+    expect(toChecking.json().code).toBe("account_has_investment_data");
+    expect((await A.t.call({ method: "PATCH", url: `/api/accounts/${X}`, payload: { type: "ira" } })).json()).toMatchObject({ type: "ira", taxTreatment: "pre_tax" });
+    expect((await A.t.call({ method: "PATCH", url: `/api/accounts/${X}`, payload: { type: "brokerage" } })).json()).toMatchObject({ type: "brokerage", taxTreatment: "taxable" });
+
     const future = await commitPositions({ csvText: POSITIONS, accountId: X, mapping: positionsMapping, asOfDate: "2026-10-15" });
     expect(future.statusCode).toBe(400);
     expect(future.json().code).toBe("future_date");
@@ -284,6 +293,10 @@ describe.skipIf(!TEST_DATABASE_URL)("positions and trades CSV import routes", ()
     expect((await A.t.db.db.select().from(job).where(eq(job.type, "investments.income_feed"))).length).toBeGreaterThanOrEqual(1);
     const txns = (await A.t.call({ method: "GET", url: `/api/investments/txns?accountId=${Y}` })).json() as InvestmentTxnList;
     expect(txns.items).toHaveLength(6);
+    // Trades alone also pin the account to the investment types.
+    const retyped = await A.t.call({ method: "PATCH", url: `/api/accounts/${Y}`, payload: { type: "savings" } });
+    expect(retyped.statusCode).toBe(409);
+    expect(retyped.json().code).toBe("account_has_investment_data");
     const sell = txns.items.find((t) => t.externalId === "csvid:T5")!;
     expect(sell).toMatchObject({ type: "sell", amountCents: "99860", source: "csv", userEdited: false });
 

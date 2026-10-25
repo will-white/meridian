@@ -21,13 +21,17 @@ import { dashboardRoutes } from "./routes/dashboard.js";
 import { goalRoutes } from "./routes/goals.js";
 import { importRoutes } from "./routes/import.js";
 import { investmentTxnRoutes } from "./routes/investmentTxns.js";
+import { investmentViewRoutes } from "./routes/investmentViews.js";
 import { performanceRoutes } from "./routes/performance.js";
 import { planRoutes } from "./routes/plan.js";
+import { priceRoutes } from "./routes/prices.js";
+import { reconcileRoutes } from "./routes/reconcile.js";
 import { recurringRoutes } from "./routes/recurring.js";
 import { ruleRoutes } from "./routes/rules.js";
 import { securityRoutes } from "./routes/securities.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { transactionRoutes } from "./routes/transactions.js";
+import { valuationRoutes } from "./routes/valuation.js";
 
 export interface BuildAppOptions {
   db: Db;
@@ -90,6 +94,10 @@ export async function buildApp({ db, config, logger, now }: BuildAppOptions) {
       await api.register(securityRoutes);
       await api.register(investmentTxnRoutes);
       await api.register(performanceRoutes);
+      await api.register(priceRoutes);
+      await api.register(valuationRoutes);
+      await api.register(reconcileRoutes);
+      await api.register(investmentViewRoutes);
     },
     { prefix: "/api" },
   );

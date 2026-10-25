@@ -309,6 +309,33 @@ describe.skipIf(!TEST_DATABASE_URL)("reconcile (prices tests 17–19)", () => {
     expect(r.impliedPricesWritten).toBe(1);
   });
 
+  it("accepts a total-only statement as the date's manual balance without touching the date's snapshot", async () => {
+    // A2 holds a manual 10-13 snapshot (VTI 10 @ 305.25 + NEWP 1 @ 10 = 306,250) from the previous commit.
+    const snapshotBefore = await t.db.select().from(holdingSnapshot).where(and(eq(holdingSnapshot.accountId, A2), eq(holdingSnapshot.date, "2026-10-13")));
+    expect(snapshotBefore).toHaveLength(2);
+    const c = ctx();
+    const r = await commitReconciliation(t.db, { accountId: A2, date: "2026-10-13", rows: [], statementTotalCents: 310000n, accept: true }, c);
+    expect(r).toMatchObject({ accepted: true, preCommitDifferenceCents: -3750n, matchesToDollar: false, rowsWritten: 0, impliedPricesWritten: 0 });
+    expect(r.preview.rows).toHaveLength(1);
+    expect(r.preview.rows[0]).toMatchObject({ securityId: null, name: "Statement total", status: "value", valueDiffCents: -3750n });
+    // The positions survive; the statement total is the date's manual balance; the chain anchors cash on it (306,250 + 3,750 plug).
+    const snapshotAfter = await t.db.select().from(holdingSnapshot).where(and(eq(holdingSnapshot.accountId, A2), eq(holdingSnapshot.date, "2026-10-13")));
+    expect(snapshotAfter.map((x) => [x.id, x.securityId, x.source, x.valueCents]).sort()).toEqual(snapshotBefore.map((x) => [x.id, x.securityId, x.source, x.valueCents]).sort());
+    const [bal] = await t.db.select().from(balanceSnapshot).where(and(eq(balanceSnapshot.accountId, A2), eq(balanceSnapshot.date, "2026-10-13")));
+    expect(bal).toMatchObject({ balanceCents: 310000n, source: "manual" });
+    expect((await t.db.select().from(account).where(eq(account.id, A2)))[0]).toMatchObject({ balanceCents: 310000n, balanceDate: "2026-10-13" });
+    expect(r.app).toMatchObject({ basis: "snapshot", asOf: "2026-10-13", valueCents: 310000n });
+    expect(r.app.lines.find((l) => l.kind === "cash_plug")).toMatchObject({ valueCents: 3750n });
+    const [rec] = await t.db.select().from(accountReconciliation).where(eq(accountReconciliation.id, r.reconciliationId));
+    expect(rec).toMatchObject({ accepted: true, holdingSnapshotDate: null, statementTotalCents: 310000n, diffCents: -3750n, reconciled: false, appValueCents: 306250n });
+    const audits = await t.db.select().from(auditLog).where(eq(auditLog.batchId, c.batchId));
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ entity: "account_reconciliation", action: "update" });
+    expect(audits[0]!.after).toMatchObject({ totalOnly: true, balanceCents: "310000", accepted: true });
+    expect((audits[0]!.after as { rows: unknown[] }).rows).toHaveLength(2);
+    expect((await listReconciliations(t.db, { accountId: A2 }))[0]).toMatchObject({ id: r.reconciliationId, accepted: true, holdingSnapshotDate: null });
+  });
+
   it("refuses to accept unknown tickers, lists history newest first and deletes a record with an audit row", async () => {
     await expect(commitReconciliation(t.db, { accountId: A, date: "2026-10-13", rows: [{ ticker: "ZZZZ", quantity: f8("1"), valueCents: 1n }], accept: true }, ctx())).rejects.toMatchObject({ status: 400, code: "unknown_ticker" });
     const list = await listReconciliations(t.db, { accountId: A });

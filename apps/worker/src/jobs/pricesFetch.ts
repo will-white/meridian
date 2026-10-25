@@ -25,9 +25,12 @@ import { sleepOf, type JobContext } from "./context.js";
  * provider over the fetch plan. Provider failures never fail the job: each security records
  * its own state (`price_fetch_*`, exponential backoff), a persistent 429 defers the rest, an
  * authentication failure stops the run permanently, and only a run where every request died
- * on the network is retried by the queue. What the budget or the clock left over goes to a
- * continuation an hour later (at most five per root run); every completed run chains the
- * valuation job so the computed balance rows follow the new closes.
+ * on the network is retried by the queue. That outage is the run's, not any security's: it
+ * records no per-security error or backoff (which would empty the retry's plan and turn the
+ * retry into a no-op), only the import_log error and the queue's own backoff. What the budget
+ * or the clock left over goes to a continuation an hour later (at most five per root run);
+ * every completed run chains the valuation job so the computed balance rows follow the new
+ * closes.
  */
 
 export interface PricesFetchStats {
@@ -171,8 +174,26 @@ export async function runPricesFetchJob(ctx: JobContext, job: JobRow): Promise<P
   const sleep = sleepOf(ctx);
   const runStartedAt = now.getTime();
   const invalidBodies: Array<{ symbol: string; body: string }> = [];
+  /** Network failures wait until the run's verdict: an outage of the whole run records none of them. */
+  const networkFailures: Array<{ securityId: string; requestedAt: Date; message: string }> = [];
   let everyRequestNetworkFailed = true;
   let authMessage: string | null = null;
+
+  /** `http | network | invalid_response`: the security's own error and exponential backoff. */
+  const recordFailure = async (securityId: string, requestedAt: Date, message: string) => {
+    const [current] = await ctx.db.select({ failures: security.priceFetchFailures }).from(security).where(eq(security.id, securityId));
+    const failures = (current?.failures ?? 0) + 1;
+    await ctx.db
+      .update(security)
+      .set({
+        priceFetchedAt: requestedAt,
+        priceFetchStatus: "error",
+        priceFetchMessage: message,
+        priceFetchFailures: failures,
+        priceNextAttemptAt: new Date(requestedAt.getTime() + backoffMs(failures)),
+      })
+      .where(eq(security.id, securityId));
+  };
 
   for (let i = 0; i < plan.work.length; i++) {
     const entry = plan.work[i]!;
@@ -236,31 +257,31 @@ export async function runPricesFetchJob(ctx: JobContext, job: JobRow): Promise<P
       authMessage = message;
       break;
     }
-    // http | network | invalid_response: per-security exponential backoff.
-    if (result.kind !== "network") everyRequestNetworkFailed = false;
+    // http | network | invalid_response: per-security exponential backoff (a network failure once the run's verdict is known).
     stats.errors++;
+    if (result.kind === "network") {
+      networkFailures.push({ securityId: entry.securityId, requestedAt, message });
+      continue;
+    }
+    everyRequestNetworkFailed = false;
     if (result.kind === "invalid_response" && result.body && invalidBodies.length < MAX_INVALID_BODIES_KEPT) {
       invalidBodies.push({ symbol: entry.symbol, body: result.body.slice(0, PROVIDER_BODY_LIMIT) });
     }
-    const [current] = await ctx.db.select({ failures: security.priceFetchFailures }).from(security).where(eq(security.id, entry.securityId));
-    const failures = (current?.failures ?? 0) + 1;
-    await ctx.db
-      .update(security)
-      .set({
-        priceFetchedAt: requestedAt,
-        priceFetchStatus: "error",
-        priceFetchMessage: message,
-        priceFetchFailures: failures,
-        priceNextAttemptAt: new Date(requestedAt.getTime() + backoffMs(failures)),
-      })
-      .where(eq(security.id, entry.securityId));
+    await recordFailure(entry.securityId, requestedAt, message);
   }
+
+  // A run where every request died on the network is the queue's to retry whole: with a per-security
+  // backoff the retry would find an empty plan and finish "done" without a request (and every blip would
+  // double every security's backoff). A network failure beside a request that reached the provider is
+  // that security's own.
+  const outage = authMessage === null && stats.securities > 0 && everyRequestNetworkFailed;
+  if (!outage) for (const f of networkFailures) await recordFailure(f.securityId, f.requestedAt, f.message);
 
   if (authMessage !== null) {
     await finish("error", authMessage);
     throw new PriceFeedError("auth", authMessage);
   }
-  if (stats.securities > 0 && everyRequestNetworkFailed) {
+  if (outage) {
     const message = `${provider.id}: every request failed on the network (${stats.securities} securities, ${stats.requests} requests)`;
     await finish("error", message);
     throw new PriceFeedError("network", message);

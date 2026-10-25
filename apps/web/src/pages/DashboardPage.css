@@ -20,6 +20,7 @@
 .dash-bills tr.overdue td:first-child { color: var(--bad); }
 .dash-bills tfoot td { border-bottom: none; color: var(--muted); }
 .dash-warnings { margin: 0.5rem 0 0; padding-left: 1.2rem; color: var(--warn); font-size: 0.9em; }
+.dash-warnings-line { color: var(--warn); margin: 0.25rem 0 0.5rem; }
 .tone-ok { color: var(--ok); }
 .tone-bad { color: var(--bad); }
 .tone-neutral { color: var(--muted); }

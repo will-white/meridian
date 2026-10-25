@@ -354,6 +354,57 @@ describe("cash plug", () => {
     expect(v.valueCents).toBe(5_807_669n);
     expect(valueAccountOn(input, A, "2026-10-12").balanceDiffCents).toBeNull();
   });
+
+  /**
+   * A statement newer than the latest reported balance (a csv import into a fed account, or a
+   * manual snapshot without `setBalance`): 09-30 VTI 100 @ 300 + cash 1,000.00, balance 09-30 =
+   * 31,000.00; +1,000.00 transfer on 10-05; 10-13 statement VTI 100 @ 300 + cash 2,000.00 =
+   * 32,000.00 with no balance row.
+   */
+  function staleAnchor(cashOn13: string): Fixture {
+    const input = s1();
+    return {
+      ...input,
+      prices: [price(VTI, "2026-09-30", "300", "implied")],
+      snapshots: [snap(A, VTI, "2026-09-30", "100", "300", 3_000_000n), snap(A, CASH, "2026-09-30", "1000", "1", 100_000n), snap(A, VTI, "2026-10-13", "100", "300", 3_000_000n), snap(A, CASH, "2026-10-13", cashOn13, "1", fixedCents(cashOn13))],
+      balances: [bal(A, "2026-09-30", 3_100_000n)],
+      flows: [flow(A, "2026-10-05", 100_000n), flow(A, "2026-10-14", 50_000n)],
+    };
+  }
+  function fixedCents(dollars: string): bigint {
+    return BigInt(dollars) * 100n;
+  }
+
+  it("neither plugs nor carries flows from a balance older than the statement in use (the statement is the value on its date)", () => {
+    const input = staleAnchor("2000");
+    expect(valueAccountOn(input, A, "2026-09-30").valueCents).toBe(3_100_000n);
+    expect(valueAccountOn(input, A, "2026-10-09").valueCents).toBe(3_200_000n); // 31,000.00 + the 10-05 transfer
+    const on = valueAccountOn(input, A, "2026-10-13");
+    // the 10-05 transfer is inside the 10-13 statement: 32,000.00, not 33,000.00
+    expect(on).toMatchObject({ basis: "snapshot", asOf: "2026-10-13", valueCents: 3_200_000n, cashAnchor: "2026-09-30" });
+    expect(on.lines.map((l) => l.kind)).toEqual(["cash", "position"]);
+    // the stale balance still says the holdings exceed it
+    expect(on.warnings).toEqual([{ code: "negative_residual", message: "Holdings exceed the account value by $1000.00: the positions are newer than the balance, or the balance is stale", cents: -100_000n }]);
+    // after the statement, carried cash starts at the statement, not at the stale balance
+    const later = valueAccountOn(input, A, "2026-10-14");
+    expect(later).toMatchObject({ basis: "positions", asOf: "2026-10-13", valueCents: 3_250_000n });
+    expect(kindLine(later, "carried_flows")).toMatchObject({ name: "Transfers since 2026-10-13", priceDate: "2026-10-13", valueCents: 50_000n });
+  });
+
+  it("skips a positive plug from a stale balance instead of adding it on top of the statement", () => {
+    const input = staleAnchor("500");
+    // 31,000.00 − (30,000.00 + 500.00) would plug 500.00 of cash the 10-13 statement already accounts for
+    const on = valueAccountOn(input, A, "2026-10-13");
+    expect(on.valueCents).toBe(3_050_000n);
+    expect(kindLine(on, "cash_plug")).toBeUndefined();
+    expect(on.warnings).toEqual([]);
+    expect(valueAccountOn(input, A, "2026-10-14").valueCents).toBe(3_100_000n);
+    // a balance on or after the statement anchors as before
+    const withBalance: ValuationInput = { ...staleAnchor("500"), balances: [bal(A, "2026-09-30", 3_100_000n), bal(A, "2026-10-13", 3_100_000n)] };
+    const anchored = valueAccountOn(withBalance, A, "2026-10-13");
+    expect(kindLine(anchored, "cash_plug")?.valueCents).toBe(50_000n);
+    expect(anchored).toMatchObject({ valueCents: 3_100_000n, cashAnchor: "2026-10-13", balanceDiffCents: 0n });
+  });
 });
 
 // ---- Lots basis (prices test 11, plus the anchored cash of decision 8 on lot-derived positions) ----
@@ -821,6 +872,44 @@ describe("periodChange", () => {
     expect(pc!.accounts[2]).toMatchObject({ endCents: 252_000n, netFlowsCents: 250_000n, growthCents: 2_000n });
     expect(pc!.netFlowsCents).toBe(250_000n);
     expect(pc!.growthCents).toBe(100_063n);
+    expect(pc).toMatchObject({ partial: false, missing: [] });
+  });
+
+  it("leaves an account valued at the start but unvalued at the end out of the totals and marks the summary partial", () => {
+    // A (full history, cash inference off): 10-01 statement VTI 10 @ 100 = 1,000.00; a 10-05 trade
+    // checkpoint adds NEW, which has no price, so V(10-10) is null. B: balances 10,000.00 → 10,200.00.
+    const NEW = "sec-new";
+    const input: ValuationInput = {
+      expectedThrough: "2026-10-20",
+      accounts: [
+        { id: A, name: "Brokerage", type: "brokerage", taxTreatment: "taxable", fidelity: "full_history", cashInference: "off" },
+        { id: B, name: "401(k)", type: "401k", taxTreatment: "pre_tax", fidelity: "balance_only", cashInference: "auto" },
+      ],
+      securities: [...securities(), { id: NEW, ticker: "NEW", name: "New Holding", type: "stock", assetClass: "us_stock", priceMode: "provider" }],
+      prices: [price(VTI, "2026-10-01", "100", "implied")],
+      snapshots: [snap(A, VTI, "2026-10-01", "10", "100", 100_000n)],
+      balances: [bal(B, "2026-10-01", 1_000_000n, "simplefin"), bal(B, "2026-10-10", 1_020_000n, "simplefin")],
+      flows: [flow(A, "2026-10-07", 20_000n)],
+      tradePositions: [{ accountId: A, date: "2026-10-05", quantityBySecurity: new Map([[VTI, f("10")], [NEW, f("5")]]) }],
+    };
+    expect(valueAccountOn(input, A, "2026-10-10")).toMatchObject({ basis: "lots", valueCents: null, missing: [NEW] });
+
+    const pc = periodChange(input, [A, B], { period: "custom", end: "2026-10-10", from: "2026-10-01" });
+    // A is not a 1,000.00 loss: it is unmeasured, and its 200.00 transfer is not in the flows either
+    expect(pc).toMatchObject({ startCents: 1_000_000n, endCents: 1_020_000n, changeCents: 20_000n, changeBp: 200, netFlowsCents: 0n, growthCents: 20_000n, growthReason: null, newAccounts: [], partial: true, missing: [A] });
+    expect(pc!.accounts[0]).toMatchObject({ accountId: A, startCents: 100_000n, endCents: null, changeCents: null, netFlowsCents: 20_000n, growthCents: null, growthReason: "flows_not_in_value", isNew: false, endBasis: "lots" });
+    expect(pc!.accounts[1]).toMatchObject({ accountId: B, startCents: 1_000_000n, endCents: 1_020_000n, changeCents: 20_000n, growthCents: 20_000n });
+
+    // alone, nothing can be measured: null, not 0 or −1,000.00
+    const alone = periodChange(input, [A], { period: "custom", end: "2026-10-10", from: "2026-10-01" });
+    expect(alone).toMatchObject({ startCents: null, endCents: 0n, changeCents: null, changeBp: null, netFlowsCents: 0n, growthCents: null, growthReason: null, newAccounts: [], partial: true, missing: [A] });
+    expect(alone!.accounts[0]).toMatchObject({ startCents: 100_000n, endCents: null, changeCents: null });
+
+    // priced, the same window measures A again
+    const priced: ValuationInput = { ...input, prices: [...input.prices, price(NEW, "2026-10-09", "40")] };
+    const whole = periodChange(priced, [A, B], { period: "custom", end: "2026-10-10", from: "2026-10-01" });
+    // A(10-10) = 10 × 100 + 5 × 40 = 1,200.00
+    expect(whole).toMatchObject({ startCents: 1_100_000n, endCents: 1_140_000n, changeCents: 40_000n, netFlowsCents: 20_000n, growthCents: null, growthReason: "flows_not_in_value", partial: false, missing: [] });
   });
 });
 

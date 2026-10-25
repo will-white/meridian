@@ -39,7 +39,10 @@ import { pairTransfersInDb, unpairTransfer } from "./transfers.js";
  * rows are audited per row. Cash transfers reach the ledger: in SimpleFIN-fed accounts by
  * linking the Bridge's row (`linkToLedger`), elsewhere by a derived ledger row (`is_transfer`,
  * linked by `ledger_transaction_id`) so hand-entered 401(k) deferrals reach savings goals.
- * Every writer rebuilds the lots of the accounts it touched inside its transaction.
+ * Only ledger rows this side wrote (a derived transfer row, or the income feed's synthetic
+ * row) follow an investment row's edits and deletion; a bank row the linker merely matched is
+ * the owner's and is never changed (`ownedLedgerTwin`). Every writer rebuilds the lots of the
+ * accounts it touched inside its transaction.
  */
 
 type TxnRow = typeof investmentTxn.$inferSelect;
@@ -448,14 +451,19 @@ export async function pairInvestmentTransfers(tx: DbOrTx, opts: PairInvestmentTr
 
 // ---- Derived ledger rows (plan decision 15, G1) ----
 
+/** The external id of a ledger row written for an investment row; the income feed keys its synthetic rows the same way. */
+export function derivedLedgerExternalId(txnId: string): string {
+  return `inv:${txnId}`;
+}
+
 /** A cash transfer's ledger twin in an account without a bank feed: created here, kept in step with the row, deleted with it. */
-async function createDerivedLedgerRow(tx: DbOrTx, input: { accountId: string; date: IsoDate; amountCents: bigint; description: string; memo: string | null }): Promise<string> {
+async function createDerivedLedgerRow(tx: DbOrTx, input: { txnId: string; accountId: string; date: IsoDate; amountCents: bigint; description: string; memo: string | null }): Promise<string> {
   const payee = await resolvePayee(tx, "Transfer");
   const [row] = await tx
     .insert(transaction)
     .values({
       accountId: input.accountId,
-      externalId: null,
+      externalId: derivedLedgerExternalId(input.txnId),
       source: "manual",
       date: input.date,
       amountCents: input.amountCents,
@@ -470,9 +478,53 @@ async function createDerivedLedgerRow(tx: DbOrTx, input: { accountId: string; da
   return row!.id;
 }
 
-async function deleteDerivedLedgerRow(tx: DbOrTx, ledgerTransactionId: string): Promise<void> {
+async function deleteOwnedLedgerRow(tx: DbOrTx, ledgerTransactionId: string): Promise<void> {
   await unpairTransfer(tx, ledgerTransactionId);
   await tx.delete(transaction).where(eq(transaction.id, ledgerTransactionId));
+}
+
+/** A ledger row this side wrote for an investment row: a cash transfer's derived row, or the income feed's synthetic row (`create` mode). */
+export type OwnedLedgerTwinKind = "derived_transfer" | "synthetic_income";
+
+type OwnedTwinSource = Pick<TxnRow, "id" | "type" | "securityId" | "ledgerTransactionId" | "importLogId">;
+
+/**
+ * The linked ledger row when this side created it, else null: the feed's synthetic income row
+ * (`source = 'investment'`), or a cash transfer's derived row (external id `inv:<row id>` from
+ * manual entry, or a row of the same `import_log` as the trade import that wrote both). A bank
+ * row the linker matched (SimpleFIN, a bank CSV, a hand-entered row) is never owned.
+ */
+export async function ownedLedgerTwin(tx: DbOrTx, row: OwnedTwinSource): Promise<{ id: string; kind: OwnedLedgerTwinKind } | null> {
+  if (!row.ledgerTransactionId) return null;
+  const [ledger] = await tx
+    .select({ id: transaction.id, source: transaction.source, externalId: transaction.externalId, importLogId: transaction.importLogId })
+    .from(transaction)
+    .where(eq(transaction.id, row.ledgerTransactionId));
+  if (!ledger) return null;
+  if (ledger.source === "investment") return { id: ledger.id, kind: "synthetic_income" };
+  const derived = ledger.externalId === derivedLedgerExternalId(row.id) || (row.importLogId !== null && ledger.importLogId === row.importLogId);
+  return derived && isCashTransfer(row) ? { id: ledger.id, kind: "derived_transfer" } : null;
+}
+
+/** Whether a row of the merged shape still earns its owned twin: a derived row needs a cash transfer, a synthetic row a dividend or interest. */
+function ownedTwinStillApplies(kind: OwnedLedgerTwinKind, shape: Pick<TxnShape, "type" | "securityId">): boolean {
+  return kind === "derived_transfer" ? isCashTransfer(shape) : shape.type === "dividend" || shape.type === "interest";
+}
+
+/**
+ * Keep an owned twin in step with its row's new shape: deleted when the row is no longer of
+ * the twin's kind, else given the row's date and amount when they changed. Returns true when
+ * the twin was deleted (the caller clears the link).
+ */
+async function followOwnedTwin(tx: DbOrTx, twin: { id: string; kind: OwnedLedgerTwinKind }, next: { type: InvestmentTxnType; securityId: string | null; date: IsoDate; amountCents: bigint }, prev: { date: IsoDate; amountCents: bigint }): Promise<boolean> {
+  if (!ownedTwinStillApplies(twin.kind, next)) {
+    await deleteOwnedLedgerRow(tx, twin.id);
+    return true;
+  }
+  if (next.date !== prev.date || next.amountCents !== prev.amountCents) {
+    await tx.update(transaction).set({ date: next.date, amountCents: next.amountCents, updatedAt: new Date() }).where(eq(transaction.id, twin.id));
+  }
+  return false;
 }
 
 // ---- Manual entry (§3.10) ----
@@ -591,7 +643,7 @@ async function settleLedgerSide(tx: DbOrTx, row: TxnRow, acct: InvestmentAccount
   const linked = await linkToLedger(tx, [{ id: row.id, accountId: row.accountId, date: row.date, amountCents: row.amountCents }]);
   if (linked > 0 || acct.simplefinFed || !isCashTransfer(row)) return { linked, ledgerCreated: 0, transfersPaired: 0 };
   const description = sanitizeText(row.rawDescription, 500) || (row.transferDirection === "in" ? "Transfer in" : "Transfer out");
-  const ledgerId = await createDerivedLedgerRow(tx, { accountId: row.accountId, date: row.date, amountCents: row.amountCents, description, memo });
+  const ledgerId = await createDerivedLedgerRow(tx, { txnId: row.id, accountId: row.accountId, date: row.date, amountCents: row.amountCents, description, memo });
   await tx.update(investmentTxn).set({ ledgerTransactionId: ledgerId, updatedAt: new Date() }).where(eq(investmentTxn.id, row.id));
   const transfersPaired = await pairTransfersInDb(tx, { since: row.date, until: row.date });
   return { linked: 0, ledgerCreated: 1, transfersPaired };
@@ -715,22 +767,29 @@ const SOURCE_OWNED = ["type", "transferDirection", "date", "securityId", "quanti
  * re-validated as a whole; a paired transfer leg refuses a change of type, security, quantity
  * or direction (409 `transfer_leg_linked`) unless the request also clears the group; a
  * source-owned change on an imported row sets `user_edited`; picks that no longer apply are
- * dropped; a derived ledger row follows the date and amount; lots are rebuilt; audited.
+ * dropped; a ledger row this side wrote (a derived transfer row or the feed's synthetic
+ * income row) follows the date and amount, or goes when the row leaves its kind or the link
+ * moves elsewhere, while a merely linked bank row is left alone; lots are rebuilt; audited.
  */
 export async function updateInvestmentTxn(db: Db, id: string, patch: UpdateInvestmentTxnInput, ctx: AuditContext & { today: IsoDate }): Promise<{ item: InvestmentTxnRecord; rebuildWarnings: EngineWarning[] }> {
   return db.transaction(async (tx) => {
     const row = await requireTxn(tx, id);
-    const acct = await loadInvestmentAccount(tx, row.accountId);
+    await loadInvestmentAccount(tx, row.accountId);
     const picksBefore = (await listLotPicks(tx, [id])).get(id) ?? [];
     const before = investmentTxnAuditJson(row, picksBefore);
     const accounts = new Set<string>([row.accountId]);
 
     let groupId = row.transferGroupId;
     let counterpartyId = row.counterpartyAccountId;
+    // Unpairing clears both legs; the other leg is an affected row and gets its own audit entry in this batch.
+    const otherLegs: Array<{ row: TxnRow; picks: LotPickRecord[] }> = [];
     if (patch.transferGroupId === null && row.transferGroupId) {
-      const legs = await tx.select({ id: investmentTxn.id, accountId: investmentTxn.accountId }).from(investmentTxn).where(eq(investmentTxn.transferGroupId, row.transferGroupId));
+      const legs = await tx.select().from(investmentTxn).where(and(eq(investmentTxn.transferGroupId, row.transferGroupId), ne(investmentTxn.id, id)));
+      for (const leg of legs) {
+        otherLegs.push({ row: leg, picks: (await listLotPicks(tx, [leg.id])).get(leg.id) ?? [] });
+        accounts.add(leg.accountId);
+      }
       await tx.update(investmentTxn).set({ transferGroupId: null, counterpartyAccountId: null, updatedAt: new Date() }).where(eq(investmentTxn.transferGroupId, row.transferGroupId));
-      for (const leg of legs) accounts.add(leg.accountId);
       groupId = null;
       counterpartyId = null;
     }
@@ -804,15 +863,14 @@ export async function updateInvestmentTxn(db: Db, id: string, patch: UpdateInves
     const picksCleared = picksBefore.length > 0 && (!stillSale || merged.securityId !== current.securityId);
     if (picksCleared) await writeLotPicks(tx, id, []);
 
-    // A derived ledger row (no bank feed) follows a cash transfer's date and amount, or goes with the type.
-    const wasCash = isCashTransfer(current);
-    const nowCash = isCashTransfer(merged);
-    if (!acct.simplefinFed && wasCash && row.ledgerTransactionId && ledgerTransactionId === row.ledgerTransactionId) {
-      if (!nowCash) {
-        await deleteDerivedLedgerRow(tx, row.ledgerTransactionId);
+    // Only a ledger row this side wrote follows the row (plan decisions 13 and 15); a bank row the linker matched is the owner's.
+    const twin = await ownedLedgerTwin(tx, row);
+    if (twin) {
+      if (ledgerTransactionId !== row.ledgerTransactionId) {
+        // The link moved elsewhere (or was cleared): the twin would only duplicate the new row.
+        await deleteOwnedLedgerRow(tx, twin.id);
+      } else if (await followOwnedTwin(tx, twin, { type: merged.type, securityId: merged.securityId, date, amountCents: merged.amountCents }, { date: row.date, amountCents: row.amountCents })) {
         ledgerTransactionId = null;
-      } else if (date !== row.date || merged.amountCents !== current.amountCents) {
-        await tx.update(transaction).set({ date, amountCents: merged.amountCents, updatedAt: new Date() }).where(eq(transaction.id, row.ledgerTransactionId));
       }
     }
 
@@ -845,6 +903,10 @@ export async function updateInvestmentTxn(db: Db, id: string, patch: UpdateInves
     const after = await requireTxn(tx, id);
     const picksAfter = (await listLotPicks(tx, [id])).get(id) ?? [];
     await writeAudit(tx, { ...ctx, entity: "investment_txn", entityId: id, action: "update", before, after: investmentTxnAuditJson(after, picksAfter) });
+    for (const leg of otherLegs) {
+      const fresh = await requireTxn(tx, leg.row.id);
+      await writeAudit(tx, { ...ctx, entity: "investment_txn", entityId: fresh.id, action: "update", before: investmentTxnAuditJson(leg.row, leg.picks), after: investmentTxnAuditJson(fresh, leg.picks) });
+    }
     return { item: (await getInvestmentTxn(tx, id))!, rebuildWarnings: rebuilt.warnings };
   });
 }
@@ -852,7 +914,9 @@ export async function updateInvestmentTxn(db: Db, id: string, patch: UpdateInves
 /**
  * `DELETE /api/investments/transactions/:id`: manual and imported rows delete alike; a paired
  * transfer leg needs `deleteGroup` (409 `transfer_leg_linked`), which removes both legs; a
- * derived ledger row goes with its cash transfer; lots are rebuilt; audited per row.
+ * ledger row this side wrote (a derived transfer row, the feed's synthetic income row) goes
+ * with its row, a merely linked bank row stays (the link clears); lots are rebuilt; audited
+ * per row.
  */
 export async function deleteInvestmentTxn(db: Db, id: string, opts: { deleteGroup?: boolean }, ctx: AuditContext): Promise<{ deleted: number; rebuildWarnings: EngineWarning[] }> {
   return db.transaction(async (tx) => {
@@ -867,10 +931,8 @@ export async function deleteInvestmentTxn(db: Db, id: string, opts: { deleteGrou
       accounts.add(r.accountId);
       if (r.counterpartyAccountId) accounts.add(r.counterpartyAccountId);
       const picks = (await listLotPicks(tx, [r.id])).get(r.id) ?? [];
-      if (isCashTransfer(r) && r.ledgerTransactionId) {
-        const acct = await loadInvestmentAccount(tx, r.accountId);
-        if (!acct.simplefinFed) await deleteDerivedLedgerRow(tx, r.ledgerTransactionId);
-      }
+      const twin = await ownedLedgerTwin(tx, r);
+      if (twin) await deleteOwnedLedgerRow(tx, twin.id);
       await writeAudit(tx, { ...ctx, entity: "investment_txn", entityId: r.id, action: "delete", before: investmentTxnAuditJson(r, picks), after: null });
       await tx.delete(investmentTxn).where(eq(investmentTxn.id, r.id));
     }
@@ -963,7 +1025,9 @@ function sameNullable<T>(a: T | null, b: T | null): boolean {
  * inserted, income and cash rows linked to the ledger, share transfers paired across accounts,
  * lots rebuilt for every touched account. User-owned columns (memo, links, basis, picks) are
  * never touched; a type change that makes a row's picks or carried basis invalid drops them
- * with a warning.
+ * with a warning. A ledger row this side wrote for the row (a derived transfer row, the
+ * feed's synthetic income row) takes the new date and amount, or goes (with a warning) when
+ * the row is no longer a cash transfer or income.
  */
 export async function upsertInvestmentTxns(tx: DbOrTx, input: UpsertInvestmentTxnsInput): Promise<UpsertInvestmentTxnsResult> {
   const result: UpsertInvestmentTxnsResult = {
@@ -1120,6 +1184,13 @@ export async function upsertInvestmentTxns(tx: DbOrTx, input: UpsertInvestmentTx
       patch.costBasisCents = null;
       patch.acquiredDate = null;
       result.warnings.push({ rowIndex: d.trade.rowIndex, code: "basis_cleared", message: "The row is no longer a transfer in; its carried basis was cleared" });
+    }
+    if (row.ledgerTransactionId && (patch.type !== undefined || patch.securityId !== undefined || patch.date !== undefined || patch.amountCents !== undefined)) {
+      const twin = await ownedLedgerTwin(tx, row);
+      if (twin && (await followOwnedTwin(tx, twin, { type: newType, securityId: newSecurity, date: patch.date ?? row.date, amountCents: patch.amountCents ?? row.amountCents }, { date: row.date, amountCents: row.amountCents }))) {
+        patch.ledgerTransactionId = null;
+        result.warnings.push({ rowIndex: d.trade.rowIndex, code: "ledger_row_removed", message: "The row is no longer a cash transfer or income; the ledger row written for it was removed" });
+      }
     }
     patch.updatedAt = new Date();
     await tx.update(investmentTxn).set(patch).where(eq(investmentTxn.id, row.id));

@@ -217,6 +217,27 @@ describe.skipIf(!TEST_DATABASE_URL)("performance services (INV seed)", () => {
     expect(r.accountNames.get(C)).toBe("Checking");
   });
 
+  it("prices the cash anchors that predate from, so the start value is the chain's and the statement check tracks from the previous anchor", async () => {
+    // B's latest reported balance on or before 2026-04-12 is 2025-10-13 (2,000,000), and closes exist on 2026-04-10 between the two:
+    // the plug must use the 2025-10-13 closes (2,000,000 − 1,800,000 = 200,000), not the buys' prices (which would give 345,000).
+    // V(04-12) = 20 × 290 + 100 × 66 + 25 × 236 + 200,000 + dividends 8,360 = 2,038,360 (the valuation series' point on that date).
+    const spring = await getPerformance(t.db, { from: "2026-04-12", to: "2026-10-13", today: INV_SEED_TODAY, accountIds: [B], benchmarkSecurityId: null, detail: "full", now: INV_SEED_NOW });
+    const b = spring.accounts[0]!;
+    expect(b).toMatchObject({ method: "true_twr", startValueCents: 2038360n, endValueCents: 2705200n, netFlowsCents: 500000n, growthCents: 166840n });
+    expect(b.subPeriods.map((s) => [s.from, s.to, s.beginValueCents, s.flowCents, s.endValueCents])).toEqual([["2026-04-12", "2026-10-13", 2038360n, 500000n, 2705200n]]);
+    // 2,705,200 / 2,538,360 − 1
+    expect(b.twr.rate).toBeCloseTo(0.0657274776, 6);
+    expect(b.warnings.some((w) => w.code === "price_from_txn")).toBe(false);
+
+    // No anchor inside (10-09, 10-11]: the statement check runs on the 10-09 balance and tracks cash from the 2025-10-13 one,
+    // whose securities (1,800,000) need the 2025-10-13 closes: implied 2,679,200 − 2,536,000 = 143,200 = 200,000 − 580,000 + 23,200 + 500,000.
+    const quiet = await getPerformance(t.db, { from: "2026-10-09", to: "2026-10-11", today: INV_SEED_TODAY, accountIds: [B], benchmarkSecurityId: null, detail: "full", now: INV_SEED_NOW });
+    const q = quiet.accounts[0]!;
+    expect(q).toMatchObject({ startValueCents: 2679200n, endValueCents: 2679200n });
+    expect(q.statementCheck).toMatchObject({ date: "2026-10-09", statementCents: 2679200n, securitiesCents: 2536000n, impliedCashCents: 143200n, trackedCashCents: 143200n, trackedFrom: "2025-10-13", differenceCents: 0n });
+    expect(q.warnings.some((w) => w.code === "statement_mismatch")).toBe(false);
+  });
+
   it("defaults: since inception, today, the household benchmark; summary detail empties the lists; validation", async () => {
     const r = await getPerformance(t.db, { today: INV_SEED_TODAY, now: INV_SEED_NOW });
     // The earliest data of B and R is B's 2024-02-28 contribution; `to` is today; asOf = to.

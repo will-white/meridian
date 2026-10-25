@@ -1,7 +1,8 @@
-import type { AccountView, CategoryView, ConnectionView, ImportLogView, JobView, RuleView, TransactionView } from "@meridian/shared";
+import type { AccountInvestmentView, AccountView, CategoryView, ConnectionView, ImportLogView, JobView, RuleView, TransactionView } from "@meridian/shared";
 import { CsvMapping, isInvestmentAccountType, PositionsCsvMapping, TradesCsvMapping } from "@meridian/shared";
 import type { account, category, connection, importLog, job, rule } from "@meridian/db";
-import type { LoadedRule, TransactionListRow } from "@meridian/db";
+import type { AccountFidelityRecord, LoadedRule, TransactionListRow } from "@meridian/db";
+import { toLastReconciliationView } from "./views/valuation.js";
 
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
 
@@ -29,8 +30,32 @@ export function toTransactionView(r: TransactionListRow): TransactionView {
   };
 }
 
+/**
+ * `AccountView.investment` (plan decision 7): the derived fidelity record stringified. An
+ * investment-type account the fidelity service did not report (it reports every one it is
+ * asked about) falls back to balance-only with nothing to check.
+ */
+function toAccountInvestmentView(f: AccountFidelityRecord | undefined): AccountInvestmentView {
+  if (!f) {
+    return { fidelity: "balance_only", fidelityNote: null, positionsMatch: null, lastSnapshotDate: null, lastSnapshotSource: null, lastTradeDate: null, securityCount: 0, needsReviewCount: 0, lastReconciliation: null };
+  }
+  return {
+    fidelity: f.fidelity,
+    fidelityNote: f.fidelityNote,
+    positionsMatch: f.positionsMatch,
+    lastSnapshotDate: f.lastSnapshotDate,
+    lastSnapshotSource: f.lastSnapshotSource,
+    lastTradeDate: f.lastTradeDate,
+    securityCount: f.securityCount,
+    needsReviewCount: f.needsReviewCount,
+    lastReconciliation: toLastReconciliationView(f.lastReconciliation),
+  };
+}
+
+/** `investment` is the account's `accountFidelities` record (investment types only; every other type reads null). */
 export function toAccountView(
   r: typeof account.$inferSelect & { connectionName: string | null; transactionCount: number },
+  investment?: AccountFidelityRecord,
 ): AccountView {
   return {
     id: r.id,
@@ -55,21 +80,7 @@ export function toAccountView(
     lotMethod: r.lotMethod,
     cashInference: r.cashInference,
     investmentIncomeFeed: r.investmentIncomeFeed,
-    // Phase 3 skeleton: no snapshots or trades can exist before the investments services land, so every
-    // investment-type account is balance_only with nothing to check; step 11 attaches `accountFidelities`.
-    investment: isInvestmentAccountType(r.type)
-      ? {
-          fidelity: "balance_only",
-          fidelityNote: null,
-          positionsMatch: null,
-          lastSnapshotDate: null,
-          lastSnapshotSource: null,
-          lastTradeDate: null,
-          securityCount: 0,
-          needsReviewCount: 0,
-          lastReconciliation: null,
-        }
-      : null,
+    investment: isInvestmentAccountType(r.type) ? toAccountInvestmentView(investment) : null,
   };
 }
 

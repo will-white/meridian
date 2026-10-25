@@ -1,0 +1,51 @@
+/* Shared by the Investments pages (Portfolio, Allocation, Holdings): toolbar, segmented controls, stat strip, legend, warning strip, badges and tones. */
+.inv-toolbar { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
+.inv-toolbar h2 { margin: 0; font-size: 1.2rem; }
+.inv-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.inv-seg button { background: transparent; color: var(--ink); border: none; border-radius: 0; padding: 0.4rem 0.7rem; }
+.inv-seg button + button { border-left: 1px solid var(--line); }
+.inv-seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.inv-custom input { width: 10rem; }
+.inv-asof input { width: 10rem; }
+
+.inv-stats { display: flex; flex-wrap: wrap; gap: 0.75rem 2rem; margin: 0.25rem 0 0.5rem; }
+.inv-stat { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.inv-stat .k { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.inv-stat .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+.inv-stat .v.hero { font-size: 1.6rem; line-height: 1.2; }
+.inv-stat .sub { font-size: 0.85em; color: var(--muted); }
+
+.inv-warnings { margin: 0.5rem 0 0; padding-left: 1.2rem; color: var(--warn); font-size: 0.9em; }
+.inv-warnings li + li { margin-top: 0.15rem; }
+.inv-notes { margin: 0.5rem 0 0; padding-left: 1.2rem; font-size: 0.9em; color: var(--muted); }
+
+.inv-legend { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; margin: 0.5rem 0; }
+.inv-legend label.inline { font-size: 0.85rem; }
+.inv-swatch { display: inline-block; width: 16px; height: 3px; border-radius: 2px; vertical-align: middle; }
+.inv-swatch.bold { height: 4px; }
+
+.inv-table th.num, .inv-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.inv-table td.actions { white-space: nowrap; text-align: right; }
+.inv-table tr.inv-detail td { background: color-mix(in srgb, var(--accent) 6%, transparent); border-bottom: 2px solid var(--line); }
+.inv-table tr.inv-sub td { font-size: 0.9em; color: var(--muted); }
+.inv-table tr.inv-sub td:first-child { padding-left: 1.6rem; }
+.inv-table td.name { min-width: 11rem; }
+.inv-expand { background: none; border: none; color: var(--ink); padding: 0 0.3rem 0 0; cursor: pointer; font: inherit; }
+.inv-expand::before { content: "▸"; display: inline-block; width: 1em; color: var(--muted); }
+.inv-expand[aria-expanded="true"]::before { content: "▾"; }
+.inv-badge-link { color: inherit; text-decoration: none; }
+.inv-badge-link:hover { text-decoration: underline; }
+.inv-chip { display: inline-block; font-size: 0.72rem; padding: 0.1rem 0.45rem; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+
+.tone-ok { color: var(--ok); }
+.tone-warn { color: var(--warn); }
+.tone-bad { color: var(--bad); }
+.tone-neutral { color: var(--muted); }
+
+.inv-empty-card { padding: 1rem 0; }
+.inv-empty-card p { margin: 0 0 0.5rem; }
+
+@media (max-width: 800px) {
+  .inv-table .muted.small.hide-narrow { display: none; }
+  .inv-stat .v.hero { font-size: 1.3rem; }
+}

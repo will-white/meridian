@@ -44,7 +44,6 @@ import {
   type SecurityKey,
   type SecuritySuggestion,
 } from "@meridian/shared";
-import type { ApiConfig } from "../config.js";
 import { badRequest, notFound } from "../lib/errors.js";
 import { toAllocationTargetsView, toSecurityRefView, toSecurityView } from "../views/investments.js";
 import { auditContext, usePlanErrors } from "./plan.js";
@@ -58,13 +57,12 @@ import { auditContext, usePlanErrors } from "./plan.js";
 
 /**
  * `PRICE_PROVIDER !== 'none'` (plan decision 10): a configured provider lets a pricing change
- * or an import queue a `prices.fetch`. The API config carries `priceProvider` once the
- * config.ts extension of step 11 lands; until then the environment is read directly.
+ * or an import queue a `prices.fetch`. `ApiConfig.priceProvider` is null for `none` and absent
+ * on a hand-built config (the test apps), both of which mean no provider; the API never reads
+ * the environment itself.
  */
 export function priceProviderConfigured(app: FastifyInstance): boolean {
-  const configured = (app.config as ApiConfig & { priceProvider?: string | null }).priceProvider;
-  const provider = configured !== undefined ? configured : process.env["PRICE_PROVIDER"];
-  return provider !== undefined && provider !== null && provider !== "" && provider !== "none";
+  return (app.config.priceProvider ?? null) !== null;
 }
 
 export type PreviewResolution = { id: string; matchedBy: SecurityMatchedBy } | { id: null; cash: boolean; suggestion: SecuritySuggestion };

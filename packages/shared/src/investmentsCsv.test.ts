@@ -270,6 +270,23 @@ describe("classifyTradeAction", () => {
     expect(classifyTradeAction("DIVIDEND RECEIVED SCHWAB US DIVIDEND EQUITY ETF (SCHD) (Cash)", "", { ...row, hasQuantity: false }, defaults)).toBe("dividend");
     expect(classifyTradeAction("YOU SOLD GLOBAL X SUPERDIVIDEND (DIV) (Cash)", "", { hasQuantity: true, amountSign: 1, securityName: "GLOBAL X SUPERDIVIDEND", ticker: "DIV" }, defaults)).toBe("sell");
   });
+  it("lets the amount's sign decide a text that names both cash directions", () => {
+    const out = { hasQuantity: false, amountSign: -1 as const };
+    const inn = { hasQuantity: false, amountSign: 1 as const };
+    const unsigned = { hasQuantity: false, amountSign: null };
+    expect(classifyTradeAction("ACH WITHDRAWAL", "", out, defaults)).toBe("cash_out");
+    expect(classifyTradeAction("ACH DEBIT", "", out, defaults)).toBe("cash_out");
+    expect(classifyTradeAction("ROLLOVER DISBURSEMENT", "", out, defaults)).toBe("cash_out");
+    expect(classifyTradeAction("DIRECT ROLLOVER WITHDRAWAL", "", out, defaults)).toBe("cash_out");
+    expect(classifyTradeAction("ROLLOVER DISBURSEMENT", "", inn, defaults)).toBe("cash_in");
+    // without a sign the design's order stands
+    expect(classifyTradeAction("ACH WITHDRAWAL", "", unsigned, defaults)).toBe("cash_in");
+    expect(classifyTradeAction("ACH WITHDRAWAL", "", { hasQuantity: false, amountSign: 0 }, defaults)).toBe("cash_in");
+    // one direction in the text: the text wins, whatever the sign
+    expect(classifyTradeAction("WITHDRAWAL", "", inn, defaults)).toBe("cash_out");
+    expect(classifyTradeAction("DEPOSIT", "", out, defaults)).toBe("cash_in");
+    expect(classifyTradeAction("ROLLOVER CONTRIBUTION", "", inn, defaults)).toBe("cash_in");
+  });
   it("normalizes action keys and parses split ratios", () => {
     expect(actionKey("  You   Bought ")).toBe("you bought");
     expect(parseSplitRatio("STOCK SPLIT 2 FOR 1")).toEqual({ num: 2, den: 1 });
@@ -320,6 +337,8 @@ describe("mapTradesCsvRows: row rules (test 10)", () => {
       { date: "2026-10-03", type: "sell", kind: "sell", ticker: "ABC", quantity: f("5"), price: f("48"), amountCents: 24_000n, feeCents: 0n, derived: ["price"], warnings: [] },
       { date: "2026-10-05", type: "sell", kind: "sell", ticker: "VTI", quantity: f("4"), price: f("249.65"), amountCents: 99_860n, feeCents: 0n, derived: [], warnings: [] },
     ]);
+    // The design's fifth worked id (§3.8): sha256("2026-10-02|buy|ABC|5|-24557"), keyed on the derived amount.
+    expect(result.trades[1]!.externalId).toBe("inv:e57ec0a7ccbde687c2bb76b31cf5da260594af4b266bc9d660e17eb6d67bdf65");
     expect(result.errors).toEqual([
       { rowIndex: 5, code: "amount_or_price_required", message: "An amount or a price is required with a quantity" },
       { rowIndex: 6, code: "security_required", message: "A dividend needs a security (map the action to interest if it is cash interest)" },
@@ -397,6 +416,27 @@ describe("mapTradesCsvRows: row rules (test 10)", () => {
     expect(result.errors).toEqual([{ rowIndex: 9, code: "split_ratio_required", message: "The split ratio (new for old) is not in the text; choose it in the preview" }]);
     expect(result.skipped).toEqual([{ rowIndex: 12, reason: "skip", text: "JOURNALED CASH" }]);
     expect(result.trades.filter((t) => t.date === "2026-10-04").map((t) => t.sequence)).toEqual([0, 1]);
+  });
+
+  it("maps a withdrawal whose text also names an inflow as cash out, and says the sign decided", async () => {
+    const rows = [
+      HEADER,
+      ["2026-10-02", "ACH WITHDRAWAL", "", "", "", "", "-500.00"],
+      ["2026-10-03", "ROLLOVER DISBURSEMENT", "", "", "", "", "-2,000.00"],
+      ["2026-10-04", "ROLLOVER CONTRIBUTION", "", "", "", "", "2000.00"],
+      ["2026-10-05", "ACH WITHDRAWAL", "", "", "", "", "300.00"],
+    ];
+    const result = await mapTradesCsvRows(rows, tradesMapping);
+    expect(result.errors).toEqual([]);
+    expect(result.trades.map((t) => [t.rowIndex, t.type, t.kind, t.transferDirection, t.amountCents, t.warnings])).toEqual([
+      [1, "transfer", "cash_out", "out", -50_000n, ["direction_from_sign"]],
+      [2, "transfer", "cash_out", "out", -200_000n, ["direction_from_sign"]],
+      [3, "transfer", "cash_in", "in", 200_000n, []],
+      [4, "transfer", "cash_in", "in", 30_000n, ["direction_from_sign"]],
+    ]);
+    // the owner's action map still outranks the text and the sign
+    const mapped = await mapTradesCsvRows(rows.slice(0, 2), { ...tradesMapping, actionMap: { "ach withdrawal": "cash_out" } });
+    expect(mapped.trades[0]).toMatchObject({ kind: "cash_out", amountCents: -50_000n, warnings: [] });
   });
 
   it("requires a quantity for trades and share transfers", async () => {

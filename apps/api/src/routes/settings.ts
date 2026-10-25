@@ -29,6 +29,11 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
       ...(b.primaryAccountId !== undefined ? { primaryAccountId: b.primaryAccountId } : {}),
       ...(b.projectionDefaultDays !== undefined ? { projectionDefaultDays: b.projectionDefaultDays } : {}),
       ...(b.timezone !== undefined ? { timezone: b.timezone } : {}),
+      // Phase 3 (plan decisions 13 and 16): validated by the service (a cash or unknown benchmark, a category outside the income bucket).
+      ...(b.benchmarkSecurityId !== undefined ? { benchmarkSecurityId: b.benchmarkSecurityId } : {}),
+      ...(b.investmentIncomeCategoryId !== undefined ? { investmentIncomeCategoryId: b.investmentIncomeCategoryId } : {}),
+      ...(b.rebalanceBandBp !== undefined ? { rebalanceBandBp: b.rebalanceBandBp } : {}),
+      ...(b.rebalanceMinTradeCents !== undefined ? { rebalanceMinTradeCents: BigInt(b.rebalanceMinTradeCents) } : {}),
     };
     return toHouseholdSettingView(await updateHouseholdSetting(app.db, patch, auditContext(request)));
   });

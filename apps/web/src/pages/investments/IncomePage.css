@@ -1,0 +1,35 @@
+/* Income: the stacked monthly bars (plain CSS), the months table with its breakdowns, the rows and the feed settings. */
+.inc-chart { margin: 0.75rem 0 0.25rem; }
+.inc-legend { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; font-size: 0.85rem; margin-bottom: 0.5rem; }
+.inc-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -1px; margin-right: 0.25rem; }
+.inc-swatch.dividends, .inc-seg.dividends { background: #2a78d6; }
+.inc-swatch.interest, .inc-seg.interest { background: #1baf7a; }
+.inc-swatch.reinvested, .inc-seg.reinvested { background: repeating-linear-gradient(135deg, #2a78d6 0 4px, color-mix(in srgb, #2a78d6 35%, var(--panel)) 4px 8px); }
+@media (prefers-color-scheme: dark) {
+  .inc-swatch.dividends, .inc-seg.dividends { background: #3987e5; }
+  .inc-swatch.interest, .inc-seg.interest { background: #199e70; }
+  .inc-swatch.reinvested, .inc-seg.reinvested { background: repeating-linear-gradient(135deg, #3987e5 0 4px, color-mix(in srgb, #3987e5 35%, var(--panel)) 4px 8px); }
+}
+.inc-bars { display: flex; align-items: flex-end; gap: 6px; height: 180px; padding: 0 0 1.4rem; border-bottom: 1px solid var(--line); position: relative; overflow-x: auto; }
+.inc-col { flex: 1 1 0; min-width: 18px; max-width: 64px; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; position: relative; }
+.inc-stack { display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+.inc-seg { width: 100%; min-height: 1px; }
+.inc-seg + .inc-seg { margin-top: 1px; }
+.inc-month { position: absolute; bottom: -1.3rem; left: 0; right: 0; text-align: center; font-size: 0.7rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.inc-months tfoot td { font-weight: 600; border-top: 2px solid var(--line); }
+.inc-months tr.inc-empty-month td { color: var(--muted); }
+.inc-month-detail { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 0.75rem 2rem; padding: 0.25rem 0; }
+.inc-breakdown { list-style: none; margin: 0.25rem 0 0; padding: 0; font-size: 0.9em; }
+.inc-breakdown li { display: flex; justify-content: space-between; gap: 1rem; padding: 0.1rem 0; border-bottom: 1px dotted var(--line); }
+.inc-row-link { margin-left: 0.4rem; }
+.inc-feed { display: flex; flex-direction: column; gap: 0.75rem; }
+.inc-feed-category { align-items: flex-end; gap: 0.5rem 1rem; }
+.inc-feed-category select { min-width: 14rem; }
+.inc-feed-table td.name { min-width: 12rem; }
+.inc-modes { display: flex; flex-wrap: wrap; gap: 0.25rem 0.9rem; }
+.inc-modes label.inline { font-size: 0.85rem; }
+.inc-feed-explain { margin: 0; }
+.inc-feed-chip { display: inline-block; margin-right: 1rem; }
+@media (max-width: 800px) {
+  .inc-rows .muted { display: none; }
+}

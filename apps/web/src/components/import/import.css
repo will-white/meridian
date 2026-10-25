@@ -1,0 +1,22 @@
+/* Import page: the kind switch, the mapping editors, the previews' bars and lines, derived values and the security choice cell. */
+.imp-kinds { margin-bottom: 1rem; }
+.imp-mapping label.inline { align-self: end; }
+.imp-mapping .imp-skip { width: 6rem; }
+.imp-fees { border: 1px solid var(--line); border-radius: 6px; padding: 0.4rem 0.6rem; margin: 0; grid-column: 1 / -1; }
+.imp-fees legend { font-size: 0.9rem; padding: 0 0.25rem; }
+.imp-bar { padding: 0.45rem 0.7rem; border-radius: 6px; margin: 0 0 0.75rem; font-size: 0.95em; }
+.imp-bar-warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); }
+.imp-bar-bad { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
+.imp-line { font-weight: 600; margin: 0.5rem 0; }
+.imp-table th.num, .imp-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.imp-table tr.imp-date td { background: color-mix(in srgb, var(--accent) 6%, transparent); font-weight: 600; font-size: 0.85em; }
+.imp-table tr.imp-unknown td { background: color-mix(in srgb, var(--bad) 8%, transparent); }
+.imp-table td.imp-flags { white-space: nowrap; }
+.imp-derived { font-style: italic; color: var(--muted); }
+.imp-security-edit { margin-top: 0.35rem; display: flex; flex-direction: column; gap: 0.35rem; }
+.imp-security-edit select, .imp-security-edit input { max-width: 100%; }
+.imp-ratio input { width: 3.5rem; padding: 0.2rem 0.4rem; }
+.imp-commit { margin-top: 0.75rem; }
+.imp-commit .imp-total { width: 9rem; }
+.imp-skipped { margin: 0.5rem 0; }
+.imp-skipped ul { margin: 0.25rem 0 0; padding-left: 1.2rem; }

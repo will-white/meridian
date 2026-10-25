@@ -1,0 +1,17 @@
+/* Portfolio: the accounts table with an expandable valuation detail (the chain's lines) under each row. */
+.pf-table td.pf-period { min-width: 9rem; }
+.pf-table td.actions a { margin-left: 0.5rem; }
+.pf-detail { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.25rem 0; }
+.pf-detail-head { gap: 0.4rem 1.25rem; font-size: 0.9em; }
+.inv-chart-note { margin: 0.25rem 0 0; }
+@media (max-width: 800px) {
+  .pf-table .hide-narrow { display: none; }
+}
+
+/* "Why?": the change attribution under a row (price and quantity effects, cash & other, flows, income). */
+.pf-table td.actions button + button { margin-left: 0.5rem; }
+.pf-why { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.25rem 0; }
+.pf-why-head { gap: 0.4rem 1.25rem; align-items: center; font-size: 0.9em; }
+.pf-why h4 { margin: 0.5rem 0 0.25rem; font-size: 0.9rem; }
+.pf-why-table tfoot td { font-weight: 600; }
+.pf-why-table tfoot td .muted { font-weight: 400; }
