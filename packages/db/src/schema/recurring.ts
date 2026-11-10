@@ -17,7 +17,7 @@ export const recurring = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     payeeId: uuid("payee_id").notNull().references(() => payee.id, { onDelete: "cascade" }),
-    /** Where the planned amount lands (bills or income bucket). Required to activate. */
+    /** Where the planned amount lands: the item is planned in this category whatever its bucket. Required to activate. */
     categoryId: uuid("category_id").references(() => category.id, { onDelete: "set null" }),
     /** Account the money leaves (bill, transfer) or enters (income). Required to activate. */
     accountId: uuid("account_id").references(() => account.id, { onDelete: "set null" }),

@@ -1,8 +1,9 @@
-import { and, asc, count, eq, inArray, isNull, sql } from "drizzle-orm";
-import { BUCKET_ORDER, isMonthKey, monthKey, type Bucket, type IsoDate, type MonthKey, type RolloverMode } from "@meridian/shared";
+import { and, asc, count, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { addMonths, BUCKET_ORDER, isMonthKey, maxMonth, minMonth, monthKey, monthRange, type Bucket, type IsoDate, type MonthKey, type RolloverMode } from "@meridian/shared";
 import type { Db, DbOrTx } from "../index.js";
-import { category, categoryGroup, recurring, savingsGoal, split, transaction } from "../schema/index.js";
+import { category, categoryGroup, monthPlan, recurring, savingsGoal, split, transaction } from "../schema/index.js";
 import { PlanError, writeAudit, type AuditContext } from "./audit.js";
+import { applyPlanCellEdits } from "./plan.js";
 import { getHouseholdSetting } from "./settings.js";
 
 export const DEFAULT_CATEGORIES: Array<{ name: string; bucket: "income" | "bills" | "savings" | "spending" }> = [
@@ -196,11 +197,49 @@ export interface UpdateCategoryInput {
 }
 
 /**
+ * A rollover change applies from the current month on. Before the category row changes, the
+ * months that already happened are pinned to the mode they ran under: every month from the
+ * old chain start up to the month before the current one (or before a later new start month)
+ * that has no per-month override gets `month_plan.rollover_mode = <old mode>`, audited in the
+ * caller's batch. The engine honours those pins whatever the category setting becomes, so
+ * closed months keep their carried-in, committed and left-to-spend figures and the current
+ * month keeps what it was handed. Asking for an EARLIER start month is a request to
+ * recompute history, so nothing is pinned then.
+ */
+async function pinPastRollover(
+  tx: DbOrTx,
+  categoryId: string,
+  old: { mode: RolloverMode; fromMonth: MonthKey | null },
+  next: { mode: RolloverMode; fromMonth: MonthKey | null },
+  planStartMonth: MonthKey,
+  ctx: AuditContext & { today: IsoDate },
+): Promise<void> {
+  if (old.mode === "none") return;
+  const currentMonth = monthKey(ctx.today);
+  const oldChainStart = maxMonth(planStartMonth, old.fromMonth ?? planStartMonth);
+  const newChainStart = next.mode === "none" || next.fromMonth === null ? null : maxMonth(planStartMonth, next.fromMonth);
+  if (newChainStart !== null && newChainStart < oldChainStart) return;
+  const until = newChainStart !== null && newChainStart > oldChainStart ? minMonth(newChainStart, currentMonth) : currentMonth;
+  const last = addMonths(until, -1);
+  if (oldChainStart > last) return;
+  const pinned = await tx
+    .select({ month: monthPlan.month })
+    .from(monthPlan)
+    .where(and(eq(monthPlan.categoryId, categoryId), gte(monthPlan.month, oldChainStart), lte(monthPlan.month, last), isNotNull(monthPlan.rolloverMode)));
+  const has = new Set(pinned.map((r) => r.month));
+  const edits = monthRange(oldChainStart, last)
+    .filter((month) => !has.has(month))
+    .map((month) => ({ month, categoryId, rolloverMode: old.mode }));
+  await applyPlanCellEdits(tx, edits, ctx);
+}
+
+/**
  * Patch a category. Rules (docs/phase-2-plan.md §1, §9): a goal's category must
  * stay in savings (400 `goal_category`); a bucket change clears a group of another
  * bucket and forces rollover off for income; income never rolls over (400
  * `income_no_rollover`); enabling a carrying mode without a start month uses the
- * month of `today`; mode none clears the start month.
+ * month of `today`; mode none clears the start month; a rollover change never rewrites
+ * the months that already happened (`pinPastRollover`).
  */
 export async function updateCategory(db: Db, id: string, patch: UpdateCategoryInput, ctx: AuditContext & { today: IsoDate }): Promise<CategoryRow> {
   if (patch.rolloverFromMonth !== undefined && patch.rolloverFromMonth !== null && !isMonthKey(patch.rolloverFromMonth)) {
@@ -260,6 +299,11 @@ export async function updateCategory(db: Db, id: string, patch: UpdateCategoryIn
     }
     if (rolloverMode !== existing.rolloverMode) set.rolloverMode = rolloverMode;
     if (rolloverFromMonth !== existing.rolloverFromMonth) set.rolloverFromMonth = rolloverFromMonth;
+    // Income months never carry and take no overrides, so a move into or out of income pins nothing.
+    if ((set.rolloverMode !== undefined || set.rolloverFromMonth !== undefined) && existing.bucket !== "income" && bucket !== "income") {
+      const setting = await getHouseholdSetting(tx, ctx.today);
+      await pinPastRollover(tx, id, { mode: existing.rolloverMode, fromMonth: existing.rolloverFromMonth }, { mode: rolloverMode, fromMonth: rolloverFromMonth }, setting.planStartMonth, ctx);
+    }
 
     if (Object.keys(set).length === 0) return;
     const [after] = await tx.update(category).set(set).where(eq(category.id, id)).returning();

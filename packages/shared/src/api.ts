@@ -244,6 +244,15 @@ export const UpdatePayeeBody = z.object({
 });
 
 // ---- Transactions ----
+/** One line of a split transaction: the part of the amount that counts in `categoryId`. */
+export const TransactionSplitView = z.object({
+  id: z.string().uuid(),
+  categoryId: z.string().uuid().nullable(),
+  categoryName: z.string().nullable(),
+  amountCents: CentsString,
+  memo: z.string().nullable(),
+});
+export type TransactionSplitView = z.infer<typeof TransactionSplitView>;
 export const TransactionView = z.object({
   id: z.string().uuid(),
   accountId: z.string().uuid(),
@@ -264,6 +273,8 @@ export const TransactionView = z.object({
   tags: z.array(z.string()),
   source: TransactionSource,
   recurringId: z.string().uuid().nullable(),
+  /** Split lines (empty when the row is not split). They replace the row in the plan; `categoryId` is null then. */
+  splits: z.array(TransactionSplitView),
 });
 export type TransactionView = z.infer<typeof TransactionView>;
 export const TransactionQuery = z.object({
@@ -281,6 +292,8 @@ export const TransactionQuery = z.object({
   goalId: z.string().uuid().optional(),
   /** Phase 2: charges linked to one recurring item. */
   recurringId: z.string().uuid().optional(),
+  /** Only rows the spending plan reads (on-budget accounts, plus the investment income feed): the drill-down behind a plan cell. */
+  planScope: QueryBoolean.optional(),
 });
 export type TransactionQuery = z.infer<typeof TransactionQuery>;
 export const TransactionList = z.object({ items: z.array(TransactionView), nextCursor: z.string().nullable() });
@@ -292,6 +305,19 @@ export const UpdateTransactionBody = z.object({
   isTransfer: z.boolean().optional(),
   tags: z.array(z.string().min(1).max(50)).optional(),
 });
+/** Replace a transaction's split lines: two or more lines that add up to its amount, or none to remove the split. */
+export const SetTransactionSplitsBody = z.object({
+  splits: z
+    .array(
+      z.object({
+        categoryId: z.string().uuid(),
+        amountCents: CentsString,
+        memo: z.string().max(200).nullable().optional(),
+      }),
+    )
+    .max(20),
+});
+export type SetTransactionSplitsBody = z.infer<typeof SetTransactionSplitsBody>;
 export const CreateManualTransactionBody = z.object({
   accountId: z.string().uuid(),
   date: IsoDateString,

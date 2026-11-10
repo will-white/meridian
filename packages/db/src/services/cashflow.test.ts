@@ -28,9 +28,9 @@ import { updateHouseholdSetting } from "./settings.js";
  *   −2500 (10-13 pending) = +15000 → statement balance −47500 − 15000 = −62500;
  * - spending remaining Oct: Groceries max(0, 50000 + 10000 − 54500) = 5500, Dining
  *   max(0, 20000 − 20000) = 0, Fuel 15000 − 5500 = 9500, Old Hobby 0, Shopping 0 → 15000;
- *   Nov: Groceries 50000 (row) + Dining 13000 + Fuel 3000 + Old Hobby 1000 + Shopping 0
- *   (3-month averages, ledger starts 2026-08 so sums / 2) = 67000; Dec, Jan: 23500 +
- *   13000 + 3000 + 1000 = 40500;
+ *   Nov: Groceries 50000 (row) + Dining 26000 + Fuel 6000 + Old Hobby 2000 + Shopping 0
+ *   (3-month averages: the ledger opens on 2026-08-20, so August is a partial month and
+ *   September is the only complete one) = 84000; Dec, Jan: 40000 + 26000 + 6000 + 2000 = 74000;
  * - spending outflows in [2026-07-16, 2026-10-13]: Checking 152000, Visa 10500, Savings 0.
  */
 
@@ -103,20 +103,48 @@ describe.skipIf(!TEST_DATABASE_URL)("cash-flow loader on the grid-and-api seed",
     expect(await spendingRemainingByMonth(t.db, today, "2026-11-12")).toEqual({
       months: [
         { month: "2026-10", remainingCents: 15000n },
-        { month: "2026-11", remainingCents: 67000n },
+        { month: "2026-11", remainingCents: 84000n },
       ],
       monthsOnAverages: 1,
+      averageMonthsWithData: 1,
     });
     expect(await spendingRemainingByMonth(t.db, today, "2027-01-11")).toEqual({
       months: [
         { month: "2026-10", remainingCents: 15000n },
-        { month: "2026-11", remainingCents: 67000n },
-        { month: "2026-12", remainingCents: 40500n },
-        { month: "2027-01", remainingCents: 40500n },
+        { month: "2026-11", remainingCents: 84000n },
+        { month: "2026-12", remainingCents: 74000n },
+        { month: "2027-01", remainingCents: 74000n },
       ],
       monthsOnAverages: 3,
+      averageMonthsWithData: 1,
     });
-    expect(await spendingRemainingByMonth(t.db, "2026-10-31", "2026-10-31")).toEqual({ months: [{ month: "2026-10", remainingCents: 15000n }], monthsOnAverages: 0 });
+    expect(await spendingRemainingByMonth(t.db, "2026-10-31", "2026-10-31")).toEqual({
+      months: [{ month: "2026-10", remainingCents: 15000n }],
+      monthsOnAverages: 0,
+      averageMonthsWithData: null,
+    });
+  });
+
+  it("takes a spending category's dated recurring charges out of its spread, never below zero", async () => {
+    const weekly = { cadence: "weekly" as const, anchorDate: "2026-10-16" };
+    // Groceries, 100.00 every Friday from Oct 16: Oct 16, 23, 30 (300.00) and Nov 6, 13, 20, 27 (400.00).
+    // Oct: Groceries has 55.00 left, all of it inside the dated charges → 0; Fuel 95.00 stays: 9500.
+    // Nov: Groceries 500.00 planned − 400.00 dated = 100.00; + Dining 260.00 + Fuel 60.00 + Old Hobby 20.00 = 44000.
+    expect(await spendingRemainingByMonth(t.db, today, "2026-11-12", [{ categoryId: S.categories.groceries, schedule: weekly, nextDueDate: "2026-10-16", amountCents: -10000n }])).toEqual({
+      months: [
+        { month: "2026-10", remainingCents: 9500n },
+        { month: "2026-11", remainingCents: 44000n },
+      ],
+      monthsOnAverages: 1,
+      averageMonthsWithData: 1,
+    });
+    // An overdue charge (due Oct 9, still awaited) posts today, so it is an October charge; a recurring refund is not taken out.
+    expect(
+      await spendingRemainingByMonth(t.db, today, "2026-10-31", [
+        { categoryId: S.categories.fuel, schedule: { cadence: "monthly", anchorDay: 9 }, nextDueDate: "2026-10-09", amountCents: -4000n },
+        { categoryId: S.categories.fuel, schedule: { cadence: "monthly", anchorDay: 20 }, nextDueDate: "2026-10-20", amountCents: 1000n },
+      ]),
+    ).toEqual({ months: [{ month: "2026-10", remainingCents: 11000n }], monthsOnAverages: 0, averageMonthsWithData: null }); // 5500 + (9500 − 4000)
   });
 
   it("loads the six reads for a 30-day horizon", async () => {
@@ -152,7 +180,7 @@ describe.skipIf(!TEST_DATABASE_URL)("cash-flow loader on the grid-and-api seed",
     expect(input.cardPayments).toEqual([{ cardAccountId: S.accounts.visa, fromAccountId: S.accounts.checking, payDay: 25, statementDay: 5, knownStatementBalanceCents: -62500n }]);
     expect(input.spendingPlan).toEqual([
       { month: "2026-10", remainingCents: 15000n },
-      { month: "2026-11", remainingCents: 67000n },
+      { month: "2026-11", remainingCents: 84000n },
     ]);
     expect(input.spendingWeights).toEqual([
       { accountId: S.accounts.checking, weightCents: 152000n },
@@ -163,7 +191,7 @@ describe.skipIf(!TEST_DATABASE_URL)("cash-flow loader on the grid-and-api seed",
     expect(input.warnings).toEqual(["1 month uses 3-month averages for unplanned spending categories"]);
   });
 
-  it("maps transfers and income, excludes spending-bucket items and transfers into a paid card, warns on items without an account", async () => {
+  it("maps transfers, income and spending-category charges, excludes transfers into a paid card, warns on items without an account", async () => {
     const extra = await t.db
       .insert(recurring)
       .values([
@@ -179,7 +207,13 @@ describe.skipIf(!TEST_DATABASE_URL)("cash-flow loader on the grid-and-api seed",
 
     const input = await loadCashFlowInput(t.db, { today, horizonDays: 30 });
     const names = input.recurring.map((r) => r.name).sort();
-    expect(names).toEqual(["Auto-save", "Car Insurance", "Internet", "Netflix", "Rent", "Salary"]);
+    expect(names).toEqual(["Auto-save", "Car Insurance", "Internet", "Netflix", "Rent", "Salary", "Weekly groceries"]);
+    // The weekly groceries run is a dated bill, and its charges leave the Groceries spread (see the test above).
+    expect(input.recurring.find((r) => r.name === "Weekly groceries")).toMatchObject({ kind: "bill", nextDueDate: "2026-10-16", amountCents: -10000n });
+    expect(input.spendingPlan).toEqual([
+      { month: "2026-10", remainingCents: 9500n },
+      { month: "2026-11", remainingCents: 44000n },
+    ]);
     expect(input.recurring.find((r) => r.name === "Auto-save")).toEqual({
       id: idOf("Auto-save"),
       name: "Auto-save",
@@ -203,7 +237,7 @@ describe.skipIf(!TEST_DATABASE_URL)("cash-flow loader on the grid-and-api seed",
     // Once the card loses its payment day, the autopay transfer is a dated event again and the card has no payment entry.
     await t.db.update(account).set({ paymentDay: null, paymentFromAccountId: null, statementDay: null }).where(eq(account.id, S.accounts.visa));
     const without = await loadCashFlowInput(t.db, { today, horizonDays: 30 });
-    expect(without.recurring.map((r) => r.name).sort()).toEqual(["Auto-save", "Car Insurance", "Internet", "Netflix", "Rent", "Salary", "Visa autopay"]);
+    expect(without.recurring.map((r) => r.name).sort()).toEqual(["Auto-save", "Car Insurance", "Internet", "Netflix", "Rent", "Salary", "Visa autopay", "Weekly groceries"]);
     expect(without.cardPayments).toEqual([]);
     await t.db
       .update(account)
@@ -270,12 +304,13 @@ describe.skipIf(!TEST_DATABASE_URL)("cash-flow loader on the grid-and-api seed",
     expect(result.combined.openingCents).toBe(572500n);
     expect(result.warnings).toEqual(["1 month uses 3-month averages for unplanned spending categories"]);
 
-    // Oct 15000 and Nov 67000 split 152000 : 10500 by largest remainder.
+    // Oct 15000 and Nov 84000 split 152000 : 10500 by largest remainder
+    // (84000 × 152000 / 162500 = 78572.31, 84000 × 10500 / 162500 = 5427.69: the odd cent goes to Visa).
     expect(result.spreads.map((s) => [s.month, s.accountId, s.totalCents])).toEqual([
       ["2026-10", S.accounts.checking, 14031n],
       ["2026-10", S.accounts.visa, 969n],
-      ["2026-11", S.accounts.checking, 62671n],
-      ["2026-11", S.accounts.visa, 4329n],
+      ["2026-11", S.accounts.checking, 78572n],
+      ["2026-11", S.accounts.visa, 5428n],
     ]);
 
     // Events sort by (date, accountId, ...); the two 10-25 legs are re-sorted by kind here since account ids are random.
@@ -291,9 +326,9 @@ describe.skipIf(!TEST_DATABASE_URL)("cash-flow loader on the grid-and-api seed",
       ["2026-11-05", "bill", "Netflix", -1549n],
     ]);
     // Combined on 11-12: card payments cancel; October's 15000 is fully spread by 10-31; November's
-    // Checking share 62671/30 = 2089 rem 1 and Visa share 4329/30 = 144 rem 9 post 12 days:
-    // 2090 + 11×2089 + 9×145 + 3×144 = 26806. 572500 − 15000 − 7999 − 180000 − 1549 − 26806 = 341146.
-    expect(result.combined.points[30]).toBe(341146n);
+    // Checking share 78572/30 = 2619 rem 2 and Visa share 5428/30 = 180 rem 28 post 12 days:
+    // 2×2620 + 10×2619 + 12×181 = 33602. 572500 − 15000 − 7999 − 180000 − 1549 − 33602 = 334350.
+    expect(result.combined.points[30]).toBe(334350n);
     expect(result.combined.minDate).toBe("2026-11-12");
 
     // Request overrides: threshold, horizon, a what-if, a subset.

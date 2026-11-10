@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { effectiveDay, isMissed, monthIndex, monthlyEquivalentCents, occurrence, occurrencesInRange, periodIndex, validateSchedule, yearlyCents, type Schedule } from "./schedule.js";
+import { effectiveDay, isMissed, monthIndex, monthlyEquivalentCents, occurrence, occurrencesInRange, occurrencesWithIndexInRange, periodIndex, validateSchedule, yearlyCents, type Schedule } from "./schedule.js";
 
 describe("occurrence and periodIndex", () => {
   it("monthly on the 31st clamps to month ends and reads a late post as the previous period", () => {
@@ -80,5 +80,23 @@ describe("grace and costs", () => {
     expect(monthlyEquivalentCents(-1000n, "weekly")).toBe(-4333n);
     expect(monthlyEquivalentCents(-61250n, "semiannual")).toBe(-10208n);
     expect(monthlyEquivalentCents(-6200n, "bimonthly")).toBe(-3100n);
+  });
+});
+
+describe("occurrencesWithIndexInRange", () => {
+  it("returns each occurrence with the index that regenerates it", () => {
+    const rent: Schedule = { cadence: "monthly", anchorDay: 1 };
+    const list = occurrencesWithIndexInRange(rent, "2026-01-15", "2026-04-01");
+    expect(list.map((o) => o.date)).toEqual(["2026-02-01", "2026-03-01", "2026-04-01"]);
+    for (const o of list) expect(occurrence(rent, o.k)).toBe(o.date);
+    expect(list.map((o) => o.k)).toEqual([list[0]!.k, list[0]!.k + 1, list[0]!.k + 2]);
+    expect(occurrencesWithIndexInRange(rent, "2026-03-02", "2026-03-01")).toEqual([]);
+  });
+
+  it("keeps two twice-monthly occurrences apart when both clamp to the same day", () => {
+    const s: Schedule = { cadence: "twice_monthly", anchorDay: 30, anchorDay2: 31 };
+    const feb = occurrencesWithIndexInRange(s, "2027-02-01", "2027-02-28");
+    expect(feb.map((o) => o.date)).toEqual(["2027-02-28", "2027-02-28"]);
+    expect(feb[1]!.k).toBe(feb[0]!.k + 1);
   });
 });

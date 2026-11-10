@@ -4,7 +4,7 @@ import { daysInMonth as daysInMonthKey, truncDiv } from "./months.js";
 
 /**
  * Calendar schedules for recurring items. This is the ONLY occurrence generator in
- * Meridian: auto-planned bills and income, the dashboard's "bills due" list, the
+ * Meridian: auto-planned recurring items, the dashboard's "bills due" list, the
  * recurring matcher and the cash-flow engine all call `occurrencesInRange`.
  *
  * A schedule is a cadence plus anchors:
@@ -141,17 +141,22 @@ export function periodIndex(s: Schedule, d: IsoDate): { k: number; residualDays:
   return { k: best, residualDays: bestResidual };
 }
 
-/** Every occurrence in [from, to], ascending. */
-export function occurrencesInRange(s: Schedule, from: IsoDate, to: IsoDate): IsoDate[] {
+/** Every occurrence in [from, to] with its period index, ascending. */
+export function occurrencesWithIndexInRange(s: Schedule, from: IsoDate, to: IsoDate): Array<{ k: number; date: IsoDate }> {
   if (from > to) return [];
-  const out: IsoDate[] = [];
+  const out: Array<{ k: number; date: IsoDate }> = [];
   let k = periodIndex(s, from).k - 2;
   for (let guard = 0; guard < 10_000; guard++, k++) {
     const d = occurrence(s, k);
     if (d > to) break;
-    if (d >= from) out.push(d);
+    if (d >= from) out.push({ k, date: d });
   }
   return out;
+}
+
+/** Every occurrence in [from, to], ascending. */
+export function occurrencesInRange(s: Schedule, from: IsoDate, to: IsoDate): IsoDate[] {
+  return occurrencesWithIndexInRange(s, from, to).map((o) => o.date);
 }
 
 /** A due date is missed once more than the cadence's grace days have passed. */

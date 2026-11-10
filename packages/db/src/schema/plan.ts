@@ -41,10 +41,13 @@ export const categoryGroup = pgTable(
 );
 
 /**
- * Planned amounts per (category, month). A row exists only when something was set by hand
- * or frozen by plan.close_month; a missing row (or null planned_cents) means the auto value
- * applies (recurring occurrences for bills/income, goal contribution for savings, else 0).
- * Months are `YYYY-MM` text. Carried-in is computed on read; `carried_in_override_cents` pins it.
+ * Planned amounts per (category, month). A row exists only when something was set by hand,
+ * frozen by plan.close_month, or pinned by a rollover change; a missing row (or null
+ * planned_cents) means the auto value applies (the category's confirmed recurring items, or
+ * its goal's monthly contribution, else 0). Months are `YYYY-MM` text. Carried-in is computed
+ * on read; `carried_in_override_cents` pins it, and `rollover_mode` pins the carry out of a
+ * month (written for past months when the category's rollover setting changes, so closed
+ * months never move).
  */
 export const monthPlan = pgTable(
   "month_plan",

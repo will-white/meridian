@@ -5,8 +5,10 @@ import {
   daysInMonth,
   isIsoDate,
   maxBig,
+  monthEnd,
   monthKey,
   projectCashFlow,
+  projectedOccurrenceDates,
   validateSchedule,
   type CashFlowAccount,
   type CashFlowCardPayment,
@@ -33,10 +35,12 @@ import { getHouseholdSetting, householdToday } from "./settings.js";
 /**
  * Loader for the cash-flow engine (docs/phase-2-plan.md §14, docs/design/phase-2/cashflow.md
  * "Loader reads"). Six reads, no writes: projected accounts with opening = posted balance +
- * pending, active recurring items mapped to engine items, card payment entries with the
- * ledger-derived statement balance, the remaining spending plan per month (current month
- * from the grid's remaining, future months from explicit rows or 3-month averages), trailing
- * 90-day spending weights, and the household defaults. The engine itself is pure
+ * pending, active recurring items mapped to engine items (every bucket: a recurring charge in
+ * a spending category is a dated event too), card payment entries with the ledger-derived
+ * statement balance, the remaining spending plan per month (current month from the grid's
+ * remaining, future months from explicit rows or 3-month averages, each category less the
+ * dated charges of its own recurring items so nothing is counted twice), trailing 90-day
+ * spending weights, and the household defaults. The engine itself is pure
  * (`projectCashFlow` in @meridian/shared); `projectForHousehold` wires the two together.
  *
  * Documented assumption (one place): SimpleFIN `balance` is the posted balance and excludes
@@ -152,18 +156,47 @@ export interface SpendingRemainingResult {
   months: CashFlowSpendingMonth[];
   /** Months in which at least one spending category had no explicit plan row and used its average. */
   monthsOnAverages: number;
+  /** How many complete months the averages rest on; null when no average was needed. 0 means they are all zero. */
+  averageMonthsWithData: number | null;
+}
+
+/** A recurring outflow in a spending-bucket category that the projection posts as dated events. */
+export interface SpendingDatedItem {
+  categoryId: string;
+  schedule: Schedule;
+  nextDueDate: IsoDate;
+  /** Signed; only outflows (negative) are taken out of the spread. */
+  amountCents: bigint;
 }
 
 /**
  * Remaining planned spending (spending bucket only, hidden categories included) per month in
  * [month of today, month of endDate]. Current month: Σ max(0, planned + carriedIn − actual)
  * from the grid; future months: Σ (explicit plan row ? planned : 3-month average as of today).
+ *
+ * `datedItems` are the spending-category recurring charges the engine posts as dated events.
+ * Each category's amount for a month is reduced by the charges of its own items that post in
+ * that month (never below 0), so the gym on the 20th is one event of 40.00 and the rest of
+ * the Health envelope is spread, instead of the charge being spread and posted.
  */
-export async function spendingRemainingByMonth(db: DbOrTx, today: IsoDate, endDate: IsoDate): Promise<SpendingRemainingResult> {
+export async function spendingRemainingByMonth(db: DbOrTx, today: IsoDate, endDate: IsoDate, datedItems: readonly SpendingDatedItem[] = []): Promise<SpendingRemainingResult> {
   const currentMonth = monthKey(today);
-  const plan = await getPlan(db, { from: currentMonth, to: monthKey(endDate), today });
+  const lastMonth = monthKey(endDate);
+  const plan = await getPlan(db, { from: currentMonth, to: lastMonth, today });
   const spendingRows = plan.rows.filter((r): r is PlanCategoryRowResult => r.kind === "category" && r.bucket === "spending");
+
+  // Dated charges per (category, month they post in): overdue ones post today.
+  const dated = new Map<string, bigint>();
+  for (const item of datedItems) {
+    if (item.amountCents >= 0n) continue;
+    for (const original of projectedOccurrenceDates(item.schedule, item.nextDueDate, today, monthEnd(lastMonth))) {
+      const key = `${item.categoryId}|${monthKey(original < today ? today : original)}`;
+      dated.set(key, (dated.get(key) ?? 0n) - item.amountCents);
+    }
+  }
+
   let averages: Map<string, bigint> | null = null;
+  let averageMonthsWithData: number | null = null;
   const months: CashFlowSpendingMonth[] = [];
   let monthsOnAverages = 0;
   for (const [i, month] of plan.months.entries()) {
@@ -172,23 +205,26 @@ export async function spendingRemainingByMonth(db: DbOrTx, today: IsoDate, endDa
     for (const row of spendingRows) {
       const cell = row.cells[i];
       if (!cell) continue;
+      let cents: bigint;
       if (month === currentMonth) {
-        remainingCents += maxBig(0n, cell.remainingCents);
+        cents = maxBig(0n, cell.remainingCents);
       } else if (cell.hasExplicitPlan) {
-        remainingCents += cell.plannedCents;
+        cents = cell.plannedCents;
       } else {
         if (averages === null) {
           const result = await planAverages(db, { months: SPENDING_AVERAGE_MONTHS, today });
           averages = new Map(result.averages.map((a) => [a.categoryId, a.averageCents]));
+          averageMonthsWithData = result.window.monthsWithData;
         }
-        remainingCents += averages.get(row.categoryId) ?? 0n;
+        cents = averages.get(row.categoryId) ?? 0n;
         usedAverage = true;
       }
+      remainingCents += maxBig(0n, cents - (dated.get(`${row.categoryId}|${month}`) ?? 0n));
     }
     if (usedAverage) monthsOnAverages++;
     months.push({ month, remainingCents });
   }
-  return { months, monthsOnAverages };
+  return { months, monthsOnAverages, averageMonthsWithData };
 }
 
 // ---- The loader ----
@@ -245,11 +281,12 @@ export async function loadCashFlowInput(db: DbOrTx, q: LoadCashFlowInputQuery): 
   const openingOf = new Map(accounts.map((a) => [a.id, a.openingCents]));
   const cardsWithPaymentDay = new Set(allAccounts.filter((a) => a.type === "credit" && a.paymentDay !== null).map((a) => a.id));
 
-  // 2. Active recurring items as dated events (spending-bucket items are covered by the spread).
+  // 2. Active recurring items as dated events, whatever their category's bucket.
   const items = await db
     .select({
       id: recurring.id,
       name: recurring.name,
+      categoryId: recurring.categoryId,
       accountId: recurring.accountId,
       transferAccountId: recurring.transferAccountId,
       cadence: recurring.cadence,
@@ -266,8 +303,8 @@ export async function loadCashFlowInput(db: DbOrTx, q: LoadCashFlowInputQuery): 
     .where(eq(recurring.status, "active"))
     .orderBy(asc(recurring.id));
   const recurringItems: CashFlowRecurring[] = [];
+  const spendingDated: SpendingDatedItem[] = [];
   for (const item of items) {
-    if (item.bucket === "spending") continue;
     const kind = recurringKind(item);
     if (kind === "transfer" && item.transferAccountId !== null && cardsWithPaymentDay.has(item.transferAccountId)) continue;
     if (item.accountId === null) {
@@ -294,6 +331,10 @@ export async function loadCashFlowInput(db: DbOrTx, q: LoadCashFlowInputQuery): 
       nextDueDate: item.nextDueDate,
       amountCents: item.expectedCents,
     });
+    // A spending-category charge is posted on its date, so it must come out of that category's spread.
+    if (item.bucket === "spending" && item.categoryId !== null) {
+      spendingDated.push({ categoryId: item.categoryId, schedule, nextDueDate: item.nextDueDate, amountCents: item.expectedCents });
+    }
   }
 
   // 3. Card payments for projected credit accounts with a payment day.
@@ -309,11 +350,15 @@ export async function loadCashFlowInput(db: DbOrTx, q: LoadCashFlowInputQuery): 
     cardPayments.push({ cardAccountId: a.id, fromAccountId: a.paymentFromAccountId, payDay: a.paymentDay, statementDay: a.statementDay, knownStatementBalanceCents });
   }
 
-  // 4. Remaining spending per month.
-  const spending = await spendingRemainingByMonth(db, today, endDate);
+  // 4. Remaining spending per month, less the spending-category charges posted as dated events.
+  const spending = await spendingRemainingByMonth(db, today, endDate, spendingDated);
   if (spending.monthsOnAverages > 0) {
     const n = spending.monthsOnAverages;
-    warnings.push(`${n === 1 ? "1 month uses" : `${n} months use`} ${SPENDING_AVERAGE_MONTHS}-month averages for unplanned spending categories`);
+    if (spending.averageMonthsWithData === 0) {
+      warnings.push(`${n === 1 ? "1 month has" : `${n} months have`} unplanned spending categories and there is no complete month of history to average yet: they are projected at 0`);
+    } else {
+      warnings.push(`${n === 1 ? "1 month uses" : `${n} months use`} ${SPENDING_AVERAGE_MONTHS}-month averages for unplanned spending categories`);
+    }
   }
 
   // 5. Trailing spending weights per projected account.

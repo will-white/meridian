@@ -191,3 +191,20 @@ export function localToday(now: Date = new Date()): string {
   const d = String(now.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
+
+/**
+ * What choosing a category means for the plan, by bucket. A confirmed item is planned in its
+ * own category whatever the bucket; only a goal's monthly contribution takes precedence.
+ */
+export function categoryPlanHint(bucket: "income" | "bills" | "savings" | "spending"): string {
+  switch (bucket) {
+    case "income":
+      return "Planned as income in each month it arrives.";
+    case "bills":
+      return "Planned in this category in each month it falls due.";
+    case "savings":
+      return "Planned in this savings category in each month it falls due, unless the category's goal already plans a monthly contribution.";
+    case "spending":
+      return "Planned in this spending category in each month it falls due and shown on its date in the cash flow. An amount typed into the plan for that month replaces it.";
+  }
+}

@@ -8,6 +8,7 @@ import {
   type CashFlowRecurring,
   type CashFlowResult,
   type RecurringKind,
+  projectedOccurrenceDates,
 } from "./cashflow.js";
 import { addDays, dayDiff, type IsoDate } from "./dates.js";
 import type { AccountType } from "./enums.js";
@@ -858,5 +859,16 @@ describe("projectCashFlow edge cases", () => {
     expect(() => run({ horizonDays: 0 })).toThrow(/horizonDays/);
     expect(() => run({ horizonDays: 367 })).toThrow(/horizonDays/);
     expect(() => spreadEvenly(10n, 0)).toThrow(/days/);
+  });
+});
+
+describe("projectedOccurrenceDates", () => {
+  const monthly: Schedule = { cadence: "monthly", anchorDay: 9 };
+
+  it("keeps the upcoming occurrences and only the latest one that is already past", () => {
+    // Next due Aug 9; today Oct 13: Aug and Sep are older misses, Oct 9 is the one still owed.
+    expect(projectedOccurrenceDates(monthly, "2026-08-09", "2026-10-13", "2026-12-31")).toEqual(["2026-10-09", "2026-11-09", "2026-12-09"]);
+    expect(projectedOccurrenceDates(monthly, "2026-11-09", "2026-10-13", "2026-12-31")).toEqual(["2026-11-09", "2026-12-09"]);
+    expect(projectedOccurrenceDates(monthly, "2026-10-13", "2026-10-13", "2026-10-12")).toEqual([]);
   });
 });

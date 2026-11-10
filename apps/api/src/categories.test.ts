@@ -108,20 +108,25 @@ describe.skipIf(!TEST_DATABASE_URL)("categories, groups, payees and rules audit"
     expect((await t.call({ method: "DELETE", url: `/api/categories/${coffee.json().id}` })).statusCode).toBe(404);
   });
 
-  it("rollover mode changes re-derive carries without moving LTS; income rejects rollover", async () => {
+  it("a rollover mode change applies from the current month and leaves closed months alone; income rejects rollover", async () => {
+    const before = await getPlan(t);
     const all = await t.call({ method: "PATCH", url: `/api/categories/${C.dining}`, payload: { rolloverMode: "all", rolloverFromMonth: "2026-09" } });
     expect(all.statusCode).toBe(200);
     expect(all.json()).toMatchObject({ id: C.dining, rolloverMode: "all", rolloverFromMonth: "2026-09" });
     const plan = await getPlan(t);
     const d = (m: string) => cellOf(plan, C.dining, m);
+    // September ran 'surplus only': its 60.00 overspend stays forgiven and is not imported into October.
     expect(brief(d("2026-09"))).toEqual(["20000", "0", "26000", "-6000", "manual"]);
-    expect(brief(d("2026-10"))).toEqual(["20000", "-6000", "20000", "-6000", "manual"]);
-    expect(brief(d("2026-11"))).toEqual(["0", "-6000", "0", "-6000", "none"]);
-    expect(brief(d("2026-12"))).toEqual(["0", "-6000", "0", "-6000", "none"]);
-    expect(brief(d("2027-01"))).toEqual(["0", "-6000", "0", "-6000", "none"]);
-    expect(d("2026-10").committedCents).toBe("20000");
-    expect(d("2026-11").committedCents).toBe("0");
+    expect(d("2026-09").rolloverMode).toBe("surplus");
+    // October (the current month) carries out under the new mode: 200.00 planned, 200.00 spent, nothing to carry.
+    expect(brief(d("2026-10"))).toEqual(["20000", "0", "20000", "0", "manual"]);
+    expect(d("2026-10").rolloverMode).toBe("all");
+    expect(brief(d("2026-11"))).toEqual(["0", "0", "0", "0", "none"]);
+    expect(plan.summary.map((s) => s.leftToSpendCents)).toEqual(before.summary.map((s) => s.leftToSpendCents));
     expect(plan.summary.slice(1, 4).map((s) => s.leftToSpendCents)).toEqual(["176452", "175352", "210452"]);
+    // The pin on the closed month is audited with the category change.
+    const pin = await auditOf(`entity=month_plan&entityId=2026-09:${C.dining}`);
+    expect(pin[0]).toMatchObject({ action: "update", after: { rolloverMode: "surplus" } });
 
     const income = await t.call({ method: "PATCH", url: `/api/categories/${C.paycheck}`, payload: { rolloverMode: "surplus" } });
     expect(income.statusCode).toBe(400);

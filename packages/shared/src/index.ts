@@ -12,6 +12,7 @@ export * from "./crypto.js";
 export * from "./months.js";
 export * from "./schedule.js";
 export * from "./plan.js";
+export * from "./recurringPlan.js";
 export * from "./recurringDetect.js";
 export * from "./cashflow.js";
 export * from "./api.js";

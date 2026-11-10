@@ -6,6 +6,8 @@ import type { AccountView, CategoryView, GoalView, RecurringList, RuleView, Tran
 import { api, query } from "../lib/api.js";
 import { money, shortDate } from "../lib/format.js";
 import { TRANSACTION_DRAG_TYPE } from "../lib/plan.js";
+import { amountInCategory, type SplitRequestLine } from "../lib/splits.js";
+import { SplitEditor } from "../components/transactions/SplitEditor.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
 import "./TransactionsPage.css";
 
@@ -35,6 +37,8 @@ interface RegisterFilters {
   transfers: Transfers;
   from: string;
   to: string;
+  /** Set by a plan cell's drill-down: only what the plan counts (on-budget accounts). */
+  planScope: boolean;
 }
 
 function readFilters(params: URLSearchParams): RegisterFilters {
@@ -52,10 +56,11 @@ function readFilters(params: URLSearchParams): RegisterFilters {
     transfers: t === "exclude" || t === "only" ? t : "include",
     from: date("from"),
     to: date("to"),
+    planScope: params.get("planScope") === "true",
   };
 }
 
-const FILTER_KEYS = ["accountId", "categoryId", "goalId", "recurringId", "uncategorized", "transfers", "from", "to"] as const;
+const FILTER_KEYS = ["accountId", "categoryId", "goalId", "recurringId", "uncategorized", "transfers", "from", "to", "planScope"] as const;
 
 export function TransactionsPage() {
   const qc = useQueryClient();
@@ -64,6 +69,7 @@ export function TransactionsPage() {
   const [q, setQ] = useState(() => searchParams.get("q") ?? "");
   const search = useDebounced(q, 250);
   const [prompt, setPrompt] = useState<RulePrompt | null>(null);
+  const [splitting, setSplitting] = useState<string | null>(null);
 
   const setFilter = (patch: Partial<RegisterFilters>) =>
     setSearchParams(
@@ -100,6 +106,7 @@ export function TransactionsPage() {
     transfers: f.transfers,
     from: f.from,
     to: f.to,
+    planScope: f.planScope || undefined,
     limit: 100,
   };
   const txns = useInfiniteQuery({
@@ -116,6 +123,13 @@ export function TransactionsPage() {
   const update = useMutation({
     mutationFn: ({ id, ...body }: { id: string } & Record<string, unknown>) => api<TransactionView>(`/transactions/${id}`, { method: "PATCH", body }),
     onSuccess: invalidate,
+  });
+  const saveSplit = useMutation({
+    mutationFn: ({ id, splits }: { id: string; splits: SplitRequestLine[] }) => api<TransactionView>(`/transactions/${id}/splits`, { method: "PUT", body: { splits } }),
+    onSuccess: () => {
+      setSplitting(null);
+      invalidate();
+    },
   });
   const createRule = useMutation({
     mutationFn: (body: unknown) => api<{ rule: RuleView; applied: { examined: number; changed: number } }>("/rules", { method: "POST", body }),
@@ -196,6 +210,14 @@ export function TransactionsPage() {
               </button>
             </span>
           )}
+          {f.planScope && (
+            <span className="chip" title="The plan counts on-budget accounts only (plus the investment income feed), and a split transaction by its lines">
+              As the plan counts it
+              <button className="link" onClick={() => setFilter({ planScope: false })} aria-label="Show rows the plan does not count too">
+                ×
+              </button>
+            </span>
+          )}
           {filtered && (
             <button className="link small" onClick={clearFilters}>
               Clear filters
@@ -255,7 +277,7 @@ export function TransactionsPage() {
             </tr>
           </thead>
           <tbody>
-            {items.map((t) => (
+            {items.flatMap((t) => [
               <tr
                 key={t.id}
                 className={t.pending ? "pending" : ""}
@@ -302,22 +324,65 @@ export function TransactionsPage() {
                     <button className="link small" onClick={() => update.mutate({ id: t.id, isTransfer: false })} title="Not a transfer: give it a category">
                       transfer · undo
                     </button>
+                  ) : t.splits.length > 0 ? (
+                    <div className="split-summary">
+                      {t.splits.map((s) => (
+                        <div key={s.id} className="small">
+                          {s.categoryName ?? "—"} <span className="muted">{money(s.amountCents)}</span>
+                          {s.memo ? <span className="muted"> · {s.memo}</span> : null}
+                        </div>
+                      ))}
+                      <button className="link small" onClick={() => setSplitting(splitting === t.id ? null : t.id)}>
+                        edit split
+                      </button>
+                    </div>
                   ) : (
-                    <select value={t.categoryId ?? ""} onChange={(e) => onCategoryChange(t, e.target.value)} className={t.categoryId ? "" : "unset"}>
-                      <option value="">— uncategorized —</option>
-                      {(categories.data ?? [])
-                        .filter((c) => !c.hidden || c.id === t.categoryId)
-                        .map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
-                    </select>
+                    <>
+                      <select value={t.categoryId ?? ""} onChange={(e) => onCategoryChange(t, e.target.value)} className={t.categoryId ? "" : "unset"}>
+                        <option value="">— uncategorized —</option>
+                        {(categories.data ?? [])
+                          .filter((c) => !c.hidden || c.id === t.categoryId)
+                          .map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name}
+                            </option>
+                          ))}
+                      </select>
+                      <button className="link small" onClick={() => setSplitting(splitting === t.id ? null : t.id)} title="Split this transaction across categories">
+                        split
+                      </button>
+                    </>
                   )}
                 </td>
-                <td className={`num nowrap ${t.amountCents.startsWith("-") ? "neg" : "pos"}`}>{money(t.amountCents)}</td>
-              </tr>
-            ))}
+                <td className={`num nowrap ${t.amountCents.startsWith("-") ? "neg" : "pos"}`}>
+                  {f.categoryId && t.splits.length > 0 ? (
+                    <span title={`${money(amountInCategory(t, f.categoryId).toString())} of this ${money(t.amountCents)} transaction is in the selected category`}>
+                      {money(amountInCategory(t, f.categoryId).toString())}
+                      <span className="muted small"> of {money(t.amountCents)}</span>
+                    </span>
+                  ) : (
+                    money(t.amountCents)
+                  )}
+                </td>
+              </tr>,
+              splitting === t.id && !t.isTransfer ? (
+                <tr key={`${t.id}-split`} className="split-row">
+                  <td colSpan={5}>
+                    <SplitEditor
+                      transaction={t}
+                      categories={categories.data ?? []}
+                      pending={saveSplit.isPending}
+                      error={saveSplit.error}
+                      onSave={(splits) => saveSplit.mutate({ id: t.id, splits })}
+                      onCancel={() => {
+                        setSplitting(null);
+                        saveSplit.reset();
+                      }}
+                    />
+                  </td>
+                </tr>
+              ) : null,
+            ])}
           </tbody>
         </table>
       )}

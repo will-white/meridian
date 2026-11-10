@@ -7,8 +7,7 @@ import { ManageCategories } from "../components/plan/ManageCategories.js";
 import { PlanGrid } from "../components/plan/PlanGrid.js";
 import { Empty, ErrorText } from "../components/ui.js";
 import { api, query } from "../lib/api.js";
-import { money } from "../lib/format.js";
-import { MAX_RANGE_MONTHS, applyEdits, defaultRange, localToday, monthLabel, resolveRange, visibleRows, type PlanCategoryRow } from "../lib/plan.js";
+import { MAX_RANGE_MONTHS, applyEdits, averagePlanOutcome, defaultRange, localToday, monthLabel, resolveRange, visibleRows, type PlanCategoryRow } from "../lib/plan.js";
 import "./PlanPage.css";
 
 interface SetPlanCellsResponse {
@@ -89,8 +88,9 @@ export function PlanPage() {
       return { row, month, months, cents: avg.averageCents, monthsWithData: res.window.monthsWithData };
     },
     onSuccess: ({ row, month, months, cents, monthsWithData }) => {
-      setCells.mutate([{ month, categoryId: row.categoryId, plannedCents: cents, source: "average" }]);
-      setNotice(`${row.name}, ${monthLabel(month)}: planned ${money(cents)} from the ${months}-month average (${monthsWithData} month${monthsWithData === 1 ? "" : "s"} with data).`);
+      const outcome = averagePlanOutcome({ name: row.name, month, months, cents, monthsWithData });
+      if (outcome.write) setCells.mutate([{ month, categoryId: row.categoryId, plannedCents: cents, source: "average" }]);
+      setNotice(outcome.notice);
     },
   });
 

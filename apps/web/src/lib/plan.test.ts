@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PlanCellView, PlanResponse, PlanRow } from "@meridian/shared";
 import {
   applyEdits,
+  averagePlanOutcome,
   carriedText,
   defaultRange,
   drillDownUrl,
@@ -15,6 +16,7 @@ import {
   patchCell,
   plannedInputValue,
   resolveRange,
+  rolloverChangeNote,
   rowHeight,
   sourceMarker,
   stickyBucketIndex,
@@ -199,8 +201,9 @@ describe("edits", () => {
 
 describe("drill-down URLs", () => {
   it("uses the month's first and last day and excludes transfers for categories", () => {
-    expect(drillDownUrl(groceries(), "2026-10")).toBe(`/transactions?categoryId=${GROCERIES}&from=2026-10-01&to=2026-10-31&transfers=exclude`);
-    expect(drillDownUrl(groceries(), "2028-02")).toBe(`/transactions?categoryId=${GROCERIES}&from=2028-02-01&to=2028-02-29&transfers=exclude`);
+    // planScope: the list holds exactly what the cell counts (on-budget accounts, split lines).
+    expect(drillDownUrl(groceries(), "2026-10")).toBe(`/transactions?categoryId=${GROCERIES}&from=2026-10-01&to=2026-10-31&transfers=exclude&planScope=true`);
+    expect(drillDownUrl(groceries(), "2028-02")).toBe(`/transactions?categoryId=${GROCERIES}&from=2028-02-01&to=2028-02-29&transfers=exclude&planScope=true`);
   });
   it("addresses goal rows by goal id", () => {
     const row = groceries();
@@ -218,8 +221,46 @@ describe("drill-down URLs", () => {
       status: "active",
       progress: { savedCents: "280000", remainingToTargetCents: "720000", progressBp: 2800, monthsLeft: 12, neededPerMonthCents: "60000", projectedCompletionMonth: "2028-01", onTrack: false },
     };
-    expect(drillDownUrl(row, "2026-10")).toBe(`/transactions?goalId=${GOAL}&from=2026-10-01&to=2026-10-31`);
-    expect(uncategorizedUrl("2026-10")).toBe("/transactions?uncategorized=true&from=2026-10-01&to=2026-10-31");
+    expect(drillDownUrl(row, "2026-10")).toBe(`/transactions?goalId=${GOAL}&from=2026-10-01&to=2026-10-31&planScope=true`);
+    expect(uncategorizedUrl("2026-10")).toBe("/transactions?uncategorized=true&from=2026-10-01&to=2026-10-31&planScope=true");
+  });
+});
+
+describe("plan from average", () => {
+  it("writes the average and says how many complete months it rests on", () => {
+    expect(averagePlanOutcome({ name: "Rent", month: "2026-11", months: 3, cents: "180000", monthsWithData: 2 })).toEqual({
+      write: true,
+      notice: "Rent, Nov 2026: planned $1,800.00 from the 3-month average (2 complete months of history).",
+    });
+    expect(averagePlanOutcome({ name: "Rent", month: "2026-11", months: 12, cents: "180000", monthsWithData: 1 }).notice).toContain("(1 complete month of history)");
+  });
+
+  it("writes nothing when no complete month of history exists yet", () => {
+    const outcome = averagePlanOutcome({ name: "Groceries", month: "2026-09", months: 3, cents: "0", monthsWithData: 0 });
+    expect(outcome.write).toBe(false);
+    expect(outcome.notice).toBe("Groceries, Sep 2026: there is no complete month of history to average yet (a month counts once the ledger covers it from the 1st). Nothing was changed.");
+  });
+});
+
+describe("rolloverChangeNote", () => {
+  const row = { rolloverMode: "surplus" as const, rolloverFromMonth: "2026-10" };
+  const none = { rolloverMode: "none" as const, rolloverFromMonth: null };
+
+  it("says a mode change applies from the current month and leaves earlier months alone", () => {
+    expect(rolloverChangeNote(row, "all", "2026-10", "2027-01")).toBe("Applies from Jan 2027 on. Earlier months keep what they carried, and so does Jan 2027.");
+    expect(rolloverChangeNote(row, "surplus", "2026-10", "2027-01")).toBe("No change.");
+    expect(rolloverChangeNote(row, "none", null, "2027-01")).toBe("Stops carrying from Jan 2027 on. Earlier months, and what was carried into Jan 2027, stay as they are.");
+  });
+
+  it("tells a restart from a recompute", () => {
+    expect(rolloverChangeNote(row, "all", "2027-01", "2027-01")).toBe("Restarts the envelope at Jan 2027 from zero: what was carried before is not brought forward. Earlier months stay as they are.");
+    expect(rolloverChangeNote(row, "surplus", "2026-08", "2027-01")).toBe("Recomputes the whole chain from Aug 2026 with this setting.");
+  });
+
+  it("describes turning rollover on", () => {
+    expect(rolloverChangeNote(none, "surplus", "2027-01", "2027-01")).toBe("Carries from Jan 2027 on, starting from zero.");
+    expect(rolloverChangeNote(none, "all", "2026-11", "2027-01")).toBe("Carries from Nov 2026 on: the months since then are recomputed with this setting.");
+    expect(rolloverChangeNote(none, "none", null, "2027-01")).toBe("No change.");
   });
 });
 

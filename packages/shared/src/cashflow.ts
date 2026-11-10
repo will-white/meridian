@@ -264,6 +264,21 @@ function seriesStats(openingCents: bigint, points: bigint[], dates: IsoDate[], t
   };
 }
 
+/**
+ * The occurrences of an item the projection posts, as their ORIGINAL dates: every occurrence
+ * from `nextDueDate` through `through`, with the ones dated before today collapsed to the
+ * single latest one (it posts today, flagged overdue). The loader uses the same list to take
+ * a spending-category item's dated charges out of the month's spending spread, so a charge is
+ * never both a dated event and part of the spread.
+ */
+export function projectedOccurrenceDates(schedule: Schedule, nextDueDate: IsoDate, today: IsoDate, through: IsoDate): IsoDate[] {
+  const all = occurrencesInRange(schedule, nextDueDate, through);
+  const past = all.filter((d) => d < today);
+  const upcoming = all.filter((d) => d >= today);
+  const latestPast = past[past.length - 1];
+  return latestPast === undefined ? upcoming : [latestPast, ...upcoming];
+}
+
 // ---- Engine ----
 
 export function projectCashFlow(input: CashFlowInput): CashFlowResult {
@@ -303,11 +318,7 @@ export function projectCashFlow(input: CashFlowInput): CashFlowResult {
   const occurrencesByItem = new Map<string, Occurrence[]>();
   const occurrences: Occurrence[] = [];
   for (const item of items) {
-    const all = occurrencesInRange(item.schedule, item.nextDueDate, generateThrough);
-    const past = all.filter((d) => d < today);
-    const upcoming = all.filter((d) => d >= today);
-    const latestPast = past[past.length - 1];
-    const kept = latestPast === undefined ? upcoming : [latestPast, ...upcoming];
+    const kept = projectedOccurrenceDates(item.schedule, item.nextDueDate, today, generateThrough);
     const list = kept.map((originalDate): Occurrence => ({ item, originalDate, shiftDays: 0, skipped: false }));
     occurrencesByItem.set(item.id, list);
     occurrences.push(...list);

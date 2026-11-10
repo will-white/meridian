@@ -27,6 +27,7 @@ export function toTransactionView(r: TransactionListRow): TransactionView {
     tags: r.tags,
     source: r.source,
     recurringId: r.recurringId,
+    splits: r.splits.map((s) => ({ id: s.id, categoryId: s.categoryId, categoryName: s.categoryName, amountCents: s.amountCents.toString(), memo: s.memo })),
   };
 }
 

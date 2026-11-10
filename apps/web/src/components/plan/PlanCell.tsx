@@ -18,7 +18,7 @@ export interface CellActions {
 }
 
 const SOURCE_TITLES: Record<string, string> = {
-  recurring: "Automatic: from recurring bills and income",
+  recurring: "Automatic: from this category's recurring items",
   goal: "Automatic: the goal's monthly contribution",
   average: "Planned from an average",
 };

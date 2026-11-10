@@ -7,13 +7,15 @@ import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
 import { api, query } from "../lib/api.js";
 import { money, shortDate, titleCase } from "../lib/format.js";
 import { localToday, monthLabel } from "../lib/plan.js";
-import { NEW_CATEGORY, buildGoalBody, initialGoalForm, percentFromBp, type GoalBody, type GoalFormState } from "../lib/planGoalForm.js";
+import { NEW_CATEGORY, buildGoalBody, initialGoalForm, linkedAccountOptions, percentFromBp, type GoalBody, type GoalFormState } from "../lib/planGoalForm.js";
 import "./GoalsPage.css";
 
 interface GoalFormProps {
   goal: GoalView | null;
   categories: CategoryDetailView[];
   accounts: AccountView[];
+  /** Every goal, to show which accounts already feed one. */
+  goals: GoalView[];
   currentMonth: string;
   pending: boolean;
   error: unknown;
@@ -21,7 +23,8 @@ interface GoalFormProps {
   onCancel: () => void;
 }
 
-function GoalForm({ goal, categories, accounts, currentMonth, pending, error, onSubmit, onCancel }: GoalFormProps) {
+function GoalForm({ goal, categories, accounts, goals, currentMonth, pending, error, onSubmit, onCancel }: GoalFormProps) {
+  const accountOptions = linkedAccountOptions(accounts, goals, goal?.id ?? null);
   const [f, setF] = useState<GoalFormState>(() => initialGoalForm(goal, currentMonth));
   const [formError, setFormError] = useState<string | null>(null);
   const set = <K extends keyof GoalFormState>(key: K, value: GoalFormState[K]) => setF((prev) => ({ ...prev, [key]: value }));
@@ -79,13 +82,14 @@ function GoalForm({ goal, categories, accounts, currentMonth, pending, error, on
           Linked account (transfers in count as progress)
           <select value={f.linkedAccountId} onChange={(e) => set("linkedAccountId", e.target.value)}>
             <option value="">— none —</option>
-            {accounts.map((a) => (
-              <option key={a.id} value={a.id}>
+            {accountOptions.map((a) => (
+              <option key={a.id} value={a.id} disabled={a.takenBy !== null && a.id !== f.linkedAccountId}>
                 {a.name}
-                {a.closed ? " (closed)" : ""}
+                {a.takenBy !== null ? ` (feeds ${a.takenBy})` : ""}
               </option>
             ))}
           </select>
+          <span className="muted small">An account's transfers count toward one active goal, so each transfer is counted once.</span>
         </label>
         <label>
           Counting from
@@ -272,6 +276,7 @@ export function GoalsPage() {
             goal={null}
             categories={freeCategories(null)}
             accounts={openAccounts}
+            goals={all}
             currentMonth={currentMonth}
             pending={create.isPending}
             error={create.error}
@@ -292,6 +297,7 @@ export function GoalsPage() {
               goal={g}
               categories={freeCategories(g.categoryId)}
               accounts={openAccounts}
+              goals={all}
               currentMonth={currentMonth}
               pending={update.isPending}
               error={update.error}

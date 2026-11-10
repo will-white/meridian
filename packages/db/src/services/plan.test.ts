@@ -247,24 +247,24 @@ describe.skipIf(!TEST_DATABASE_URL)("plan services on the grid-and-api seed", ()
     expect(cellOf(await getPlan(t.db, RANGE), C.groceries, "2026-10")).toMatchObject({ carriedInCents: 10000n, carriedInSource: "chain", remainingCents: 5500n });
   });
 
-  it("averages divide by months with data and truncate", async () => {
+  it("averages divide by the complete months of history (the ledger opens mid-August, so only September counts)", async () => {
     const three = await planAverages(t.db, { months: 3, today: PLAN_SEED_TODAY });
-    expect(three.window).toEqual({ from: "2026-07", to: "2026-09", monthsWithData: 2 });
+    expect(three.window).toEqual({ from: "2026-07", to: "2026-09", monthsWithData: 1 });
     const avg = (r: typeof three, id: string) => r.averages.find((a) => a.categoryId === id)?.averageCents;
-    expect(avg(three, C.groceries)).toBe(23500n);
-    expect(avg(three, C.dining)).toBe(13000n);
-    expect(avg(three, C.fuel)).toBe(3000n);
-    expect(avg(three, C.oldHobby)).toBe(1000n);
-    expect(avg(three, C.rent)).toBe(90000n);
-    expect(avg(three, C.netflix)).toBe(774n);
-    expect(avg(three, C.internet)).toBe(3999n);
-    expect(avg(three, C.paycheck)).toBe(250000n);
-    expect(avg(three, C.emergencyFund)).toBe(25000n);
+    expect(avg(three, C.groceries)).toBe(40000n);
+    expect(avg(three, C.dining)).toBe(26000n);
+    expect(avg(three, C.fuel)).toBe(6000n);
+    expect(avg(three, C.oldHobby)).toBe(2000n);
+    expect(avg(three, C.rent)).toBe(180000n);
+    expect(avg(three, C.netflix)).toBe(1549n);
+    expect(avg(three, C.internet)).toBe(7999n);
+    expect(avg(three, C.paycheck)).toBe(500000n);
+    expect(avg(three, C.emergencyFund)).toBe(50000n);
     for (const id of [C.carInsurance, C.music, C.shopping]) expect(avg(three, id)).toBe(0n);
     expect(three.averages).toHaveLength(12);
 
     const twelve = await planAverages(t.db, { months: 12, asOf: "2026-10", today: PLAN_SEED_TODAY });
-    expect(twelve.window).toEqual({ from: "2025-10", to: "2026-09", monthsWithData: 2 });
+    expect(twelve.window).toEqual({ from: "2025-10", to: "2026-09", monthsWithData: 1 });
     expect(twelve.averages).toEqual(three.averages);
   });
 
@@ -283,16 +283,22 @@ describe.skipIf(!TEST_DATABASE_URL)("plan services on the grid-and-api seed", ()
     expect(await setPlanCells(t.db, [{ month: "2026-11", categoryId: C.groceries, plannedCents: 50000n }], ctx())).toEqual({ changed: 1 });
   });
 
-  it("rollover mode change re-derives carries without moving LTS; income rejects rollover; none clears the start", async () => {
+  it("a rollover mode change applies from the current month and never moves closed months; income rejects rollover; none clears the start", async () => {
     const batch = randomUUID();
     const dining = await updateCategory(t.db, C.dining, { rolloverMode: "all", rolloverFromMonth: "2026-09" }, { ...ctx(batch), today: PLAN_SEED_TODAY });
     expect(dining).toMatchObject({ rolloverMode: "all", rolloverFromMonth: "2026-09" });
     let plan = await getPlan(t.db, RANGE);
+    // September ran under 'surplus only': its 60.00 overspend stays forgiven. October (current) now carries out everything: 200.00 − 200.00 = 0.
     expect(brief(cellOf(plan, C.dining, "2026-09"))).toEqual([20000n, 0n, 26000n, -6000n, "manual"]);
-    expect(brief(cellOf(plan, C.dining, "2026-10"))).toEqual([20000n, -6000n, 20000n, -6000n, "manual"]);
-    expect(brief(cellOf(plan, C.dining, "2026-11"))).toEqual([0n, -6000n, 0n, -6000n, "none"]);
-    expect(brief(cellOf(plan, C.dining, "2027-01"))).toEqual([0n, -6000n, 0n, -6000n, "none"]);
+    expect(cellOf(plan, C.dining, "2026-09").rolloverMode).toBe("surplus");
+    expect(brief(cellOf(plan, C.dining, "2026-10"))).toEqual([20000n, 0n, 20000n, 0n, "manual"]);
+    expect(cellOf(plan, C.dining, "2026-10").rolloverMode).toBe("all");
+    expect(brief(cellOf(plan, C.dining, "2026-11"))).toEqual([0n, 0n, 0n, 0n, "none"]);
     expect(plan.summary.slice(1, 4).map((s) => s.leftToSpendCents)).toEqual([176452n, 175352n, 210452n]);
+    // The pin on September is in the same audit batch as the category change.
+    const pinned = await listAudit(t.db, { entity: "month_plan", entityId: `2026-09:${C.dining}`, limit: 1 });
+    expect(pinned.items[0]).toMatchObject({ batchId: batch, action: "update" });
+    expect(pinned.items[0]!.after).toMatchObject({ rolloverMode: "surplus" });
 
     await expect(updateCategory(t.db, C.paycheck, { rolloverMode: "surplus" }, { ...ctx(), today: PLAN_SEED_TODAY })).rejects.toMatchObject({ status: 400, code: "income_no_rollover" });
 
@@ -309,8 +315,9 @@ describe.skipIf(!TEST_DATABASE_URL)("plan services on the grid-and-api seed", ()
     const enabled = await updateCategory(t.db, C.dining, { rolloverMode: "surplus" }, { ...ctx(), today: PLAN_SEED_TODAY });
     expect(enabled.rolloverFromMonth).toBe("2026-10");
     await expect(updateCategory(t.db, C.dining, { rolloverFromMonth: "2026-07" }, { ...ctx(), today: PLAN_SEED_TODAY })).rejects.toMatchObject({ code: "before_plan_start" });
-    // Back to the seed's setting.
+    // Back to the seed's setting (an earlier start recomputes the chain) and drop September's pin.
     await updateCategory(t.db, C.dining, { rolloverMode: "surplus", rolloverFromMonth: "2026-09" }, { ...ctx(), today: PLAN_SEED_TODAY });
+    await setPlanCells(t.db, [{ month: "2026-09", categoryId: C.dining, rolloverMode: null }], ctx());
   });
 
   it("drill-down filters (category, goal, uncategorized) and drag-to-categorize", async () => {

@@ -179,7 +179,7 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /api/cashflow/projection: cash-flow de
       ["2026-12", chk, "0", "0", 0],
       ["2027-01", chk, "0", "0", 0],
     ]);
-    expect(body.warnings).toEqual(["3 months use 3-month averages for unplanned spending categories"]);
+    expect(body.warnings).toEqual(["3 months have unplanned spending categories and there is no complete month of history to average yet: they are projected at 0"]);
   });
 
   it("defaults today to the server's household date and the horizon to the household setting; bounds a client today to ±2 days", async () => {
@@ -331,7 +331,7 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /api/cashflow/projection on the grid-a
     expect(body.combined.openingCents).toBe("572500");
     expect(body.dates).toHaveLength(31);
     // The service test's hand number for the combined line on 11-12 (card payments cancel in the sum).
-    expect(at(body, body.combined, "2026-11-12")).toBe("341146");
+    expect(at(body, body.combined, "2026-11-12")).toBe("334350");
     expect(body.combined.minDate).toBe("2026-11-12");
     const applied = body.events
       .filter((e) => e.applied)
@@ -347,8 +347,8 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /api/cashflow/projection on the grid-a
     expect(body.spreads.map((s) => [s.month, s.accountId, s.totalCents])).toEqual([
       ["2026-10", S.accounts.checking, "14031"],
       ["2026-10", S.accounts.visa, "969"],
-      ["2026-11", S.accounts.checking, "62671"],
-      ["2026-11", S.accounts.visa, "4329"],
+      ["2026-11", S.accounts.checking, "78572"],
+      ["2026-11", S.accounts.visa, "5428"],
     ]);
     expect(body.warnings).toEqual(["1 month uses 3-month averages for unplanned spending categories"]);
   });
@@ -365,7 +365,7 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /api/cashflow/projection on the grid-a
     ]);
     expect(only.spreads.map((s) => [s.month, s.totalCents])).toEqual([
       ["2026-10", "15000"],
-      ["2026-11", "67000"],
+      ["2026-11", "84000"],
     ]);
 
     const pair = await project(t, { today: TODAY, horizonDays: 30, accountIds: [S.accounts.visa, S.accounts.savings] });

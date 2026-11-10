@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { PlanCellView, RolloverMode } from "@meridian/shared";
 import { RolloverMode as RolloverModeEnum } from "@meridian/shared";
 import { money } from "../../lib/format.js";
-import { ROLLOVER_LABELS, monthLabel, type PlanCategoryRow } from "../../lib/plan.js";
+import { ROLLOVER_LABELS, monthLabel, rolloverChangeNote, type PlanCategoryRow } from "../../lib/plan.js";
 
 export type MenuSection = "average" | "rollover";
 
@@ -97,7 +97,9 @@ export function CellMenu(props: CellMenuProps) {
       )}
       {section === "average" && (
         <div className="plan-menu-section">
-          <p className="small muted">Average of the complete months before {monthLabel(month < currentMonth ? month : currentMonth)}, divided by the months that have data.</p>
+          <p className="small muted">
+            Average of the complete months before {monthLabel(month < currentMonth ? month : currentMonth)}. Only months the ledger covers from the 1st count, so a first, partly synced month never drags it down.
+          </p>
           <div className="row">
             {([3, 6, 12] as const).map((n) => (
               <button key={n} type="button" className="secondary" disabled={busy} onClick={() => props.onPlanFromAverage(n)}>
@@ -132,6 +134,7 @@ export function CellMenu(props: CellMenuProps) {
                   <input type="month" value={fromMonth} onChange={(e) => setFromMonth(e.target.value)} />
                 </label>
               )}
+              <p className="small muted">{rolloverChangeNote(row, mode, mode === "none" ? null : fromMonth, currentMonth)}</p>
               <div className="row">
                 <button type="button" disabled={busy || (mode !== "none" && !/^\d{4}-\d{2}$/.test(fromMonth))} onClick={() => props.onRollover(mode, mode === "none" ? null : fromMonth)}>
                   Save
