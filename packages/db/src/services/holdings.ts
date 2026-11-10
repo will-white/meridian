@@ -10,6 +10,7 @@ import {
   isIsoDate,
   matchesToDollar,
   mulToCents,
+  statementPrice,
   type Fixed8,
   type HoldingSource,
   type IsoDate,
@@ -33,6 +34,11 @@ import { cashSecurity, createSecurity, HOLDING_SOURCE_RANK, requireSecurity, res
  * implied price rows: one per (security, date) from the snapshot rows, the largest value
  * winning a same-date tie, then the lowest account id. The positions editor and the
  * snapshot delete are the owner's audited paths; importers record themselves in `import_log`.
+ *
+ * The price of a row is `statementPrice`: the reported one when it produces the reported value,
+ * else the one the value implies. A 0.00 (or otherwise wrong) price column therefore never
+ * reaches the row or the price table, where it would value the same security at 0 in every
+ * other account; cash rows are a dollar a unit and are left as given.
  */
 
 export type HoldingSnapshotRow = typeof holdingSnapshot.$inferSelect;
@@ -41,7 +47,7 @@ export interface SnapshotPosition {
   securityId: string;
   /** Null = dollar-only (value known, units not reported). */
   quantity: Fixed8 | null;
-  /** As reported; derived as `impliedPrice(value, quantity)` when absent and the quantity is non-zero. */
+  /** As reported; replaced by `impliedPrice(value, quantity)` when absent or when it does not produce the value (`statementPrice`). */
   price: Fixed8 | null;
   valueCents: bigint;
   reportedCostBasisCents: bigint | null;
@@ -142,7 +148,7 @@ export async function writeReportedBalance(tx: DbOrTx, accountId: string, date: 
 
 // ---- The one snapshot writer ----
 
-function normalizePositions(positions: readonly SnapshotPosition[]): SnapshotPosition[] {
+function normalizePositions(positions: readonly SnapshotPosition[], cashIds: ReadonlySet<string>): SnapshotPosition[] {
   const seen = new Set<string>();
   const out: SnapshotPosition[] = [];
   for (const p of positions) {
@@ -150,7 +156,8 @@ function normalizePositions(positions: readonly SnapshotPosition[]): SnapshotPos
     seen.add(p.securityId);
     const zeroQuantity = p.quantity === null || p.quantity === 0n;
     if (zeroQuantity && p.valueCents === 0n) continue;
-    const priceValue = zeroQuantity ? null : (p.price ?? impliedPrice(p.valueCents, p.quantity!));
+    // Cash is a dollar a unit by definition; every other row carries the price its value implies unless the reported one produces it.
+    const priceValue = zeroQuantity ? null : cashIds.has(p.securityId) ? (p.price ?? impliedPrice(p.valueCents, p.quantity!)) : statementPrice(p.quantity, p.price, p.valueCents);
     if (priceValue !== null && priceValue < 0n) throw new PlanError(400, "validation", "price must not be negative");
     out.push({ securityId: p.securityId, quantity: p.quantity, price: priceValue, valueCents: p.valueCents, reportedCostBasisCents: p.reportedCostBasisCents });
   }
@@ -169,12 +176,12 @@ export async function replaceHoldingSnapshot(tx: DbOrTx, input: ReplaceHoldingSn
   if (!isIsoDate(input.date)) throw new PlanError(400, "validation", "date must be YYYY-MM-DD");
   if (input.date > input.today) throw new PlanError(400, "future_date", `${input.date} is after today`);
   const acct = await loadInvestmentAccount(tx, input.accountId);
-  const positions = normalizePositions(input.positions);
+  const givenIds = [...new Set(input.positions.map((p) => p.securityId))];
+  const found = givenIds.length === 0 ? [] : await tx.select({ id: security.id, type: security.type }).from(security).where(inArray(security.id, givenIds));
+  const positions = normalizePositions(input.positions, new Set(found.filter((s) => s.type === "cash").map((s) => s.id)));
   const ids = positions.map((p) => p.securityId);
-  if (ids.length > 0) {
-    const found = await tx.select({ id: security.id }).from(security).where(inArray(security.id, ids));
-    if (found.length !== ids.length) throw new PlanError(404, "not_found", "Security not found");
-  }
+  const known = new Set(found.map((s) => s.id));
+  if (ids.some((id) => !known.has(id))) throw new PlanError(404, "not_found", "Security not found");
 
   const existing = await tx
     .select()
@@ -288,16 +295,19 @@ export interface RebuildImpliedPricesResult {
  * snapshot row carrying a non-zero quantity and a price, on a non-cash security, upsert an
  * `implied` close under the precedence rule. Several accounts on one date: the row with the
  * largest `value_cents` wins, ties by `account_id` ascending, so the result never depends on
- * import order. Implied rows in the scope that no snapshot row derives any more are removed
- * (a deleted or replaced snapshot takes its prices with it); provider and manual rows are
- * never touched. Idempotent: a second run writes nothing.
+ * import order. A close of 0 is never derived from a row with a value: a row stored with a
+ * 0 price beside a non-zero value (written before `statementPrice` applied) gives
+ * value ÷ quantity instead, and nothing at all if even that rounds to 0. Implied rows in the
+ * scope that no snapshot row derives any more are removed (a deleted or replaced snapshot
+ * takes its prices with it); provider and manual rows are never touched. Idempotent: a second
+ * run writes nothing.
  */
 export async function rebuildImpliedPrices(tx: DbOrTx, scope: RebuildImpliedPricesScope = {}): Promise<RebuildImpliedPricesResult> {
   const ids = scope.securityIds ? [...new Set(scope.securityIds)] : null;
   const dates = scope.dates ? [...new Set(scope.dates)] : null;
   if ((ids && ids.length === 0) || (dates && dates.length === 0)) return { written: 0, removed: 0 };
   const rows = await tx
-    .select({ securityId: holdingSnapshot.securityId, date: holdingSnapshot.date, price: holdingSnapshot.price })
+    .select({ securityId: holdingSnapshot.securityId, date: holdingSnapshot.date, price: holdingSnapshot.price, quantity: holdingSnapshot.quantity, valueCents: holdingSnapshot.valueCents })
     .from(holdingSnapshot)
     .innerJoin(security, eq(security.id, holdingSnapshot.securityId))
     .where(
@@ -314,7 +324,11 @@ export async function rebuildImpliedPrices(tx: DbOrTx, scope: RebuildImpliedPric
   const winners = new Map<string, { securityId: string; date: IsoDate; close: Fixed8 }>();
   for (const r of rows) {
     const key = `${r.securityId}|${r.date}`;
-    if (!winners.has(key)) winners.set(key, { securityId: r.securityId, date: r.date, close: qtyFromDb(r.price)! });
+    if (winners.has(key)) continue;
+    let close = qtyFromDb(r.price)!;
+    if (close === 0n && r.valueCents !== 0n) close = impliedPrice(r.valueCents, qtyFromDb(r.quantity)!);
+    if (close === 0n && r.valueCents !== 0n) continue;
+    winners.set(key, { securityId: r.securityId, date: r.date, close });
   }
   const result = await upsertPrices(
     tx,

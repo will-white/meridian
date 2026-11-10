@@ -22,6 +22,8 @@ import {
   quantityForCents,
   roundDivHalfAway,
   scaleQty,
+  statementPrice,
+  valueMismatch,
 } from "./decimal.js";
 
 const f = parseFixed8;
@@ -224,6 +226,40 @@ describe("impliedPrice (R3)", () => {
     for (const [cents, qty] of roundTrips) {
       expect(mulToCents(f(qty), impliedPrice(cents, f(qty))), `${cents} / ${qty}`).toBe(cents);
     }
+  });
+});
+
+describe("valueMismatch and statementPrice (the price a positions row is stored with)", () => {
+  it("flags a value beyond max(1 cent, 0.5 %) of quantity × price", () => {
+    // 12.345 × 250.66 = 3,094.3977 → 3,094.40
+    expect(valueMismatch(f("12.345"), f("250.66"), 309_440n)).toBe(false);
+    // 3,100.00 is 5.60 away, tolerance 15.50; 3,200.00 is 105.60 away, tolerance 16.00
+    expect(valueMismatch(f("12.345"), f("250.66"), 310_000n)).toBe(false);
+    expect(valueMismatch(f("12.345"), f("250.66"), 320_000n)).toBe(true);
+    // one cent is always allowed: 1 × 0.50 against 0.51 and 0.52
+    expect(valueMismatch(f("1"), f("0.5"), 51n)).toBe(false);
+    expect(valueMismatch(f("1"), f("0.5"), 52n)).toBe(true);
+  });
+  it("keeps a reported price that produces the value and derives one that does not", () => {
+    // within the tolerance the statement's own price stands
+    expect(statementPrice(f("12.345"), f("250.66"), 310_000n)).toBe(f("250.66"));
+    // a 0.00 price beside 1,234.56 of value: 1,234.56 ÷ 10 = 123.456
+    expect(statementPrice(f("10"), 0n, 123_456n)).toBe(f("123.456"));
+    // 12.5 × 123.456 = 1,543.20 against 1,600.00: 1,600.00 ÷ 12.5 = 128
+    expect(statementPrice(f("12.5"), f("123.456"), 160_000n)).toBe(f("128"));
+    // a negative price never stands beside a value: 50.00 ÷ 10 = 5
+    expect(statementPrice(f("10"), f("-5"), 5_000n)).toBe(f("5"));
+    // a short position: −10 × 100 = −1,000.00 agrees; a 0.00 price is derived on absolute values
+    expect(statementPrice(f("-10"), f("100"), -100_000n)).toBe(f("100"));
+    expect(statementPrice(f("-10"), 0n, -100_000n)).toBe(f("100"));
+  });
+  it("derives an absent price, implies nothing from a value of 0, and prices nothing without a quantity", () => {
+    expect(statementPrice(f("10"), null, 123_456n)).toBe(f("123.456"));
+    // a value of 0.00 says nothing about the price: the reported one stands (a worthless position keeps 0)
+    expect(statementPrice(f("10"), f("123.45"), 0n)).toBe(f("123.45"));
+    expect(statementPrice(f("100"), 0n, 0n)).toBe(0n);
+    expect(statementPrice(null, f("5"), 10_000n)).toBeNull();
+    expect(statementPrice(0n, f("5"), 10_000n)).toBeNull();
   });
 });
 

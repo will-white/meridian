@@ -2,15 +2,17 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mapPositionsCsvRows, matchesToDollar, parseCsv, parseFixed8, type IsoDate } from "@meridian/shared";
-import { accountReconciliation, balanceSnapshot, holdingSnapshot, price } from "../schema/index.js";
+import { account, accountReconciliation, balanceSnapshot, holdingSnapshot, price } from "../schema/index.js";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "../test/db.js";
 import { INV_SEED_NOW, INV_SEED_TODAY, seedInvestmentFixture, seedInvestmentLots, type InvestmentSeed } from "../test/investmentSeed.js";
 import { getDashboard } from "./dashboard.js";
 import { rebuildImpliedPrices, replaceHoldingSnapshot, type SnapshotPosition } from "./holdings.js";
-import { getHoldings } from "./investmentViews.js";
+import { createInvestmentTxn } from "./investmentTxns.js";
+import { getHoldings, getPortfolio } from "./investmentViews.js";
+import { getPerformance } from "./performance.js";
 import { upsertPrices } from "./prices.js";
 import { commitReconciliation, previewReconciliation } from "./reconcile.js";
-import { cashSecurity, resolveSecurity } from "./securities.js";
+import { cashSecurity, createSecurity, resolveSecurity, setManualPrice } from "./securities.js";
 import { valueAccountsOn } from "./valuation.js";
 
 const f8 = parseFixed8;
@@ -157,5 +159,76 @@ describe.skipIf(!TEST_DATABASE_URL)("investments gate (G4, INV seed)", () => {
     const dashboard = await getDashboard(t.db, { today: TODAY, now: NOW });
     expect(dashboard.investments).toMatchObject({ asOf: "2026-10-13", totalCents: 2705200n + 1820550n, awaitingReconcile: 0, fidelityCounts: { balance_only: 0, positions: 1, full_history: 1 } });
     expect(dashboard.netWorth.breakdown).toMatchObject({ investmentsCents: 2705200n + 1820550n, investmentsAsOf: "2026-10-13" });
+  });
+
+  /**
+   * A margin account, to the dollar on every basis: +10,000.00 on 09-01, buy 50 MGNX @ 300.00 on
+   * 09-02 (cash −5,000.00), the 09-30 statement lists the 50 shares (15,000.00) and a total of
+   * 10,000.00 with no cash line, the price is 310.00 on 10-06 and 10 shares are sold that day
+   * (+3,100.00). By hand: 09-30 = 10,000.00; 10-05 = 50 × 300 − 5,000.00 = 10,000.00;
+   * 10-06 = 40 × 310 − 1,900.00 = 10,500.00, a 5 % return on the 10,000.00 put in.
+   */
+  it("a margin account matches its statements to the dollar: the debit is carried, and the Portfolio, the Performance page and the reconcile agree", async () => {
+    const [row] = await t.db.insert(account).values({ name: "Margin Brokerage", type: "brokerage", taxTreatment: "taxable", onBudget: false }).returning({ id: account.id });
+    const M = row!.id;
+    const mgnx = (await createSecurity(t.db, { ticker: "MGNX", name: "Margin Test ETF", type: "etf", assetClass: "us_stock" }, ctx())).id;
+    await createInvestmentTxn(t.db, { accountId: M, date: "2026-09-01", type: "transfer", direction: "in", amountCents: 1000000n }, ctx());
+    await createInvestmentTxn(t.db, { accountId: M, date: "2026-09-02", type: "buy", securityId: mgnx, quantity: f8("50"), price: f8("300") }, ctx());
+
+    // The 09-30 statement: positions 15,000.00, statement total 10,000.00.
+    await t.db.transaction(async (tx) => {
+      const result = await replaceHoldingSnapshot(tx, {
+        accountId: M,
+        date: "2026-09-30",
+        source: "csv",
+        positions: [{ securityId: mgnx, quantity: f8("50"), price: f8("300"), valueCents: 1500000n, reportedCostBasisCents: null }],
+        statementTotalCents: 1000000n,
+        today: TODAY,
+      });
+      expect(result).toMatchObject({ totalValueCents: 1500000n, balanceWritten: true, balanceCents: 1000000n });
+      await rebuildImpliedPrices(tx, { securityIds: result.securityIds, dates: ["2026-09-30"] });
+    });
+    const [statement] = await valueAccountsOn(t.db, { accountIds: [M], date: "2026-09-30", now: NOW });
+    expect(statement).toMatchObject({ basis: "snapshot", valueCents: 1000000n, balanceDiffCents: 0n, fidelity: "full_history" });
+    expect(statement!.lines.map((l) => [l.kind, l.valueCents])).toEqual([
+      ["position", 1500000n],
+      ["cash_plug", -500000n],
+    ]);
+    const [carried] = await valueAccountsOn(t.db, { accountIds: [M], date: "2026-10-05", now: NOW });
+    expect(carried).toMatchObject({ basis: "positions", valueCents: 1000000n });
+
+    // 10-06: the close is 310.00 and 10 shares are sold.
+    await setManualPrice(t.db, mgnx, { date: "2026-10-06", close: f8("310") }, ctx());
+    await createInvestmentTxn(t.db, { accountId: M, date: "2026-10-06", type: "sell", securityId: mgnx, quantity: f8("10"), price: f8("310") }, ctx());
+    const [traded] = await valueAccountsOn(t.db, { accountIds: [M], date: "2026-10-06", now: NOW });
+    expect(traded).toMatchObject({ basis: "lots", asOf: "2026-10-06", cashAnchor: "2026-09-30", valueCents: 1050000n });
+    expect(traded!.lines.map((l) => [l.kind, l.valueCents])).toEqual([
+      ["position", 1240000n],
+      ["cash_plug", -500000n],
+      ["cash", 310000n],
+    ]);
+
+    // The Performance page values the account the same way and returns 500.00 on the 10,000.00 put in.
+    const perf = await getPerformance(t.db, { from: "2026-08-31", to: "2026-10-06", today: TODAY, accountIds: [M], benchmarkSecurityId: null, now: NOW });
+    const block = perf.accounts[0]!;
+    expect(block).toMatchObject({ method: "true_twr", startValueCents: 0n, endValueCents: 1050000n, contributionsCents: 1000000n, withdrawalsCents: 0n, growthCents: 50000n });
+    expect(block.twr.rate).toBeCloseTo(0.05, 12);
+    expect(block.holdings.find((h) => h.securityId === null)).toMatchObject({ valueCents: -190000n });
+
+    // The Portfolio shows the same value, with the debit as negative inferred cash.
+    const portfolio = await getPortfolio(t.db, { today: TODAY, now: NOW, asOf: "2026-10-06", period: "1m" });
+    expect(portfolio.accounts.find((a) => a.accountId === M)).toMatchObject({ valueCents: 1050000n, residualCents: -190000n });
+
+    // The 10-06 statement by hand: 40 shares at 310.00 and −1,900.00 of cash, total 10,500.00: exact, row for row.
+    const preview = await previewReconciliation(
+      t.db,
+      { accountId: M, date: "2026-10-06", statementTotalCents: 1050000n, rows: [{ ticker: "MGNX", quantity: f8("40"), price: f8("310") }, { isCash: true, quantity: f8("-1900") }] },
+      { today: TODAY, now: NOW },
+    );
+    expect(preview).toMatchObject({ statementTotalCents: 1050000n, differenceCents: 0n, matchesToDollar: true });
+    expect(preview.rows.map((r) => [r.ticker ?? r.name, r.status, r.valueDiffCents])).toEqual([
+      ["MGNX", "match", 0n],
+      ["Cash", "match", 0n],
+    ]);
   });
 });

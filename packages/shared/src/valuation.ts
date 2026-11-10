@@ -45,15 +45,19 @@ import { expectedCloseFor } from "./prices.js";
  *
  * Cash is anchored the same way for every valued basis (decision 8, the lots design's D19):
  * `anchor` = the latest REPORTED balance (`source ≠ computed`) on or before D;
- * `cash_plug = anchor.balance − Σ positions priced on anchor.date`, carried forward. A positive
- * plug is a `cash_plug` line "Cash (from balance)"; a negative one is a `negative_residual`
- * warning and never negative cash. Cash transfers after the anchor are carried as a
+ * `cash_plug = anchor.balance − Σ positions priced on anchor.date`, carried forward as a
+ * `cash_plug` line "Cash (from balance)" whatever its sign, so the value on a reported balance's
+ * date IS that balance (the performance engine's `valueFullAccount` and Phase 2's net worth
+ * read the same number). A negative plug is real for a margin account, and otherwise says the
+ * holdings changed or lost value since the statement: it is carried and also reported as a
+ * `negative_residual` warning. Cash transfers after the anchor are carried as a
  * `carried_flows` line; on the lots basis the trades' own cash legs after the anchor (buys −,
  * sells +, dividends, interest, fees) are a `cash` line "Cash (from trades)". A balance OLDER
  * than the statement in use cannot plug cash on top of it (the statement's own value is the
- * value on its date and the flows up to that date are inside it): a stale anchor adds no plug,
- * carried cash starts at the statement, and the anchor only warns when the holdings exceed it.
- * `cash_inference = off` disables all of it: the value is the positions alone.
+ * value on its date and the flows up to that date are inside it): a stale anchor adds no plug
+ * of either sign, carried cash starts at the statement, and the anchor only warns when the
+ * holdings exceed it. `cash_inference = off` disables all of it: the value is the positions
+ * alone.
  *
  * Price status (§3.4, C26) is user-facing freshness: trading days behind the expected close,
  * for `provider`-mode securities only; `implied` and `manual` modes report their mode;
@@ -676,7 +680,7 @@ interface CashBlock {
 }
 
 /**
- * The anchored plug, the lots basis' trade cash and the carried transfers. `securitiesAt(d)` is
+ * The anchored plug (of either sign), the lots basis' trade cash and the carried transfers. `securitiesAt(d)` is
  * Σ of the current basis' positions priced on `d`; `carriedFrom` is where carried cash starts
  * without an anchor, or with one older than it (the snapshot date for the snapshot/positions
  * bases, inception for lots).
@@ -707,12 +711,15 @@ function inferCash(
       });
     } else {
       const plug = anchor.balanceCents - securities;
-      if (plug > 0n) {
-        if (!stale) lines.push(syntheticLine("cash_plug", CASH_PLUG_NAME, anchor.date, plug));
-      } else if (plug < 0n) {
+      if (plug !== 0n && !stale) lines.push(syntheticLine("cash_plug", CASH_PLUG_NAME, anchor.date, plug));
+      if (plug < 0n) {
+        // Carried (a margin debit is real, and the balance is the newer fact) but never silently.
+        const amount = formatCents(-plug);
         warnings.push({
           code: "negative_residual",
-          message: `Holdings exceed the account value by $${formatCents(-plug)}: the positions are newer than the balance, or the balance is stale`,
+          message: stale
+            ? `Holdings exceed the account value by $${amount}: the positions are newer than the balance, or the balance is stale`
+            : `Holdings exceed the ${anchor.date} balance by $${amount}: the difference is counted as negative cash (a margin loan, or holdings that changed or lost value since the last statement; turn the account's cash inference off if the balance is not its total value)`,
           cents: plug,
         });
       }

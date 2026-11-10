@@ -289,3 +289,99 @@ describe.skipIf(!TEST_DATABASE_URL)("Phase 3 gate: a brokerage account reconcile
     expect(write.json().code).toBe("viewer");
   });
 });
+
+/**
+ * The same gate for a margin account, where cash is negative: +10,000.00 on Sep 1, 50 VTI
+ * bought at 300.00 on Sep 2 (cash −5,000.00), the Sep 30 statement (VTI 15,000.00, cash
+ * −5,000.00, total 10,000.00), a close of 310.00 on Oct 6 and 10 shares sold that day
+ * (+3,100.00). By hand on Oct 6: 40 × 310 − 1,900.00 = 10,500.00, on every page.
+ */
+describe.skipIf(!TEST_DATABASE_URL)("Phase 3 gate: a margin account keeps its debit on every basis", () => {
+  let t: TestApp;
+  const today: IsoDate = "2026-10-14";
+  const now = new Date(`${today}T18:00:00Z`);
+  let accountId = "";
+  let vti = "";
+
+  beforeAll(async () => {
+    t = await createTestApp({ now: () => now });
+    await t.call({ method: "POST", url: "/api/auth/setup", payload: { username: "owner", password: "correct horse battery staple" } });
+    const setup = await t.call({ method: "POST", url: "/api/auth/totp/setup" });
+    const code = new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(setup.json().secret), digits: 6, period: 30 }).generate();
+    await t.call({ method: "POST", url: "/api/auth/totp/confirm", payload: { code } });
+  });
+  afterAll(async () => {
+    await t?.cleanup();
+  });
+
+  async function get<T>(url: string): Promise<T> {
+    const res = await t.call({ method: "GET", url });
+    expect(res.statusCode, `GET ${url}: ${res.body}`).toBe(200);
+    return res.json() as T;
+  }
+  async function send<T>(method: "POST" | "PUT", url: string, payload: object): Promise<T> {
+    const res = await t.call({ method, url, payload });
+    expect([200, 201, 202], `${method} ${url}: ${res.statusCode} ${res.body}`).toContain(res.statusCode);
+    return res.json() as T;
+  }
+  const valueOn = async (asOf: IsoDate) => {
+    const v = await get<ValuationSummaryResponse>(`/api/valuation/summary?asOf=${asOf}&accountIds=${accountId}&today=${today}`);
+    const a = v.accounts.find((x) => x.accountId === accountId)!;
+    return { value: a.valueCents, basis: a.basis, balanceDiff: a.balanceDiffCents, lines: a.lines.map((l) => [l.kind, l.valueCents]), warnings: a.warnings };
+  };
+
+  it("the statement with a negative cash line is the value on its date, and the positions carry the debit after it", async () => {
+    accountId = (await send<AccountView>("POST", "/api/accounts", { name: "Margin Brokerage", type: "brokerage" })).id;
+    vti = (await send<SecurityView>("POST", "/api/investments/securities", { ticker: "VTI", name: "Vanguard Total Stock Market ETF", type: "etf", assetClass: "us_stock" })).id;
+    const csvText = ["Symbol,Description,Quantity,Price,Value", "VTI,Vanguard Total Stock Market ETF,50,300,15000.00", "CASH,Cash,-5000.00,1,-5000.00"].join("\n");
+    const mapping = { hasHeader: true, asOf: { mode: "request" }, symbol: { column: "Symbol" }, name: { column: "Description" }, quantity: { column: "Quantity" }, price: { column: "Price" }, value: { column: "Value" } };
+    const result = await send<PositionsImportResult>("POST", "/api/import/positions/commit", { csvText, accountId, mapping, asOfDate: "2026-09-30", statementTotalCents: "1000000", today });
+    expect(result).toMatchObject({ positions: 2, totalValueCents: "1000000", balanceWritten: true });
+    expect(await valueOn("2026-09-30")).toMatchObject({ value: "1000000", basis: "snapshot", balanceDiff: "0", warnings: [] });
+    // Oct 6 close 310.00: 50 × 310 − 5,000.00
+    await send("PUT", `/api/prices/${vti}/2026-10-06`, { close: "310", today });
+    expect(await valueOn("2026-10-06")).toMatchObject({ value: "1050000", basis: "positions" });
+  });
+
+  it("after the trade history and a sale newer than the statement, the lots basis, the Performance page, the Portfolio and the reconcile all say 10,500.00", async () => {
+    const txn = (body: object) => send("POST", "/api/investments/txns", { accountId, today, ...body });
+    await txn({ type: "transfer", direction: "in", date: "2026-09-01", amountCents: "1000000" });
+    await txn({ type: "buy", date: "2026-09-02", securityId: vti, quantity: "50", price: "300" });
+    await txn({ type: "sell", date: "2026-10-06", securityId: vti, quantity: "10", price: "310" });
+
+    // 40 × 310 = 12,400.00; the Sep 30 balance less the 50 shares at 300.00 = −5,000.00; the sale's +3,100.00.
+    expect(await valueOn("2026-10-06")).toEqual({
+      value: "1050000",
+      basis: "lots",
+      balanceDiff: null,
+      lines: [
+        ["position", "1240000"],
+        ["cash_plug", "-500000"],
+        ["cash", "310000"],
+      ],
+      warnings: ["Holdings exceed the 2026-09-30 balance by $5000.00: the difference is counted as negative cash (a margin loan, or holdings that changed or lost value since the last statement; turn the account's cash inference off if the balance is not its total value)"],
+    });
+
+    const perf = await get<PerformanceView>(`/api/investments/performance?accountIds=${accountId}&from=2026-08-31&to=2026-10-06&today=${today}`);
+    const a = perf.accounts.find((x) => x.accountId === accountId)!;
+    expect(a.block).toMatchObject({ method: "true_twr", startValueCents: "0", endValueCents: "1050000", contributionsCents: "1000000", growthCents: "50000" });
+    expect(a.block.twr.rate).toBeCloseTo(0.05, 9);
+
+    const portfolio = await get<{ totalCents: string | null }>(`/api/investments/portfolio?asOf=2026-10-06&today=${today}`);
+    expect(portfolio.totalCents).toBe("1050000");
+
+    // The Oct 6 statement by hand: 40 shares at 310.00, cash −1,900.00, total 10,500.00.
+    const preview = await send<ReconcilePreviewResponse>("POST", "/api/reconcile/preview", {
+      accountId,
+      date: "2026-10-06",
+      statementTotalCents: "1050000",
+      rows: [{ ticker: "VTI", quantity: "40", price: "310" }, { isCash: true, quantity: "-1900" }],
+      today,
+    });
+    expect(preview).toMatchObject({ differenceCents: "0", matchesToDollar: true });
+    expect(preview.rows.map((r) => [r.isCash ? "cash" : r.ticker, r.status, r.valueDiffCents])).toEqual([
+      ["VTI", "match", "0"],
+      ["cash", "match", "0"],
+    ]);
+  });
+});

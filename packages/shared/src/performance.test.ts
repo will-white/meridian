@@ -376,13 +376,16 @@ describe("TC16. Modified Dietz for a balance-only account, carried starts and th
     expect(a.gains).toBeNull();
     expect(a.realized).toBeNull();
   });
-  it("chains two sub-periods to 03-31 with a withdrawal on the boundary at weight 1/31", () => {
+  it("chains two sub-periods to 03-31 with a withdrawal on the boundary at weight 0 (re-derived: it leaves at the end of its day)", () => {
     const r = perf({ from: "2026-01-31", to: "2026-03-31", accounts: [C] });
     const a = r.accounts[0]!;
     near(a.subPeriods[0]!.rate, 0.088050314);
-    near(a.subPeriods[1]!.rate, 0.03875);
-    near(a.subPeriods[1]!.weightedFlowDollars, -9.677419355);
-    near(a.twr.rate, 0.130212264);
+    // (1050 − 1300 + 300) / (1300 − 300 × 0/31) = 50 / 1300
+    near(a.subPeriods[1]!.rate, 0.038461538);
+    expect(a.subPeriods[1]!.weightedFlowDollars).toBe(0);
+    expect(a.subPeriods[1]).toMatchObject({ flowCents: -30000n, outflowCents: -30000n });
+    // (173/159) × (27/26) − 1
+    near(a.twr.rate, 0.129898403);
     expect(r.days).toBe(59);
     expect(a.xirr.investorFlows).toEqual([
       { date: "2026-01-31", amountCents: -100000n },
@@ -658,6 +661,152 @@ describe("TC23. securities transfer valued at market on its date; unpriced → 0
     expect(a.twr.reason).toBe("no_valuations");
     expect(a.warnings.map((w) => w.code)).toEqual(["securities_flow_unpriced", "no_price", "no_valuations"]);
     expect(a.gains).toMatchObject({ openValueCents: 0n, unrealizedCents: 0n, unpricedSecurityIds: ["VXUS"] });
+  });
+});
+
+describe("withdrawals leave at the end of their day: an account that is emptied keeps its return", () => {
+  // SEC closes at 100.00 from 01-02 to 03-09 and at 110.00 on 06-30; A buys 100 shares on 01-02 with a 10,000.00 deposit.
+  const closes = (onTheDay: string) => [
+    series("SEC", [
+      ["2026-01-02", "100"],
+      ["2026-03-09", "100"],
+      ["2026-03-10", onTheDay],
+      ["2026-06-30", "110"],
+    ]),
+  ];
+  const deposit = cash("A", "2026-01-02", 1000000n, { sourceId: "L1" });
+  const bought = buy("A", "a1", "2026-01-02", "SEC", "100", "100", -1000000n);
+  const moveOut = (qty: string): InvestmentTxnInput => ({ ...transferOut("A", "a2", "2026-03-10", "SEC", qty), transferGroupId: "G", counterpartyAccountId: "B" });
+  const moveIn = (qty: string) => transferIn("B", "b1", "2026-03-10", "SEC", qty, { groupId: "G", counterparty: "A", costBasisCents: 1000000n });
+  const window = { from: "2026-01-01", to: "2026-06-30" } as const;
+
+  it("moving the whole position to another account in kind on a day the price falls: neither −100 % nor a failure", () => {
+    const A1 = account({ accountId: "A", name: "Old broker", cashFlows: [deposit], txns: [bought, moveOut("100")] });
+    const B1 = account({ accountId: "B", name: "New broker", txns: [moveIn("100")] });
+    const r = perf({ ...window, accounts: [A1, B1], prices: closes("99") });
+    const [a, b] = [r.accounts[0]!, r.accounts[1]!];
+    // The shares leave A after the 03-10 close at 99.00: (0 + 9,900.00) / (0 + 10,000.00) − 1 = −1 %.
+    expect(a.flows.map((x) => [x.date, x.kind, x.amountCents])).toEqual([
+      ["2026-01-02", "cash", 1000000n],
+      ["2026-03-10", "securities", -990000n],
+    ]);
+    expect(a.subPeriods.map(spCents)).toEqual([
+      ["2026-01-01", "2026-03-10", 0n, 10000n, 0n, false],
+      ["2026-03-10", "2026-06-30", 0n, 0n, 0n, true],
+    ]);
+    expect(a.subPeriods[0]!.outflowCents).toBe(-990000n);
+    near(a.twr.rate, -0.01, 1e-12);
+    expect(a.twr.reason).toBeNull();
+    expect(a).toMatchObject({ startValueCents: 0n, endValueCents: 0n, contributionsCents: 1000000n, withdrawalsCents: 990000n, growthCents: -10000n });
+    // B receives them at that close and holds them to 110.00: 11,000.00 / 9,900.00 − 1.
+    expect(b.subPeriods.map(spCents)).toEqual([
+      ["2026-01-01", "2026-03-09", 0n, 0n, 0n, true],
+      ["2026-03-09", "2026-06-30", 0n, 990000n, 1100000n, false],
+    ]);
+    near(b.twr.rate, 1100000 / 990000 - 1, 1e-12);
+    expect(b.growthCents).toBe(110000n);
+    // The two legs are internal to the total: 11,000.00 / 10,000.00 − 1, and the parts chain to it.
+    near(r.total.twr.rate, 0.1, 1e-12);
+    near((1 + a.twr.rate!) * (1 + b.twr.rate!) - 1, 0.1, 1e-12);
+    expect(r.total.growthCents).toBe(100000n);
+  });
+
+  it("the same move on a day the price rises", () => {
+    const A1 = account({ accountId: "A", cashFlows: [deposit], txns: [bought, moveOut("100")] });
+    const B1 = account({ accountId: "B", txns: [moveIn("100")] });
+    const r = perf({ ...window, accounts: [A1, B1], prices: closes("101") });
+    // A: 10,100.00 / 10,000.00 − 1; B: 11,000.00 / 10,100.00 − 1
+    near(r.accounts[0]!.twr.rate, 0.01, 1e-12);
+    expect(r.accounts[0]!.twr.reason).toBeNull();
+    near(r.accounts[1]!.twr.rate, 1100000 / 1010000 - 1, 1e-12);
+    near(r.total.twr.rate, 0.1, 1e-12);
+  });
+
+  it("a partial in-kind move leaves the sender's return the security's own", () => {
+    // 40 of the 100 shares leave on 03-10 (close 99.00): (60 × 99 + 40 × 99) / 10,000.00 − 1 = −1 %, then 60 × 110 / (60 × 99) − 1; chained 110/100 − 1.
+    const A1 = account({ accountId: "A", cashFlows: [deposit], txns: [bought, moveOut("40")] });
+    const a = perf({ ...window, accounts: [A1], prices: closes("99") }).accounts[0]!;
+    expect(a.subPeriods.map(spCents)).toEqual([
+      ["2026-01-01", "2026-03-10", 0n, 604000n, 594000n, false],
+      ["2026-03-10", "2026-06-30", 594000n, 0n, 660000n, false],
+    ]);
+    near(a.subPeriods[0]!.rate, -0.01, 1e-12);
+    near(a.subPeriods[1]!.rate, 660000 / 594000 - 1, 1e-12);
+    near(a.twr.rate, 0.1, 1e-12);
+  });
+
+  it("selling everything and withdrawing the proceeds the same day returns the sale price over the previous close", () => {
+    const liquidated = (price: string, proceeds: bigint) =>
+      account({ accountId: "A", cashFlows: [deposit, cash("A", "2026-03-10", -proceeds, { sourceId: "L2" })], txns: [bought, sell("A", "a2", "2026-03-10", "SEC", "100", price, proceeds)] });
+    const down = perf({ ...window, accounts: [liquidated("99", 990000n)], prices: closes("99") }).accounts[0]!;
+    near(down.twr.rate, -0.01, 1e-12);
+    expect(down.twr.reason).toBeNull();
+    expect(down.subPeriods.map(spCents)).toEqual([
+      ["2026-01-01", "2026-03-10", 0n, 10000n, 0n, false],
+      ["2026-03-10", "2026-06-30", 0n, 0n, 0n, true],
+    ]);
+    const up = perf({ ...window, accounts: [liquidated("101", 1010000n)], prices: closes("101") }).accounts[0]!;
+    near(up.twr.rate, 0.01, 1e-12);
+    expect(up.twr.reason).toBeNull();
+  });
+
+  it("a balance-only account rolled over the day after a balance (Modified Dietz) loses or gains only the day's move", () => {
+    const rolledOver = (out: bigint) =>
+      account({
+        accountId: "K",
+        type: "401k",
+        taxTreatment: "pre_tax",
+        fidelity: "balance_only",
+        cashFlows: [cash("K", "2026-03-10", -out)],
+        valuations: [
+          { date: "2026-01-01", valueCents: 10000000n },
+          { date: "2026-03-09", valueCents: 10000000n },
+          { date: "2026-03-10", valueCents: 0n },
+        ],
+      });
+    // (0 − 100,000.00 + 99,000.00) / (100,000.00 − 99,000.00 × 0/1)
+    const down = perf({ ...window, accounts: [rolledOver(9900000n)] }).accounts[0]!;
+    expect(down.subPeriods.map(spCents)).toEqual([
+      ["2026-01-01", "2026-03-09", 10000000n, 0n, 10000000n, false],
+      ["2026-03-09", "2026-03-10", 10000000n, -9900000n, 0n, false],
+      ["2026-03-10", "2026-06-30", 0n, 0n, 0n, true],
+    ]);
+    near(down.twr.rate, -0.01, 1e-12);
+    near(perf({ ...window, accounts: [rolledOver(10100000n)] }).accounts[0]!.twr.rate, 0.01, 1e-12);
+    const flat = perf({ ...window, accounts: [rolledOver(10000000n)] }).accounts[0]!;
+    expect(flat.twr).toEqual({ rate: 0, annualized: null, reason: null, reasonDate: null });
+  });
+
+  it("true TWR adds a contribution to the begin value and a withdrawal back to the end value of its own day", () => {
+    // +1,000.00 on 01-05, −200.00 on 01-20; V(01-20) = 880.00 after the withdrawal, V(01-31) = 924.00.
+    const values = new Map<IsoDate, bigint>([
+      ["2026-01-01", 0n],
+      ["2026-01-04", 0n],
+      ["2026-01-20", 88000n],
+      ["2026-01-31", 92400n],
+    ]);
+    const chain = trueTwr(
+      "2026-01-01",
+      "2026-01-31",
+      [
+        { date: "2026-01-05", amountCents: 100000n },
+        { date: "2026-01-20", amountCents: -20000n },
+      ],
+      (d) => {
+        const v = values.get(d);
+        if (v === undefined) throw new Error(`unexpected valuation date ${d}`);
+        return v;
+      },
+    );
+    expect(chain.subPeriods.map((s) => [s.from, s.to, s.beginValueCents, s.flowCents, s.outflowCents, s.endValueCents, s.skipped])).toEqual([
+      ["2026-01-01", "2026-01-04", 0n, 0n, 0n, 0n, true],
+      ["2026-01-04", "2026-01-20", 0n, 80000n, -20000n, 88000n, false],
+      ["2026-01-20", "2026-01-31", 88000n, 0n, 0n, 92400n, false],
+    ]);
+    // (880 + 200) / 1000 − 1 = 8 %, then 924 / 880 − 1 = 5 %
+    near(chain.subPeriods[1]!.rate, 0.08, 1e-12);
+    near(chain.subPeriods[2]!.rate, 0.05, 1e-12);
+    near(chain.rate, 0.134, 1e-12);
   });
 });
 

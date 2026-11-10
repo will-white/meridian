@@ -124,6 +124,17 @@ export function signedMoney(cents: string | null | undefined): string {
   return BigInt(cents) > 0n ? `+${text}` : text;
 }
 
+/**
+ * The inferred cash beside an account's reported cash: "+ $1,432.00 unlisted", or
+ * "− $5,000.00 unlisted" when the balance is below the holdings (a margin debit); null for 0.
+ */
+export function unlistedCashText(cents: string | null | undefined, suffix = "unlisted"): string | null {
+  if (cents === null || cents === undefined) return null;
+  const value = BigInt(cents);
+  if (value === 0n) return null;
+  return `${value < 0n ? "−" : "+"} ${money((value < 0n ? -value : value).toString())} ${suffix}`;
+}
+
 /** Tone for a signed amount or basis-point figure. */
 export function changeTone(value: string | number | null | undefined): "pos" | "neg" | "" {
   if (value === null || value === undefined) return "";

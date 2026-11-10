@@ -250,6 +250,130 @@ describe("TC4. forward split, reverse split and a fractional lot (C5: R5 per lot
   });
 });
 
+describe("the 0.001-share tolerance on disposals (split rounding and statement precision)", () => {
+  // Three 1-share lots at 5.00, 1:3 reverse split: each scales to 0.33333333, Σ 0.99999999 (the statement says 1).
+  const thirdsDown = [buy("b1", "2025-03-03", "X", "1", "5", -500n), buy("b2", "2025-03-04", "X", "1", "5", -500n), buy("b3", "2025-03-05", "X", "1", "5", -500n), split("sp", "2025-09-01", "X", 1, 3)];
+  // Three 2-share lots at 5.00, 1:3: each scales to 0.66666667 (0.666666666… rounds up), Σ 2.00000001 (the statement says 2).
+  const thirdsUp = [buy("b1", "2025-03-03", "X", "2", "5", -1000n), buy("b2", "2025-03-04", "X", "2", "5", -1000n), buy("b3", "2025-03-05", "X", "2", "5", -1000n), split("sp", "2025-09-01", "X", 1, 3)];
+
+  it("selling the statement's whole position when the lots rounded down matches every share: no oversell, no unmatched piece", () => {
+    const r = build([...thirdsDown, sell("s1", "2025-09-02", "X", "1", "20", 2000n)]);
+    expect(r.positions.map((p) => [p.id, p.quantityBySecurity.get("X")])).toEqual([
+      ["b1", f("1")],
+      ["b2", f("2")],
+      ["b3", f("3")],
+      ["sp", f("0.99999999")],
+      ["s1", 0n],
+    ]);
+    expect(r.warnings).toEqual([]);
+    // 20.00 across three equal pieces by largest remainder: 666 + 666 + 666 = 1998, the 2 left to the first two.
+    expect(r.disposals.map((d) => [d.lotId, d.kind, d.quantity, d.proceedsCents, d.basisCents, d.gainCents, d.term, d.basisKnown])).toEqual([
+      ["b1", "sell", f("0.33333333"), 667n, 500n, 167n, "short", true],
+      ["b2", "sell", f("0.33333333"), 667n, 500n, 167n, "short", true],
+      ["b3", "sell", f("0.33333333"), 666n, 500n, 166n, "short", true],
+    ]);
+    expect(r.lots.every((l) => l.quantity === 0n && l.costBasisCents === 0n && l.closedDate === "2025-09-02")).toBe(true);
+    expect(summarizeRealized(r.disposals, { from: "2025-01-01", to: "2025-12-31" }).unknownBasis).toEqual({ proceedsCents: 0n, quantity: 0n, count: 0 });
+  });
+
+  it("selling the statement's whole position when the lots rounded up closes the dust with the sale", () => {
+    const r = build([...thirdsUp, sell("s1", "2025-09-02", "X", "2", "20", 4000n)]);
+    expect(lastPosition(r, "X")).toBe(0n);
+    expect(r.warnings).toEqual([]);
+    // 40.00 across three equal pieces: 1333 × 3 = 3999, the cent left to the first.
+    expect(r.disposals.map((d) => [d.lotId, d.quantity, d.proceedsCents, d.basisCents, d.gainCents])).toEqual([
+      ["b1", f("0.66666667"), 1334n, 1000n, 334n],
+      ["b2", f("0.66666667"), 1333n, 1000n, 333n],
+      ["b3", f("0.66666667"), 1333n, 1000n, 333n],
+    ]);
+    expect(r.lots.every((l) => l.quantity === 0n && l.costBasisCents === 0n && l.closedDate === "2025-09-02")).toBe(true);
+  });
+
+  it("a lot a reverse split would round to zero keeps one unit and its basis, and the next sale of the position realizes it", () => {
+    const tiny = txn({ id: "b2", type: "buy", date: "2025-01-02", securityId: "X", quantity: f("0.00000004"), amountCents: -500n, feeCents: 0n });
+    const alone = build([tiny, split("sp", "2025-02-01", "X", 1, 10)]);
+    expect(lotById(alone, "b2")).toMatchObject({ quantity: 1n, costBasisCents: 500n, closedDate: null, originalQuantity: f("0.00000004") });
+    expect(lastPosition(alone, "X")).toBe(1n);
+    expect(alone.warnings).toEqual([]);
+
+    // Beside a 10-share lot (20.00): after 1:10 the position is 1.00000001; selling the statement's 1 share takes both lots.
+    const r = build([buy("b1", "2025-01-01", "X", "10", "2", -2000n), tiny, split("sp", "2025-02-01", "X", 1, 10), sell("s1", "2025-03-01", "X", "1", "30", 3000n)]);
+    expect(r.warnings).toEqual([]);
+    // 30.00 by quantity: 2999.99997 and 0.00003 → 2999 + 0, the cent left to the larger remainder (the first).
+    expect(r.disposals.map((d) => [d.lotId, d.quantity, d.proceedsCents, d.basisCents, d.gainCents, d.term])).toEqual([
+      ["b1", f("1"), 3000n, 2000n, 1000n, "short"],
+      ["b2", 1n, 0n, 500n, -500n, "short"],
+    ]);
+    expect(lastPosition(r, "X")).toBe(0n);
+    const gains = summarizeGains(r.lots, r.disposals, () => f("30"));
+    // every cent of basis is realized: 2,500 consumed of 2,500 original
+    expect(gains).toMatchObject({ basisConsumedCents: 2500n, originalBasisCents: 2500n, openBasisCents: 0n, realizedCents: 500n });
+  });
+
+  it("an in-kind transfer of a drifted position reaches the receiving account lot for lot, without an unknown-basis remainder", () => {
+    const out = build([...thirdsDown, transferOut("t1", "2025-09-02", "X", "1")]);
+    expect(out.warnings).toEqual([]);
+    expect(out.disposals.map((d) => [d.lotId, d.kind, d.quantity, d.basisCents])).toEqual([
+      ["b1", "transfer_out", f("0.33333333"), 500n],
+      ["b2", "transfer_out", f("0.33333333"), 500n],
+      ["b3", "transfer_out", f("0.33333333"), 500n],
+    ]);
+    const into = buildLots({ accountId: "B", lotMethod: "fifo", txns: [{ ...transferIn("t2", "2025-09-02", "X", "1"), accountId: "B" }], lotPicks: [], transferSources: new Map([["t2", out.transferredOut]]) });
+    expect(into.warnings).toEqual([]);
+    expect(into.lots.map((l) => [l.id, l.originLotId, l.quantity, l.costBasisCents, l.basisKnown, l.acquiredDate])).toEqual([
+      ["t2", "b1", f("0.33333333"), 500n, true, "2025-03-03"],
+      ["t2:1", "b2", f("0.33333333"), 500n, true, "2025-03-04"],
+      ["t2:2", "b3", f("0.33333333"), 500n, true, "2025-03-05"],
+    ]);
+
+    // Rounded up: the out leg takes the 0.00000001 of dust with it and the in leg accepts 2.00000001 for a row of 2.
+    const outUp = build([...thirdsUp, transferOut("t1", "2025-09-02", "X", "2")]);
+    expect(outUp.warnings).toEqual([]);
+    expect(outUp.transferredOut.map((t) => [t.lotId, t.quantity, t.basisCents])).toEqual([
+      ["b1", f("0.66666667"), 1000n],
+      ["b2", f("0.66666667"), 1000n],
+      ["b3", f("0.66666667"), 1000n],
+    ]);
+    expect(lastPosition(outUp, "X")).toBe(0n);
+    const intoUp = buildLots({ accountId: "B", lotMethod: "fifo", txns: [{ ...transferIn("t2", "2025-09-02", "X", "2"), accountId: "B" }], lotPicks: [], transferSources: new Map([["t2", outUp.transferredOut]]) });
+    expect(intoUp.warnings).toEqual([]);
+    expect(intoUp.lots.map((l) => [l.originLotId, l.quantity, l.costBasisCents, l.basisKnown])).toEqual([
+      ["b1", f("0.66666667"), 1000n, true],
+      ["b2", f("0.66666667"), 1000n, true],
+      ["b3", f("0.66666667"), 1000n, true],
+    ]);
+    expect(lastPosition(intoUp, "X")).toBe(f("2.00000001"));
+  });
+
+  it("is bounded by 0.001 shares on both sides and never invents a match without an open lot", () => {
+    const ten = buy("b1", "2026-01-05", "X", "10", "10", -10000n);
+    // 0.001 above the position: absorbed, the whole proceeds on the lot (10.001 × 10.00 = 100.01)
+    const above = build([ten, sell("s1", "2026-03-01", "X", "10.001", "10", 10001n)]);
+    expect(above.warnings).toEqual([]);
+    expect(above.disposals.map((d) => [d.lotId, d.kind, d.quantity, d.proceedsCents, d.basisCents])).toEqual([["b1", "sell", f("10"), 10001n, 10000n]]);
+    // 0.002 above: an oversell as before (10.002 × 10.00 = 100.02; 100.02 × 0.002 / 10.002 = 0.02)
+    const beyond = build([ten, sell("s1", "2026-03-01", "X", "10.002", "10", 10002n)]);
+    expect(beyond.warnings).toEqual([{ code: "oversell", txnId: "s1", securityId: "X", quantity: f("0.002"), date: "2026-03-01" }]);
+    expect(beyond.disposals.map((d) => [d.lotId, d.kind, d.quantity, d.proceedsCents])).toEqual([
+      ["b1", "sell", f("10"), 10000n],
+      [null, "unmatched_sell", f("0.002"), 2n],
+    ]);
+    // a sale that would leave 0.001 shares sells the position (9.999 × 10.00 = 99.99)
+    const leavesDust = build([ten, sell("s1", "2026-03-01", "X", "9.999", "10", 9999n)]);
+    expect(leavesDust.disposals.map((d) => [d.lotId, d.quantity, d.proceedsCents, d.basisCents, d.gainCents])).toEqual([["b1", f("10"), 9999n, 10000n, -1n]]);
+    expect(lotById(leavesDust, "b1")).toMatchObject({ quantity: 0n, costBasisCents: 0n, closedDate: "2026-03-01" });
+    expect(lastPosition(leavesDust, "X")).toBe(0n);
+    // a sale that leaves 0.002 shares leaves them (basis 100.00 × 9.998 / 10 = 99.98 consumed)
+    const leavesShares = build([ten, sell("s1", "2026-03-01", "X", "9.998", "10", 9998n)]);
+    expect(lotById(leavesShares, "b1")).toMatchObject({ quantity: f("0.002"), costBasisCents: 2n, closedDate: null });
+    expect(lastPosition(leavesShares, "X")).toBe(f("0.002"));
+    // nothing open: even 0.0005 shares is an unmatched sale
+    const nothing = build([sell("s1", "2026-03-01", "X", "0.0005", "10", 1n)]);
+    expect(nothing.disposals.map((d) => [d.lotId, d.kind, d.quantity])).toEqual([[null, "unmatched_sell", f("0.0005")]]);
+    expect(codes(nothing)).toEqual(["oversell"]);
+  });
+});
+
 describe("TC5. reinvested dividend (re-derived: two rows, plan decision 6)", () => {
   // The design had one `reinvest` row carrying income with cash effect 0. Under the plan the
   // importer lands a `dividend` (+5100, income) and a `reinvest` (−5100, a purchase); the
@@ -878,9 +1002,8 @@ function genHistory(seed: number): History {
         txns.push(place(txn({ id: nextId(), type: "fee", date, sequence: seq, securityId: rng.next() < 0.5 ? sec : null, amountCents: -BigInt(rng.int(1, 5000)) })));
         break;
       case "split": {
-        let [num, den] = rng.pick(SPLITS);
-        // A reverse split of a lot below one share could round it to 0 shares and strand its basis; keep such lots whole.
-        if (num < den && state.lots.some((l) => l.securityId === sec && l.quantity > 0n && l.quantity < 100_000_000n)) [num, den] = [2, 1];
+        // Reverse splits of sub-share lots included: a lot never rounds to 0 shares (it keeps one unit and its basis).
+        const [num, den] = rng.pick(SPLITS);
         txns.push(place(txn({ id: nextId(), type: "split", date, sequence: seq, securityId: sec, splitNum: num, splitDen: den, amountCents: 0n })));
         break;
       }

@@ -51,11 +51,17 @@ import {
  * - **External flows** (§3.8, plan decision 11): the engine takes cash flows as the loader gives
  *   them (ledger transfers ∪ investment cash transfers, already deduplicated by ledger link or
  *   the 3-day rule), derives securities transfers at market (`securitiesFlows`) and the opening
- *   value of a non-full account entering after `from` (D18). Flows are timed start of day (D16):
- *   a flow dated d joins the closing value of d − 1 and lives through d's market move.
- * - **True TWR** for full accounts (GIPS 2020 §2.A.2–2.A.4: a boundary the day before every flow,
- *   sub-period returns chain-linked); **Modified Dietz** between the available valuations for
- *   `positions` and `balance_only` accounts (day-weighted flows); the method is named.
+ *   value of a non-full account entering after `from` (D18). Flow timing (D16 as settled by the
+ *   audit, plan decision 11): a contribution dated d arrives at the start of the day (it joins
+ *   the closing value of d − 1 and lives through d's market move); a withdrawal dated d leaves at
+ *   the end of the day (it is added back to the closing value of d), because the money or the
+ *   shares that leave were still in the account, or were raised by that day's sales, when the
+ *   day began. Timing a withdrawal at the start of the day measured it against the previous
+ *   close: emptying an account then left a sliver of capital that "lost" 100 %, or a negative one.
+ * - **True TWR** for full accounts (GIPS 2020 §2.A.2–2.A.4: a boundary the day before every
+ *   contribution and on the day of every withdrawal, sub-period returns chain-linked);
+ *   **Modified Dietz** between the available valuations for `positions` and `balance_only`
+ *   accounts (day-weighted flows under the same timing); the method is named.
  * - **XIRR** exactly as Microsoft defines it, solved by a fixed-grid bracket nearest the 10 %
  *   guess and bisection to 1e−10; typed failure reasons; annualized by definition, with the
  *   period figure `(1 + r)^(investedDays/365) − 1` for sub-year ranges.
@@ -420,12 +426,15 @@ export interface ReturnFigure {
 export interface SubPeriod {
   from: IsoDate;
   to: IsoDate;
-  /** V(from), before the flow. */
+  /** V(from), before the contributions. */
   beginValueCents: bigint;
-  /** Σ flows of the sub-period (dated from + 1 under true TWR; in (from, to] under Dietz). */
+  /** Σ flows of the sub-period (contributions dated from + 1 and withdrawals dated `to` under true TWR; in (from, to] under Dietz). */
   flowCents: bigint;
+  /** The withdrawals among `flowCents` (≤ 0), timed at the end of their day; `flowCents − outflowCents` is the contributions. */
+  outflowCents: bigint;
   /** Dietz only: Σ wⱼ · CFⱼ in dollars. */
   weightedFlowDollars: number | null;
+  /** V(to), after the withdrawals. */
   endValueCents: bigint;
   rate: number | null;
   skipped: boolean;
@@ -459,15 +468,23 @@ function finishChain(from: IsoDate, to: IsoDate, subPeriods: SubPeriod[], warnin
 }
 
 /**
- * §3.9, GIPS true time-weighted return: a boundary at `from`, `to` and the day before every
- * active flow in `(from, to]`; for consecutive boundaries `begin = V(b₀) + flows dated b₀ + 1`,
- * `end = V(b₁)`, `r = end / begin − 1`; `begin = end = 0` skips the sub-period, `begin = 0`
- * otherwise is `zero_denominator`, `begin < 0` is `negative_capital`; chain-linked.
+ * §3.9, GIPS true time-weighted return: a boundary at `from`, `to`, the day before every active
+ * contribution and the day of every active withdrawal in `(from, to]` (a flow of 0 counts as a
+ * contribution); for consecutive boundaries `begin = V(b₀) + contributions dated b₀ + 1`,
+ * `end = V(b₁) + |withdrawals dated b₁|`, `r = end / begin − 1`; `begin = end = 0` skips the
+ * sub-period, `begin = 0` otherwise is `zero_denominator`, `begin < 0` is `negative_capital`;
+ * chain-linked.
  */
 export function trueTwr(from: IsoDate, to: IsoDate, flows: readonly FlowLike[], valueAt: (date: IsoDate) => bigint): ChainResult {
   if (to <= from) throw new Error("to must be after from");
   const active = activeInWindow(flows, from, to);
-  const boundaries = uniqueSortedDates([from, to, ...active.map((f) => addDays(f.date, -1))]);
+  const inflows = new Map<IsoDate, bigint>();
+  const outflows = new Map<IsoDate, bigint>();
+  for (const f of active) {
+    const byDate = f.amountCents < 0n ? outflows : inflows;
+    byDate.set(f.date, (byDate.get(f.date) ?? 0n) + f.amountCents);
+  }
+  const boundaries = uniqueSortedDates([from, to, ...[...inflows.keys()].map((d) => addDays(d, -1)), ...outflows.keys()]);
   const values = new Map<IsoDate, bigint>();
   const value = (d: IsoDate) => {
     let v = values.get(d);
@@ -482,16 +499,17 @@ export function trueTwr(from: IsoDate, to: IsoDate, flows: readonly FlowLike[], 
   for (let i = 1; i < boundaries.length; i++) {
     const b0 = boundaries[i - 1]!;
     const b1 = boundaries[i]!;
-    const flowDate = addDays(b0, 1);
-    const flowCents = active.filter((f) => f.date === flowDate).reduce((acc, f) => acc + f.amountCents, 0n);
+    const inflowCents = inflows.get(addDays(b0, 1)) ?? 0n;
+    const outflowCents = outflows.get(b1) ?? 0n;
     const beginValueCents = value(b0);
     const endValueCents = value(b1);
-    const begin = beginValueCents + flowCents;
-    const sp: SubPeriod = { from: b0, to: b1, beginValueCents, flowCents, weightedFlowDollars: null, endValueCents, rate: null, skipped: false, beginCarried: false, endCarried: false };
-    if (begin === 0n && endValueCents === 0n) sp.skipped = true;
+    const begin = beginValueCents + inflowCents;
+    const end = endValueCents - outflowCents;
+    const sp: SubPeriod = { from: b0, to: b1, beginValueCents, flowCents: inflowCents + outflowCents, outflowCents, weightedFlowDollars: null, endValueCents, rate: null, skipped: false, beginCarried: false, endCarried: false };
+    if (begin === 0n && end === 0n) sp.skipped = true;
     else if (begin === 0n) failure ??= { reason: "zero_denominator", date: b0 };
     else if (begin < 0n) failure ??= { reason: "negative_capital", date: b0 };
-    else sp.rate = Number(endValueCents) / Number(begin) - 1;
+    else sp.rate = Number(end) / Number(begin) - 1;
     subPeriods.push(sp);
   }
   return finishChain(from, to, subPeriods, [], failure);
@@ -499,9 +517,11 @@ export function trueTwr(from: IsoDate, to: IsoDate, flows: readonly FlowLike[], 
 
 /**
  * §3.10, Modified Dietz over given boundaries: for `(b₀, b₁)` with `D = dayDiff(b₀, b₁)`, flows
- * in `(b₀, b₁]` weighted `(dayDiff(date, b₁) + 1) / D` (start of day), `r = (V₁ − V₀ − ΣCF) /
- * (V₀ + Σ w·CF)` in dollars; `V₀ = V₁ = 0, ΣCF = 0` skips; denominator 0 is `zero_denominator`,
- * negative is `negative_capital`; chain-linked. Carried boundary values are flagged and warned.
+ * in `(b₀, b₁]` weighted by the part of the sub-period they are invested for, a contribution
+ * `(dayDiff(date, b₁) + 1) / D` (start of day) and a withdrawal `dayDiff(date, b₁) / D` (end of
+ * day), `r = (V₁ − V₀ − ΣCF) / (V₀ + Σ w·CF)` in dollars; `V₀ = V₁ = 0, ΣCF = 0` skips;
+ * denominator 0 is `zero_denominator`, negative is `negative_capital`; chain-linked. Carried
+ * boundary values are flagged and warned.
  */
 export function modifiedDietzOver(from: IsoDate, to: IsoDate, flows: readonly FlowLike[], boundaries: Iterable<IsoDate>, valueAt: (date: IsoDate) => ValuationAt): ChainResult {
   if (to <= from) throw new Error("to must be after from");
@@ -535,17 +555,21 @@ export function modifiedDietzOver(from: IsoDate, to: IsoDate, flows: readonly Fl
     noteCarried(b0, v0);
     noteCarried(b1, v1);
     let flowCents = 0n;
+    let outflowCents = 0n;
     let weighted = 0;
     for (const f of active) {
       if (f.date <= b0 || f.date > b1) continue;
       flowCents += f.amountCents;
-      weighted += (Number(f.amountCents) / 100) * ((dayDiff(f.date, b1) + 1) / days);
+      const withdrawal = f.amountCents < 0n;
+      if (withdrawal) outflowCents += f.amountCents;
+      weighted += (Number(f.amountCents) / 100) * ((dayDiff(f.date, b1) + (withdrawal ? 0 : 1)) / days);
     }
     const sp: SubPeriod = {
       from: b0,
       to: b1,
       beginValueCents: v0.valueCents,
       flowCents,
+      outflowCents,
       weightedFlowDollars: weighted,
       endValueCents: v1.valueCents,
       rate: null,

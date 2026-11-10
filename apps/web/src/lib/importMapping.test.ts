@@ -182,6 +182,7 @@ describe("actions and rows", () => {
     expect(previewWarningText("direction_from_sign")).toBe("the text names both directions (in and out); the amount's sign decided");
     expect(previewWarningText("amount_mismatch")).toBe("the amount differs from quantity × price (± fee) by more than 5 cents");
     expect(previewWarningText("dollar_only")).toBe("value only: the row reports no share count");
+    expect(previewWarningText("value_mismatch")).toBe("the value differs from quantity × price by more than 0.5 %: the value was kept and the unit price derived from it");
     // An unlabelled code still reads as words, never as a slug.
     expect(previewWarningText("some_new_code")).toBe("some new code");
   });

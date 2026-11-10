@@ -1512,7 +1512,10 @@ export const SubPeriodView = z.object({
   from: IsoDateString,
   to: IsoDateString,
   beginValueCents: CentsString,
+  /** Every flow of the sub-period, contributions and withdrawals together. */
   flowCents: CentsString,
+  /** The withdrawals among `flowCents` (≤ 0): they leave at the end of their day and are added back to the end value. */
+  outflowCents: CentsString,
   weightedFlowDollars: z.number().nullable(),
   endValueCents: CentsString,
   rate: RateNumber.nullable(),

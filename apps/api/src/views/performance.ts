@@ -196,6 +196,7 @@ function toSubPeriodView(s: SubPeriod): SubPeriodView {
     to: s.to,
     beginValueCents: cents(s.beginValueCents),
     flowCents: cents(s.flowCents),
+    outflowCents: cents(s.outflowCents),
     weightedFlowDollars: s.weightedFlowDollars,
     endValueCents: cents(s.endValueCents),
     rate: s.rate,

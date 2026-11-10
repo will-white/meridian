@@ -258,4 +258,49 @@ describe.skipIf(!TEST_DATABASE_URL)("lots service (TC26)", () => {
       ["transfer_out", f8("2"), 0n, 20000n, 0n, "none"],
     ]);
   });
+
+  it("a 1:3 reverse split's rounding neither oversells nor strands a dust lot when the whole position is sold or moved", async () => {
+    const [d, e, r] = await t.db
+      .insert(account)
+      .values([
+        { name: "Split Down", type: "brokerage", taxTreatment: "taxable", onBudget: false },
+        { name: "Split Up", type: "brokerage", taxTreatment: "taxable", onBudget: false },
+        { name: "Split Receiver", type: "brokerage", taxTreatment: "taxable", onBudget: false },
+      ])
+      .returning({ id: account.id });
+    const D = d!.id;
+    const E = e!.id;
+    const R = r!.id;
+    const VXUS = S.securities.vxus;
+    // D: three 1-share lots at 5.00, 1:3 → 0.33333333 each (Σ 0.99999999); the statement's 1 share is sold for 20.00.
+    for (const date of ["2025-03-03", "2025-03-04", "2025-03-05"] as const) await insertTxn({ accountId: D, securityId: VXUS, date, type: "buy", quantity: "1", price: "5", amountCents: -500n });
+    await insertTxn({ accountId: D, securityId: VXUS, date: "2025-09-01", type: "split", splitNum: 1, splitDen: 3, amountCents: 0n });
+    await insertTxn({ accountId: D, securityId: VXUS, date: "2025-09-02", type: "sell", quantity: "1", price: "20", amountCents: 2000n });
+    expect(await t.db.transaction((tx) => rebuildLots(tx, D))).toMatchObject({ lots: 3, disposals: 3, warnings: [] });
+    expect((await disposalsOf(D)).map((x) => [x.kind, x.quantity, x.proceedsCents, x.basisCents, x.gainCents, x.term, x.basisKnown])).toEqual([
+      ["sell", f8("0.33333333"), 667n, 500n, 167n, "short", true],
+      ["sell", f8("0.33333333"), 667n, 500n, 167n, "short", true],
+      ["sell", f8("0.33333333"), 666n, 500n, 166n, "short", true],
+    ]);
+    expect((await lotsOf(D)).every((l) => l.quantity === 0n && l.costBasisCents === 0n && l.closedDate === "2025-09-02")).toBe(true);
+    const realized = await listRealized(t.db, { from: "2025-01-01", to: "2025-12-31", accountId: D });
+    expect(realized.summary.shortTerm).toEqual({ proceedsCents: 2000n, basisCents: 1500n, gainCents: 500n, count: 3 });
+    expect(realized.summary.unknownBasis).toEqual({ proceedsCents: 0n, quantity: 0n, count: 0 });
+
+    // E: three 2-share lots, 1:3 → 0.66666667 each (Σ 2.00000001); the statement's 2 shares move to R in kind.
+    for (const date of ["2025-03-03", "2025-03-04", "2025-03-05"] as const) await insertTxn({ accountId: E, securityId: VXUS, date, type: "buy", quantity: "2", price: "5", amountCents: -1000n });
+    await insertTxn({ accountId: E, securityId: VXUS, date: "2025-09-01", type: "split", splitNum: 1, splitDen: 3, amountCents: 0n });
+    const group = randomUUID();
+    await insertTxn({ accountId: E, securityId: VXUS, date: "2025-09-02", type: "transfer", transferDirection: "out", quantity: "2", amountCents: 0n, transferGroupId: group, counterpartyAccountId: R });
+    await insertTxn({ accountId: R, securityId: VXUS, date: "2025-09-02", type: "transfer", transferDirection: "in", quantity: "2", amountCents: 0n, transferGroupId: group, counterpartyAccountId: E });
+    expect(await t.db.transaction((tx) => rebuildLots(tx, E))).toMatchObject({ lots: 3, disposals: 3, warnings: [] });
+    expect((await lotsOf(E)).every((l) => l.quantity === 0n && l.closedDate === "2025-09-02")).toBe(true);
+    // The receiving account gets the three lots with their dates and basis: no unknown-basis remainder, no fallback to the row.
+    expect(await t.db.transaction((tx) => rebuildLots(tx, R))).toMatchObject({ lots: 3, disposals: 0, warnings: [] });
+    expect((await lotsOf(R)).map((l) => [l.acquiredDate, l.quantity, l.costBasisCents, l.basisKnown, l.openedBy])).toEqual([
+      ["2025-03-03", f8("0.66666667"), 1000n, true, "transfer_in"],
+      ["2025-03-04", f8("0.66666667"), 1000n, true, "transfer_in"],
+      ["2025-03-05", f8("0.66666667"), 1000n, true, "transfer_in"],
+    ]);
+  });
 });

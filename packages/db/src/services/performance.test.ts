@@ -6,7 +6,9 @@ import { parseFixed8 } from "@meridian/shared";
 import { account, auditLog, balanceSnapshot, investmentTxn, job, lot, lotDisposal, price, transaction } from "../schema/index.js";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "../test/db.js";
 import { INV_SEED_NOW, INV_SEED_TODAY, seedInvestmentFixture, seedInvestmentLots, type InvestmentSeed } from "../test/investmentSeed.js";
+import { createInvestmentTxn } from "./investmentTxns.js";
 import { getPerformance, loadExternalFlows, loadPerformanceInput } from "./performance.js";
+import { createSecurity, setManualPrice } from "./securities.js";
 
 const f8 = parseFixed8;
 
@@ -270,5 +272,55 @@ describe.skipIf(!TEST_DATABASE_URL)("performance services (INV seed)", () => {
     await expect(getPerformance(t.db, { from: "2026-10-01", to: "2026-10-13", asOf: "2026-10-15", today: INV_SEED_TODAY })).rejects.toMatchObject({ status: 400, code: "validation" });
     await expect(getPerformance(t.db, { from: "2026-10-01", to: "2026-10-13", today: INV_SEED_TODAY, accountIds: [C] })).rejects.toMatchObject({ status: 400, code: "bad_request" });
     await expect(getPerformance(t.db, { from: "2026-10-01", to: "2026-10-13", today: INV_SEED_TODAY, benchmarkSecurityId: S.securities.cash })).rejects.toMatchObject({ status: 400, code: "validation" });
+  });
+
+  /**
+   * Moving shares between two own accounts (changing brokers). A: +1,600.00 on 2025-01-31, buys
+   * 100 ACME @ 10 and 50 @ 12 (cash 0); closes 14.00 on 2026-01-09, 15.00 on 03-02, 16.00 on
+   * 10-13; 120 shares move A → B on 2026-01-09 (120 × 14 = 1,680.00 at that day's close); B sells
+   * 110 @ 15 on 03-02. By hand to 10-13: A's 1,600.00 follows the shares to 14.00 (2,100.00,
+   * +31.25 %) and its 30 left to 16.00 (+14.2857 %): +50 %; B: (10 × 16 + 1,650.00) ÷ 1,680.00;
+   * the household: (480.00 + 1,810.00) ÷ 1,600.00.
+   */
+  it("an in-kind transfer between two own accounts leaves each account a sane return and the household's unchanged", async () => {
+    const ctx = () => ({ userId: null, batchId: randomUUID(), today: INV_SEED_TODAY });
+    const [a, b] = await t.db
+      .insert(account)
+      .values([
+        { name: "A Source", type: "brokerage", taxTreatment: "taxable", onBudget: false },
+        { name: "B Receiver", type: "brokerage", taxTreatment: "taxable", onBudget: false },
+      ])
+      .returning({ id: account.id });
+    const A = a!.id;
+    const Bx = b!.id;
+    const acme = (await createSecurity(t.db, { ticker: "ACME", name: "Acme Corp", type: "stock", assetClass: "us_stock" }, ctx())).id;
+    await createInvestmentTxn(t.db, { accountId: A, date: "2025-01-31", type: "transfer", direction: "in", amountCents: 160000n }, ctx());
+    await createInvestmentTxn(t.db, { accountId: A, date: "2025-02-03", type: "buy", securityId: acme, quantity: f8("100"), price: f8("10") }, ctx());
+    await createInvestmentTxn(t.db, { accountId: A, date: "2025-08-01", type: "buy", securityId: acme, quantity: f8("50"), price: f8("12") }, ctx());
+    for (const [date, close] of [["2026-01-09", "14"], ["2026-03-02", "15"], ["2026-10-13", "16"]] as const) await setManualPrice(t.db, acme, { date, close: f8(close) }, ctx());
+    const moved = await createInvestmentTxn(t.db, { accountId: A, date: "2026-01-09", type: "transfer", direction: "out", securityId: acme, quantity: f8("120"), counterpartyAccountId: Bx }, ctx());
+    expect(moved.items.map((i) => [i.accountId, i.transferDirection])).toEqual([
+      [A, "out"],
+      [Bx, "in"],
+    ]);
+    await createInvestmentTxn(t.db, { accountId: Bx, date: "2026-03-02", type: "sell", securityId: acme, quantity: f8("110"), price: f8("15") }, ctx());
+
+    const r = await getPerformance(t.db, { from: "2025-01-30", to: "2026-10-13", today: INV_SEED_TODAY, accountIds: [A, Bx], benchmarkSecurityId: null, detail: "full", now: INV_SEED_NOW });
+    const source = r.accounts.find((x) => x.accountId === A)!;
+    const receiver = r.accounts.find((x) => x.accountId === Bx)!;
+    // A: (30 × 14 + 1,680.00) ÷ 1,600.00 − 1 = 31.25 %, then 30 × 16 ÷ (30 × 14) − 1; chained 2,400 ÷ 1,600 − 1.
+    expect(source.subPeriods.map((sp) => [sp.from, sp.to, sp.beginValueCents, sp.flowCents, sp.outflowCents, sp.endValueCents])).toEqual([
+      ["2025-01-30", "2026-01-09", 0n, -8000n, -168000n, 42000n],
+      ["2026-01-09", "2026-10-13", 42000n, 0n, 0n, 48000n],
+    ]);
+    expect(source.twr).toMatchObject({ reason: null });
+    expect(source.twr.rate).toBeCloseTo(0.5, 12);
+    expect(source).toMatchObject({ method: "true_twr", endValueCents: 48000n, contributionsCents: 160000n, withdrawalsCents: 168000n, growthCents: 56000n });
+    // B: 1,680.00 received at the 01-09 close → 10 × 16 + 110 × 15 = 1,810.00.
+    expect(receiver.twr.rate).toBeCloseTo(181000 / 168000 - 1, 12);
+    expect(receiver).toMatchObject({ endValueCents: 181000n, contributionsCents: 168000n, withdrawalsCents: 0n, growthCents: 13000n });
+    // The two legs are internal to the household: 2,290.00 on 1,600.00.
+    expect(r.total).toMatchObject({ method: "true_twr", excludedInternalFlows: 2, endValueCents: 229000n, contributionsCents: 160000n, withdrawalsCents: 0n, growthCents: 69000n });
+    expect(r.total.twr.rate).toBeCloseTo(229000 / 160000 - 1, 12);
   });
 });
