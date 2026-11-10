@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GoalView } from "@meridian/shared";
-import { NEW_CATEGORY, buildGoalBody, goalProjectionText, initialGoalForm, percentFromBp, type GoalFormState } from "./planGoalForm.js";
+import { NEW_CATEGORY, buildGoalBody, goalProjectionText, initialGoalForm, linkedAccountOptions, percentFromBp, type GoalFormState } from "./planGoalForm.js";
 
 const CATEGORY = "22222222-2222-4222-8222-222222222222";
 const ACCOUNT = "44444444-4444-4444-8444-444444444444";
@@ -117,6 +117,28 @@ describe("percentFromBp", () => {
     expect(percentFromBp(10000)).toBe("100.0%");
     expect(percentFromBp(0)).toBe("0.0%");
     expect(percentFromBp(9)).toBe("0.0%");
+  });
+});
+
+describe("linkedAccountOptions", () => {
+  const accounts = [
+    { id: "sav", name: "Savings" },
+    { id: "brk", name: "Brokerage" },
+  ];
+  const goal = (id: string, name: string, linkedAccountId: string | null, status: GoalView["status"] = "active") => ({ id, name, linkedAccountId, status });
+
+  it("marks an account that already feeds another active goal", () => {
+    const goals = [goal("ef", "Emergency Fund", "sav"), goal("old", "Old Car", "brk", "archived")];
+    expect(linkedAccountOptions(accounts, goals, null)).toEqual([
+      { id: "sav", name: "Savings", takenBy: "Emergency Fund" },
+      { id: "brk", name: "Brokerage", takenBy: null }, // an archived goal does not hold its account
+    ]);
+  });
+
+  it("leaves the edited goal's own account selectable", () => {
+    const goals = [goal("ef", "Emergency Fund", "sav"), goal("vac", "Vacation", null)];
+    expect(linkedAccountOptions(accounts, goals, "ef").map((a) => a.takenBy)).toEqual([null, null]);
+    expect(linkedAccountOptions(accounts, goals, "vac").map((a) => a.takenBy)).toEqual(["Emergency Fund", null]);
   });
 });
 

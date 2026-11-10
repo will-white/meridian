@@ -5,6 +5,7 @@ import { account, transaction } from "../schema/index.js";
 import { PayeeCache } from "./payees.js";
 import { addTransactionTags } from "./tags.js";
 import { applyRulesToRow } from "./rules.js";
+import { dropSplitsAfterAmountChange } from "./transactions.js";
 
 export interface IncomingTransaction {
   externalId: string;
@@ -115,6 +116,8 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
       if (Object.keys(patch).length > 0) {
         patch.updatedAt = new Date();
         await tx.update(transaction).set(patch).where(eq(transaction.id, row.id));
+        // Split lines must add up to the row: a changed amount sends a split row back to review.
+        if (patch.amountCents !== undefined) await dropSplitsAfterAmountChange(tx, row.id);
         stats.updated++;
       }
     }

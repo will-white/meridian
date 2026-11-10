@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Cadence, type AccountView, type Bucket, type CategoryView, type PayeeView, type RecurringView } from "@meridian/shared";
 import { ErrorText } from "../ui.js";
-import { CADENCE_LABELS, MONTH_NAMES, expectedLabel, scheduleSummary } from "./recurringFormat.js";
+import { CADENCE_LABELS, MONTH_NAMES, categoryPlanHint, expectedLabel, scheduleSummary } from "./recurringFormat.js";
 import { createBodyFromForm, emptyForm, formFromItem, type CreateBody, type RecurringFormState, type UpdateBody, updateBodyFromForm } from "./recurringForm.js";
 
 const BUCKETS: Array<[Bucket, string]> = [
@@ -57,6 +57,7 @@ export function RecurringForm(props: Props) {
   const item = props.mode === "create" ? null : props.item;
   const submitLabel = props.mode === "create" ? "Add recurring" : props.mode === "confirm" ? (item?.status === "suggested" ? "Confirm" : "Reactivate") : "Save changes";
   const visibleCategories = categories.filter((c) => !c.hidden || c.id === form.categoryId);
+  const chosenCategory = categories.find((c) => c.id === form.categoryId);
   const visibleAccounts = accounts.filter((a) => !a.closed || a.id === form.accountId || a.id === form.transferAccountId);
 
   return (
@@ -102,6 +103,7 @@ export function RecurringForm(props: Props) {
               );
             })}
           </select>
+          {chosenCategory && <span className="muted small">{categoryPlanHint(chosenCategory.bucket)}</span>}
         </label>
         <label>
           Account

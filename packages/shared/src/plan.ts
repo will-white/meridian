@@ -57,7 +57,7 @@ export interface MonthPlanRowInput {
   /** Explicit planned magnitude; null = the auto value applies. */
   plannedCents: bigint | null;
   plannedSource: "manual" | "average" | "recurring" | "goal" | null;
-  /** Per-month override of the carry OUT of this month; null = the category's mode. */
+  /** Per-month override of the carry OUT of this month; null = the category's mode ('none' before its chain start). */
   rolloverMode: RolloverMode | null;
   /** Pins this month's carried-in and feeds the chain forward; null = computed. */
   carriedInOverrideCents: bigint | null;
@@ -74,7 +74,7 @@ export interface ActualInput {
   count: number;
 }
 
-/** Transfer legs in a goal's linked account, net per month (+ in, − out). */
+/** Transfer legs in a goal's linked account, net per month (+ in, − out). An account's legs go to one goal only (`assignGoalNets`). */
 export interface GoalNetInput {
   goalId: string;
   month: MonthKey;
@@ -82,7 +82,11 @@ export interface GoalNetInput {
   count: number;
 }
 
-/** Pre-aggregated auto-planned values: recurring occurrences (bills/income) or goal contributions (savings). */
+/**
+ * Pre-aggregated auto-planned values: the occurrences of confirmed recurring items in the
+ * category (any bucket; see `recurringPlanCounts`) or a goal's monthly contribution. One
+ * value per (category, month); a goal's contribution takes the place of recurring items.
+ */
 export interface AutoPlanInput {
   categoryId: string;
   month: MonthKey;
@@ -298,21 +302,112 @@ export function averageWindow(asOf: MonthKey, months: 3 | 6 | 12): { from: Month
 }
 
 /**
- * Plan from average: Σ actual over the window months on/after the ledger's first
- * transaction month, divided by that count (truncating), clamped at 0 because
- * planned is a magnitude. No counted months → { 0, 0 }.
+ * The first month the ledger covers from its first day: the month of the earliest
+ * transaction when that is dated the 1st, otherwise the month after it. A first sync
+ * reaches back a fixed number of days, so its earliest month is almost always partial (rent
+ * on the 1st is missing from a window that opens on the 9th) and must not count as a month
+ * of history.
+ */
+export function firstFullLedgerMonth(earliestTransactionDate: IsoDate | null): MonthKey | null {
+  if (earliestTransactionDate === null) return null;
+  const month = monthKey(earliestTransactionDate);
+  return earliestTransactionDate.slice(8, 10) === "01" ? month : addMonths(month, 1);
+}
+
+/**
+ * Plan from average: Σ actual over the window months the ledger covers in full (on/after
+ * `firstFullMonth`, see `firstFullLedgerMonth`), divided by that count (truncating), clamped
+ * at 0 because planned is a magnitude. No counted months → { 0, 0 }.
  */
 export function planAverage(
   actualByMonth: ReadonlyMap<MonthKey, bigint>,
   window: { from: MonthKey; to: MonthKey },
-  firstLedgerMonth: MonthKey | null,
+  firstFullMonth: MonthKey | null,
 ): { cents: bigint; monthsWithData: number } {
-  if (firstLedgerMonth === null) return { cents: 0n, monthsWithData: 0 };
-  const counted = monthRange(window.from, window.to).filter((m) => m >= firstLedgerMonth);
+  if (firstFullMonth === null) return { cents: 0n, monthsWithData: 0 };
+  const counted = monthRange(window.from, window.to).filter((m) => m >= firstFullMonth);
   if (counted.length === 0) return { cents: 0n, monthsWithData: 0 };
   let sum = 0n;
   for (const m of counted) sum += actualByMonth.get(m) ?? 0n;
   return { cents: maxBig(0n, truncDiv(sum, BigInt(counted.length))), monthsWithData: counted.length };
+}
+
+/** Net transfer legs in one account for a month (+ in, − out). */
+export interface AccountTransferNetInput {
+  accountId: string;
+  month: MonthKey;
+  signedCents: bigint;
+  count: number;
+}
+
+export type GoalAccountLink = Pick<GoalInput, "id" | "linkedAccountId" | "startMonth" | "status">;
+
+/**
+ * The goal an account's transfer legs count toward in a month, or null when no goal links the
+ * account. An account's transfers count toward exactly one goal, so the savings bucket always
+ * equals the money moved. A single linked goal owns every month. The services refuse a second
+ * active goal on one account; this rule decides for what is left (a completed or archived
+ * goal that kept its link, or data from before the rule): among the linked goals that have
+ * started by `month` (all of them when none has), an active goal beats a completed or
+ * archived one, then the latest start month wins among started goals (a newer goal takes over
+ * from its start month; before any has started, the earliest start wins), then the order
+ * given (callers pass goals oldest first).
+ */
+export function goalForAccountMonth(goals: readonly GoalAccountLink[], accountId: string, month: MonthKey): string | null {
+  const linked = goals.filter((g) => g.linkedAccountId === accountId);
+  const started = linked.filter((g) => g.startMonth <= month);
+  const pool = started.length > 0 ? started : linked;
+  const laterWins = started.length > 0;
+  let best: GoalAccountLink | null = null;
+  for (const g of pool) {
+    if (best === null) {
+      best = g;
+      continue;
+    }
+    const activeG = g.status === "active";
+    const activeBest = best.status === "active";
+    if (activeG !== activeBest) {
+      if (activeG) best = g;
+      continue;
+    }
+    if (laterWins ? g.startMonth > best.startMonth : g.startMonth < best.startMonth) best = g;
+  }
+  return best?.id ?? null;
+}
+
+/**
+ * The months a goal owns its linked account's transfers, as half-open month ranges
+ * [from, to) with null for an open end; empty when the goal has no linked account or never
+ * owns it. Ownership can only change at a linked goal's start month, so one probe per
+ * stretch between start months is exact.
+ */
+export function goalOwnedMonthRanges(goals: readonly GoalAccountLink[], goalId: string): Array<{ from: MonthKey | null; to: MonthKey | null }> {
+  const goal = goals.find((g) => g.id === goalId);
+  if (!goal || goal.linkedAccountId === null) return [];
+  const accountId = goal.linkedAccountId;
+  const starts = [...new Set(goals.filter((g) => g.linkedAccountId === accountId).map((g) => g.startMonth))].sort();
+  const first = starts[0];
+  if (first === undefined) return [];
+  const stretches: Array<{ from: MonthKey | null; to: MonthKey | null; probe: MonthKey }> = [{ from: null, to: first, probe: addMonths(first, -1) }];
+  starts.forEach((start, i) => stretches.push({ from: start, to: starts[i + 1] ?? null, probe: start }));
+  const out: Array<{ from: MonthKey | null; to: MonthKey | null }> = [];
+  for (const s of stretches) {
+    if (goalForAccountMonth(goals, accountId, s.probe) !== goalId) continue;
+    const last = out[out.length - 1];
+    if (last && last.to === s.from) last.to = s.to;
+    else out.push({ from: s.from, to: s.to });
+  }
+  return out;
+}
+
+/** Hand each account's monthly transfer net to the one goal that owns it (see `goalForAccountMonth`). */
+export function assignGoalNets(accountNets: readonly AccountTransferNetInput[], goals: readonly GoalAccountLink[]): GoalNetInput[] {
+  const out: GoalNetInput[] = [];
+  for (const n of accountNets) {
+    const goalId = goalForAccountMonth(goals, n.accountId, n.month);
+    if (goalId !== null) out.push({ goalId, month: n.month, signedCents: n.signedCents, count: n.count });
+  }
+  return out;
 }
 
 /** The last month a projection may name: December of the last year a caller may send (2199-12). */
@@ -470,14 +565,23 @@ function actualOf(
   };
 }
 
-/** Fold one category's chain and return its visible cells, aligned with `months`. */
+/**
+ * Fold one category's chain and return its visible cells, aligned with `months`.
+ *
+ * A month's stored overrides always apply (income excepted): `rollover_mode` decides the carry
+ * out of that month and `carried_in_override_cents` pins its carried-in, also for months
+ * before the category's chain start. That is what keeps closed months as they were when the
+ * category's rollover setting changes later: the service pins the months that already
+ * happened to the mode they had (see `updateCategory`). Without a stored mode, months before
+ * the chain start behave as 'none', and the chain start itself always begins at 0.
+ */
 function categoryCells(input: ComputePlanInput, idx: Indexes, c: PlanCategoryInput, goal: GoalInput | null): PlanCell[] {
   const isIncome = c.bucket === "income";
   const chainStart = maxMonth(input.startMonth, c.rolloverFromMonth ?? input.startMonth);
   const cells: PlanCell[] = [];
   let carry = 0n;
 
-  for (const m of monthRange(minMonth(input.from, chainStart), input.to)) {
+  for (const m of monthRange(minMonth(input.from, input.startMonth), input.to)) {
     const row = idx.rowBy.get(key(c.id, m));
     const auto = idx.autoBy.get(key(c.id, m));
 
@@ -494,18 +598,18 @@ function categoryCells(input: ComputePlanInput, idx: Indexes, c: PlanCategoryInp
     }
 
     const beforeChain = m < chainStart;
-    const mode: RolloverMode = isIncome || beforeChain ? "none" : (row?.rolloverMode ?? c.rolloverMode);
+    const mode: RolloverMode = isIncome ? "none" : (row?.rolloverMode ?? (beforeChain ? "none" : c.rolloverMode));
 
     let carriedInCents = 0n;
     let carriedInSource: CarriedInSource = "none";
-    if (isIncome || beforeChain) {
-      // income never carries; months before the chain start behave as 'none'
+    if (isIncome) {
+      // income never carries
     } else if (row && row.carriedInOverrideCents !== null) {
       carriedInCents = row.carriedInOverrideCents;
       carriedInSource = "override";
     } else if (m === chainStart) {
       carriedInSource = "start";
-    } else {
+    } else if (!beforeChain || carry !== 0n) {
       carriedInCents = carry;
       carriedInSource = "chain";
     }

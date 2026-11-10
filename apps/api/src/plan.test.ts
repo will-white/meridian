@@ -189,20 +189,21 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /api/plan on the fresh seed", () => {
     expect(summaryOf(plan, "2026-09").uncategorized).toEqual({ count: 0, cents: "0" });
   });
 
-  it("GET /api/plan/averages divides by months with data and truncates", async () => {
+  it("GET /api/plan/averages divides by the complete months of history and truncates", async () => {
     const three = await t.call({ method: "GET", url: "/api/plan/averages?months=3" });
     expect(three.statusCode).toBe(200);
-    expect(three.json().window).toEqual({ from: "2026-07", to: "2026-09", monthsWithData: 2 });
+    // The seed's ledger opens on 2026-08-20: August is a partial month, September the only complete one.
+    expect(three.json().window).toEqual({ from: "2026-07", to: "2026-09", monthsWithData: 1 });
     const expected: Record<string, string> = {
-      [C.groceries]: "23500",
-      [C.dining]: "13000",
-      [C.fuel]: "3000",
-      [C.oldHobby]: "1000",
-      [C.rent]: "90000",
-      [C.netflix]: "774",
-      [C.internet]: "3999",
-      [C.paycheck]: "250000",
-      [C.emergencyFund]: "25000",
+      [C.groceries]: "40000",
+      [C.dining]: "26000",
+      [C.fuel]: "6000",
+      [C.oldHobby]: "2000",
+      [C.rent]: "180000",
+      [C.netflix]: "1549",
+      [C.internet]: "7999",
+      [C.paycheck]: "500000",
+      [C.emergencyFund]: "50000",
       [C.carInsurance]: "0",
       [C.music]: "0",
       [C.shopping]: "0",
@@ -211,12 +212,12 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /api/plan on the fresh seed", () => {
     expect(byId(three.json().averages)).toEqual(expected);
 
     const twelve = await t.call({ method: "GET", url: `/api/plan/averages?months=12&today=${TODAY}` });
-    expect(twelve.json().window).toEqual({ from: "2025-10", to: "2026-09", monthsWithData: 2 });
+    expect(twelve.json().window).toEqual({ from: "2025-10", to: "2026-09", monthsWithData: 1 });
     expect(byId(twelve.json().averages)).toEqual(expected);
 
     const asOf = await t.call({ method: "GET", url: "/api/plan/averages?months=3&asOf=2026-11" });
-    expect(asOf.json().window).toEqual({ from: "2026-08", to: "2026-10", monthsWithData: 3 });
-    expect(byId(asOf.json().averages)[C.groceries]).toBe("33833"); // (7000 + 40000 + 54500) / 3 = 33833 rem 1
+    expect(asOf.json().window).toEqual({ from: "2026-08", to: "2026-10", monthsWithData: 2 });
+    expect(byId(asOf.json().averages)[C.groceries]).toBe("47250"); // (40000 + 54500) / 2; the partial August (7000) is not a month of history
     expect((await t.call({ method: "GET", url: "/api/plan/averages?months=5" })).statusCode).toBe(400);
   });
 

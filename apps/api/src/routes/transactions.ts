@@ -1,13 +1,14 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
-import { createManualTransaction, enqueueJob, getTransaction, listTransactions, unlinkTransactionFromRecurring, updateTransaction } from "@meridian/db";
-import { CreateManualTransactionBody, TransactionList, TransactionQuery, TransactionView, UpdateTransactionBody, UuidParams } from "@meridian/shared";
+import { createManualTransaction, enqueueJob, getTransaction, listTransactions, setTransactionSplits, unlinkTransactionFromRecurring, updateTransaction } from "@meridian/db";
+import { CreateManualTransactionBody, SetTransactionSplitsBody, TransactionList, TransactionQuery, TransactionView, UpdateTransactionBody, UuidParams } from "@meridian/shared";
 import { notFound } from "../lib/errors.js";
 import { toTransactionView } from "../views.js";
-import { serverToday } from "./plan.js";
+import { serverToday, usePlanErrors } from "./plan.js";
 
 export async function transactionRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
+  usePlanErrors(app);
 
   r.get("/transactions", { schema: { querystring: TransactionQuery, response: { 200: TransactionList } } }, async (request) => {
     const q = request.query;
@@ -23,6 +24,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       ...(q.cursor !== undefined ? { cursor: q.cursor } : {}),
       ...(q.goalId !== undefined ? { goalId: q.goalId } : {}),
       ...(q.recurringId !== undefined ? { recurringId: q.recurringId } : {}),
+      ...(q.planScope !== undefined ? { planScope: q.planScope } : {}),
     });
     return { items: result.items.map(toTransactionView), nextCursor: result.nextCursor };
   });
@@ -51,6 +53,22 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       row = await getTransaction(app.db, existing.id);
     }
     return toTransactionView(row!);
+  });
+
+  /**
+   * Split a transaction across categories (two or more lines that add up to its amount), or
+   * remove the split with an empty list. The lines replace the row in the plan. 400
+   * `validation` when the lines do not add up, a line is zero, a category is unknown or the
+   * row is a transfer.
+   */
+  r.put("/transactions/:id/splits", { schema: { params: UuidParams, body: SetTransactionSplitsBody, response: { 200: TransactionView } } }, async (request) => {
+    const row = await setTransactionSplits(
+      app.db,
+      request.params.id,
+      request.body.splits.map((s) => ({ categoryId: s.categoryId, amountCents: BigInt(s.amountCents), ...(s.memo !== undefined ? { memo: s.memo } : {}) })),
+    );
+    if (!row) throw notFound("Transaction not found");
+    return toTransactionView(row);
   });
 
   r.post("/transactions", { schema: { body: CreateManualTransactionBody, response: { 200: TransactionView } } }, async (request) => {

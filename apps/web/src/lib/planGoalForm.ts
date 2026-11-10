@@ -87,6 +87,33 @@ export function percentFromBp(bp: number): string {
   return `${whole}.${tenth}%`;
 }
 
+/** One entry of the goal form's "Linked account" select. */
+export interface LinkedAccountOption {
+  id: string;
+  name: string;
+  /** The other active goal this account already feeds; such an account cannot be picked. */
+  takenBy: string | null;
+}
+
+/**
+ * Accounts a goal can link. An account's transfers count toward one active goal, so an
+ * account that already feeds another active goal is listed but not selectable (the server
+ * answers 409 `account_linked`). `editingGoalId` is the goal in the form, whose own link
+ * stays selectable.
+ */
+export function linkedAccountOptions(
+  accounts: ReadonlyArray<{ id: string; name: string }>,
+  goals: ReadonlyArray<Pick<GoalView, "id" | "name" | "linkedAccountId" | "status">>,
+  editingGoalId: string | null,
+): LinkedAccountOption[] {
+  const holder = new Map<string, string>();
+  for (const g of goals) {
+    if (g.id === editingGoalId || g.status !== "active" || g.linkedAccountId === null) continue;
+    if (!holder.has(g.linkedAccountId)) holder.set(g.linkedAccountId, g.name);
+  }
+  return accounts.map((a) => ({ id: a.id, name: a.name, takenBy: holder.get(a.id) ?? null }));
+}
+
 /**
  * The projection part of a goal's "contributing $X/mo" line: the projected month, or why
  * there is none (no contribution, or one too small to reach the target before 2200).

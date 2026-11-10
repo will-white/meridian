@@ -351,7 +351,10 @@ export function RecurringPage() {
         <p className="rec-note">Dismissed suggestions stay hidden while their charges keep arriving. A series that stops for longer than the three-year lookback and then restarts is suggested again.</p>
       )}
       {tab === "active" && items.length > 0 && (
-        <p className="rec-note">Active bills and income are planned automatically in the matching months. An item that misses three charges in a row is paused so the plan stops expecting it.</p>
+        <p className="rec-note">
+          Active items are planned automatically in their own category: a charge counts in the month it posted, and what is still due is planned ahead. Pausing or cancelling an item keeps what was already paid
+          and stops planning it from then on. An item that misses three charges in a row is paused so the plan stops expecting it.
+        </p>
       )}
     </>
   );

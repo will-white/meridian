@@ -61,7 +61,7 @@ describe("bills and review", () => {
 
   it("links each review count to its page", () => {
     expect(reviewLinks({ uncategorized: 1, suggestedRecurring: 2, alerts: 0 }).map((l) => [l.to, l.count])).toEqual([
-      ["/transactions?uncategorized=true", 1],
+      ["/transactions?uncategorized=true&planScope=true", 1],
       ["/recurring?status=suggested", 2],
       ["/alerts", 0],
     ]);

@@ -149,15 +149,61 @@ export function applyEdits(plan: PlanResponse, edits: readonly PlanCellEdit[]): 
   };
 }
 
+/**
+ * The register behind a cell's actual. `planScope` asks for exactly what the plan counts
+ * (on-budget accounts, split transactions by their lines), so the list adds up to the cell.
+ */
 export function drillDownUrl(row: PlanCategoryRow, month: string): string {
   const from = monthStart(month);
   const to = monthEnd(month);
-  if (row.goal) return `/transactions${query({ goalId: row.goal.id, from, to })}`;
-  return `/transactions${query({ categoryId: row.categoryId, from, to, transfers: "exclude" })}`;
+  if (row.goal) return `/transactions${query({ goalId: row.goal.id, from, to, planScope: true })}`;
+  return `/transactions${query({ categoryId: row.categoryId, from, to, transfers: "exclude", planScope: true })}`;
 }
 
 export function uncategorizedUrl(month: string): string {
-  return `/transactions${query({ uncategorized: true, from: monthStart(month), to: monthEnd(month) })}`;
+  return `/transactions${query({ uncategorized: true, from: monthStart(month), to: monthEnd(month), planScope: true })}`;
+}
+
+/**
+ * What saving a rollover setting will do, in the owner's words. A change applies from the
+ * current month on and closed months keep what they carried; a later start month restarts
+ * the envelope there; only an earlier start month recomputes history.
+ */
+export function rolloverChangeNote(
+  row: Pick<PlanCategoryRow, "rolloverMode" | "rolloverFromMonth">,
+  mode: PlanCategoryRow["rolloverMode"],
+  fromMonth: string | null,
+  currentMonth: string,
+): string {
+  const was = row.rolloverMode;
+  const wasFrom = row.rolloverFromMonth;
+  if (mode === was && (mode === "none" || fromMonth === wasFrom)) return "No change.";
+  if (was === "none") {
+    if (mode === "none") return "No change.";
+    return fromMonth !== null && fromMonth < currentMonth
+      ? `Carries from ${monthLabel(fromMonth)} on: the months since then are recomputed with this setting.`
+      : `Carries from ${monthLabel(fromMonth ?? currentMonth)} on, starting from zero.`;
+  }
+  if (mode === "none") return `Stops carrying from ${monthLabel(currentMonth)} on. Earlier months, and what was carried into ${monthLabel(currentMonth)}, stay as they are.`;
+  const start = wasFrom ?? fromMonth;
+  if (fromMonth !== null && start !== null && fromMonth < start) return `Recomputes the whole chain from ${monthLabel(fromMonth)} with this setting.`;
+  if (fromMonth !== null && start !== null && fromMonth > start) {
+    return `Restarts the envelope at ${monthLabel(fromMonth)} from zero: what was carried before is not brought forward. Earlier months stay as they are.`;
+  }
+  return `Applies from ${monthLabel(currentMonth)} on. Earlier months keep what they carried, and so does ${monthLabel(currentMonth)}.`;
+}
+
+/**
+ * What "plan from average" does with the server's answer: without one complete month of
+ * history there is nothing to average, so nothing is written and the notice says why.
+ */
+export function averagePlanOutcome(input: { name: string; month: string; months: 3 | 6 | 12; cents: string; monthsWithData: number }): { write: boolean; notice: string } {
+  const where = `${input.name}, ${monthLabel(input.month)}`;
+  if (input.monthsWithData === 0) {
+    return { write: false, notice: `${where}: there is no complete month of history to average yet (a month counts once the ledger covers it from the 1st). Nothing was changed.` };
+  }
+  const months = `${input.monthsWithData} complete month${input.monthsWithData === 1 ? "" : "s"} of history`;
+  return { write: true, notice: `${where}: planned ${money(input.cents)} from the ${input.months}-month average (${months}).` };
 }
 
 /** "$92.29/day for 19 days" or "over by $50.00". */

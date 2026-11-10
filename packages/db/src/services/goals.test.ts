@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { MonthKey, PlanCategoryRowResult, PlanResult } from "@meridian/shared";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "../test/db.js";
 import { PLAN_SEED_TODAY, seedPlanFixture, type PlanSeed } from "../test/planSeed.js";
 import { listAudit } from "./audit.js";
 import { createCategory, listCategories } from "./categories.js";
+import { savingsGoal } from "../schema/index.js";
 import { createGoal, deleteGoal, getGoal, listGoals, updateGoal } from "./goals.js";
-import { getPlan } from "./plan.js";
+import { getPlan, listPlanTransactions } from "./plan.js";
 
 const RANGE = { from: "2026-08", to: "2027-01", today: PLAN_SEED_TODAY };
 const ctx = (batchId = randomUUID()) => ({ userId: null, batchId, today: PLAN_SEED_TODAY });
@@ -167,5 +169,81 @@ describe.skipIf(!TEST_DATABASE_URL)("goals", () => {
     expect(old.history[33]).toEqual({ month: "2026-10", actualCents: 0n, plannedCents: 1000n });
     expect(old.progress.savedCents).toBe(5000n);
     await expect(getPlan(t.db, { from: "2024-01", to: "2026-10", today: PLAN_SEED_TODAY })).rejects.toMatchObject({ status: 400 });
+  });
+});
+
+/**
+ * One account, one goal: the seed's Emergency Fund is linked to Savings, where the only
+ * money that moved is +500.00 in September and +500.00 − 200.00 = +300.00 in October.
+ */
+describe.skipIf(!TEST_DATABASE_URL)("goals sharing a linked account", () => {
+  let t: TestDb;
+  let S: PlanSeed;
+  const savingsBucket = (plan: PlanResult, month: MonthKey) => plan.rows.find((r) => r.kind === "bucket" && r.bucket === "savings")!.cells[plan.months.indexOf(month)]!;
+
+  beforeAll(async () => {
+    t = await createTestDb();
+    S = await seedPlanFixture(t.db);
+  });
+  afterAll(async () => {
+    await t?.cleanup();
+  });
+
+  it("refuses a second active goal on an account that already feeds one, on create and on update", async () => {
+    await expect(
+      createGoal(t.db, { name: "Vacation 2027", newCategory: { name: "Vacation 2027" }, targetCents: 300000n, linkedAccountId: S.accounts.savings }, ctx()),
+    ).rejects.toMatchObject({ status: 409, code: "account_linked", message: expect.stringContaining("Emergency Fund") });
+    // The refused create left nothing behind (no category, no goal).
+    expect((await listCategories(t.db)).some((c) => c.name === "Vacation 2027")).toBe(false);
+
+    const unlinked = await createGoal(t.db, { name: "Vacation 2027", newCategory: { name: "Vacation 2027" }, targetCents: 300000n }, ctx());
+    await expect(updateGoal(t.db, unlinked.id, { linkedAccountId: S.accounts.savings }, ctx())).rejects.toMatchObject({ status: 409, code: "account_linked" });
+    // Re-saving a goal's own link is not a conflict.
+    await expect(updateGoal(t.db, S.goals.emergencyFund, { linkedAccountId: S.accounts.savings, name: "Emergency Fund" }, ctx())).resolves.toMatchObject({ linkedAccountId: S.accounts.savings });
+
+    const plan = await getPlan(t.db, RANGE);
+    expect(savingsBucket(plan, "2026-10").actualCents).toBe(30000n);
+  });
+
+  it("lets a new goal take over the account of an archived one from its start month, counting every transfer once", async () => {
+    await updateGoal(t.db, S.goals.emergencyFund, { status: "archived" }, ctx());
+    const vacation = (await listGoals(t.db, { today: PLAN_SEED_TODAY })).find((g) => g.name === "Vacation 2027")!;
+    const linked = await updateGoal(t.db, vacation.id, { linkedAccountId: S.accounts.savings, startMonth: "2026-10" }, ctx());
+    // October's +300.00 now belongs to the active goal; September's +500.00 stays with the archived one.
+    expect(linked.progress.savedCents).toBe(30000n);
+    const emergency = await getGoal(t.db, S.goals.emergencyFund, { today: PLAN_SEED_TODAY });
+    expect(emergency!.history.map((h) => h.actualCents)).toEqual([50000n, 0n]);
+    expect(emergency!.progress.savedCents).toBe(250000n); // 2,000.00 starting + 500.00
+
+    const plan = await getPlan(t.db, RANGE);
+    expect(cell(plan, S.categories.emergencyFund, "2026-09").actualCents).toBe(50000n);
+    expect(cell(plan, S.categories.emergencyFund, "2026-10")).toMatchObject({ actualCents: 0n, txnCount: 0 });
+    expect(cell(plan, linked.categoryId, "2026-10")).toMatchObject({ actualCents: 30000n, txnCount: 2 });
+    expect(savingsBucket(plan, "2026-09").actualCents).toBe(50000n);
+    expect(savingsBucket(plan, "2026-10").actualCents).toBe(30000n);
+
+    // The lists behind the cells agree with them.
+    const mine = await listPlanTransactions(t.db, { goalId: linked.id, month: "2026-10" });
+    expect(mine.items.map((r) => r.amountCents).sort()).toEqual([-20000n, 50000n]);
+    expect((await listPlanTransactions(t.db, { goalId: S.goals.emergencyFund, month: "2026-10" })).items).toEqual([]);
+    expect((await listPlanTransactions(t.db, { goalId: S.goals.emergencyFund, month: "2026-09" })).items.map((r) => r.amountCents)).toEqual([50000n]);
+
+    // The archived goal cannot come back while the account feeds the new one.
+    await expect(updateGoal(t.db, S.goals.emergencyFund, { status: "active" }, ctx())).rejects.toMatchObject({ status: 409, code: "account_linked" });
+    await expect(updateGoal(t.db, S.goals.emergencyFund, { status: "active", linkedAccountId: null }, ctx())).resolves.toMatchObject({ status: "active", linkedAccountId: null });
+  });
+
+  it("still counts a transfer once when older data has two active goals on one account", async () => {
+    // Written straight to the table, as a database from before the rule could hold it.
+    await t.db.update(savingsGoal).set({ linkedAccountId: S.accounts.savings }).where(eq(savingsGoal.id, S.goals.emergencyFund));
+    const plan = await getPlan(t.db, RANGE);
+    const vacation = (await listGoals(t.db, { today: PLAN_SEED_TODAY })).find((g) => g.name === "Vacation 2027")!;
+    // Both active: the later start (Vacation, 2026-10) owns October onward; Emergency Fund (2026-09) keeps September.
+    expect(cell(plan, S.categories.emergencyFund, "2026-09").actualCents).toBe(50000n);
+    expect(cell(plan, S.categories.emergencyFund, "2026-10").actualCents).toBe(0n);
+    expect(cell(plan, vacation.categoryId, "2026-10").actualCents).toBe(30000n);
+    expect(savingsBucket(plan, "2026-10").actualCents).toBe(30000n);
+    // Committed per row: Emergency Fund plans 500.00 and received nothing; Vacation plans nothing and received 300.00.
+    expect(savingsBucket(plan, "2026-10").committedCents).toBe(80000n);
   });
 });

@@ -72,7 +72,8 @@ export interface ReviewLink {
 
 export function reviewLinks(review: ReviewView): ReviewLink[] {
   return [
-    { to: "/transactions?uncategorized=true", label: "uncategorized transactions", count: review.uncategorized },
+    // planScope: the count is what the plan counts (on-budget accounts), so the list behind it must be too.
+    { to: "/transactions?uncategorized=true&planScope=true", label: "uncategorized transactions", count: review.uncategorized },
     { to: "/recurring?status=suggested", label: "suggested recurring items", count: review.suggestedRecurring },
     { to: "/alerts", label: "open alerts", count: review.alerts },
   ];

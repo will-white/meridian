@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   alertLink,
   alertMessage,
+  categoryPlanHint,
   confidenceLabel,
   cycleMonths,
   dueLabel,
@@ -131,5 +132,14 @@ describe("localToday", () => {
   it("formats the local calendar date", () => {
     expect(localToday(new Date(2026, 9, 13, 23, 30))).toBe("2026-10-13");
     expect(localToday(new Date(2026, 0, 5, 0, 1))).toBe("2026-01-05");
+  });
+});
+
+describe("categoryPlanHint", () => {
+  it("says every bucket is planned, and what takes precedence", () => {
+    expect(categoryPlanHint("bills")).toBe("Planned in this category in each month it falls due.");
+    expect(categoryPlanHint("income")).toBe("Planned as income in each month it arrives.");
+    expect(categoryPlanHint("spending")).toContain("shown on its date in the cash flow");
+    expect(categoryPlanHint("savings")).toContain("unless the category's goal already plans a monthly contribution");
   });
 });

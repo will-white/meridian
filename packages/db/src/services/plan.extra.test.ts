@@ -88,12 +88,13 @@ describe.skipIf(!TEST_DATABASE_URL)("plan review probes", () => {
     await expect(getPlan(t.db, { from: "2026-10", to: "2026-09", today: PLAN_SEED_TODAY })).rejects.toMatchObject({ status: 400 });
   });
 
-  it("R6 averages: asOf before the current month shrinks the window; partial current month excluded by default", async () => {
+  it("R6 averages: asOf before the current month shrinks the window; the partial first and current months never count", async () => {
+    // Window Jun..Aug: the ledger opens on Aug 20, so no month in it is complete.
     const sep = await planAverages(t.db, { months: 3, asOf: "2026-09", today: PLAN_SEED_TODAY });
-    expect(sep.window).toEqual({ from: "2026-06", to: "2026-08", monthsWithData: 1 });
-    expect(sep.averages.find((a) => a.categoryId === C.groceries)!.averageCents).toBe(7000n);
+    expect(sep.window).toEqual({ from: "2026-06", to: "2026-08", monthsWithData: 0 });
+    expect(sep.averages.find((a) => a.categoryId === C.groceries)!.averageCents).toBe(0n);
     const def = await planAverages(t.db, { months: 3, today: PLAN_SEED_TODAY });
-    expect(def.window).toEqual({ from: "2026-07", to: "2026-09", monthsWithData: 2 });
+    expect(def.window).toEqual({ from: "2026-07", to: "2026-09", monthsWithData: 1 });
   });
 
   it("R7 close_month: a deleted goal's frozen rows persist, the re-run inserts 0, and live months revert", async () => {
@@ -162,10 +163,11 @@ describe.skipIf(!TEST_DATABASE_URL)("plan review probes", () => {
     expect(cellOf(plan, C.rent, "2026-09")).toMatchObject({ plannedCents: 180000n, source: "manual" });
   });
 
-  it("R12 a recurring item cancelled before close_month loses its past auto value (no occurrences while not active)", async () => {
-    // Internet was charged in Sep (-7999, linked) but is not frozen yet: Oct is live.
+  it("R12 a recurring item cancelled before close_month keeps the month it was paid in and loses what was still ahead", async () => {
+    // Internet was charged in Sep (-7999, linked); its Oct 20 occurrence is still ahead on Oct 13.
     await t.db.update(recurring).set({ status: "cancelled" }).where(eq(recurring.id, S.recurring.internet));
     const plan = await getPlan(t.db, RANGE);
+    expect(cellOf(plan, C.internet, "2026-09")).toMatchObject({ plannedCents: 7999n, source: "recurring" });
     expect(cellOf(plan, C.internet, "2026-10")).toMatchObject({ plannedCents: 0n, source: "none" });
     await t.db.update(recurring).set({ status: "active" }).where(eq(recurring.id, S.recurring.internet));
   });

@@ -2,13 +2,18 @@ import { describe, expect, it } from "vitest";
 import type { Bucket, RolloverMode } from "./enums.js";
 import { addMonths, monthRange, type MonthKey } from "./months.js";
 import {
+  assignGoalNets,
   averageWindow,
   carryOut,
   committedCents,
   computePlan,
+  firstFullLedgerMonth,
+  goalForAccountMonth,
+  goalOwnedMonthRanges,
   goalProgress,
   paceCents,
   planAverage,
+  type GoalAccountLink,
   type ActualInput,
   type AutoPlanInput,
   type ComputePlanInput,
@@ -823,6 +828,40 @@ describe("computePlan on plan-math Fixture F", () => {
     expect(cellOf(r, F.groceries, "2026-10")).toMatchObject({ carriedInCents: 0n, carriedInSource: "chain", rolloverMode: "surplus" });
     expect(cellOf(r, F.groceries, "2026-08").note).toBeNull();
   });
+
+  it("months pinned to a mode keep carrying before a later chain start; the chain start itself begins at 0", () => {
+    // Groceries ran 'surplus only' in Aug and Sep (pinned), then the category was restarted as 'all' from October.
+    // Aug 400 − 300 = +100 → Sep; Sep 400 + 100 − 318.45 = +181.55 (would carry, but October is a fresh start);
+    // Oct 400 − 500 = −100 → Nov.
+    const restarted = (rows: MonthPlanRowInput[]) =>
+      computePlan(
+        fixtureF({
+          categories: fixtureF().categories.map((c) => (c.id === F.groceries ? { ...c, rolloverMode: "all" as RolloverMode, rolloverFromMonth: "2026-10" } : c)),
+          rows,
+        }),
+      );
+    const pin = (x: MonthPlanRowInput): MonthPlanRowInput => (x.categoryId === F.groceries && x.month < "2026-10" ? { ...x, rolloverMode: "surplus" } : x);
+    const r = restarted(fixtureF().rows.map(pin));
+    expect(cellOf(r, F.groceries, "2026-08")).toMatchObject({ carriedInCents: 0n, carriedInSource: "none", rolloverMode: "surplus", remainingCents: 10000n });
+    expect(cellOf(r, F.groceries, "2026-09")).toMatchObject({ carriedInCents: 10000n, carriedInSource: "chain", rolloverMode: "surplus", remainingCents: 18155n });
+    expect(cellOf(r, F.groceries, "2026-10")).toMatchObject({ carriedInCents: 0n, carriedInSource: "start", rolloverMode: "all", remainingCents: -10000n });
+    expect(cellOf(r, F.groceries, "2026-11")).toMatchObject({ carriedInCents: -10000n, carriedInSource: "chain" });
+    // September is exactly what it was while the whole chain ran 'surplus only'.
+    expect(cellOf(r, F.groceries, "2026-09")).toMatchObject({
+      carriedInCents: cellOf(result, F.groceries, "2026-09").carriedInCents,
+      committedCents: cellOf(result, F.groceries, "2026-09").committedCents,
+    });
+
+    // Without pins, months before the chain start behave as 'none'.
+    const unpinned = restarted(fixtureF().rows);
+    expect(cellOf(unpinned, F.groceries, "2026-09")).toMatchObject({ carriedInCents: 0n, carriedInSource: "none", rolloverMode: "none" });
+
+    // A carried-in pin before the chain start is honoured too and feeds the pinned months after it.
+    const seeded = restarted(fixtureF().rows.map(pin).map((x) => (x.categoryId === F.groceries && x.month === "2026-08" ? { ...x, carriedInOverrideCents: 2500n } : x)));
+    expect(cellOf(seeded, F.groceries, "2026-08")).toMatchObject({ carriedInCents: 2500n, carriedInSource: "override", remainingCents: 12500n });
+    expect(cellOf(seeded, F.groceries, "2026-09")).toMatchObject({ carriedInCents: 12500n, carriedInSource: "chain" });
+    expect(cellOf(seeded, F.groceries, "2026-10")).toMatchObject({ carriedInCents: 0n, carriedInSource: "start" });
+  });
 });
 
 // =====================================================================
@@ -896,7 +935,27 @@ describe("averageWindow and planAverage", () => {
     expect(addMonths(averageWindow("2026-11", 3).to, 1)).toBe("2026-11");
   });
 
-  it("divides by the months on/after the ledger's first month, truncates and clamps at 0 (grid design averages)", () => {
+  it("finds the first month the ledger covers from its first day", () => {
+    expect(firstFullLedgerMonth(null)).toBeNull();
+    expect(firstFullLedgerMonth("2026-08-01")).toBe("2026-08");
+    expect(firstFullLedgerMonth("2026-08-02")).toBe("2026-09"); // one day short is still a partial month
+    expect(firstFullLedgerMonth("2026-08-09")).toBe("2026-09"); // a 93-day first sync on 2026-11-10
+    expect(firstFullLedgerMonth("2026-12-31")).toBe("2027-01");
+  });
+
+  it("leaves the partially synced first month out of the divisor", () => {
+    // Rent 1,800.00 on the 1st; the ledger opens on Aug 9, so August's rent was never seen.
+    const rent = new Map<MonthKey, bigint>([
+      ["2026-09", 180000n],
+      ["2026-10", 180000n],
+    ]);
+    const window = averageWindow("2026-11", 3); // Aug..Oct
+    expect(planAverage(rent, window, firstFullLedgerMonth("2026-08-09"))).toEqual({ cents: 180000n, monthsWithData: 2 });
+    // Counting August as a full month is what understated it: 3,600.00 / 3.
+    expect(planAverage(rent, window, "2026-08")).toEqual({ cents: 120000n, monthsWithData: 3 });
+  });
+
+  it("divides by the months on/after the first full ledger month, truncates and clamps at 0 (grid design averages)", () => {
     const w3 = averageWindow("2026-10", 3);
     const first = "2026-08";
     const groceries = new Map<MonthKey, bigint>([
@@ -1019,5 +1078,57 @@ describe("goalProgress", () => {
     });
     expect(goalProgress({ ...emergency, startingCents: 0n }, new Map([["2026-10", -5000n]]), "2026-10")).toMatchObject({ savedCents: -5000n, remainingToTargetCents: 1005000n, progressBp: 0 });
     expect(goalProgress(emergency, actuals, "2026-08")).toMatchObject({ savedCents: 200000n, monthsLeft: 14 });
+  });
+});
+
+describe("an account's transfers count toward one goal", () => {
+  const link = (id: string, linkedAccountId: string | null, startMonth: MonthKey, status: GoalAccountLink["status"] = "active"): GoalAccountLink => ({ id, linkedAccountId, startMonth, status });
+
+  it("a single linked goal owns every month, also before it starts", () => {
+    const goals = [link("ef", "sav", "2026-09")];
+    expect(goalForAccountMonth(goals, "sav", "2026-01")).toBe("ef");
+    expect(goalForAccountMonth(goals, "sav", "2026-10")).toBe("ef");
+    expect(goalForAccountMonth(goals, "chk", "2026-10")).toBeNull();
+    expect(goalOwnedMonthRanges(goals, "ef")).toEqual([{ from: null, to: null }]);
+  });
+
+  it("an active goal takes over from a completed one at its start month", () => {
+    const goals = [link("old", "sav", "2025-01", "completed"), link("new", "sav", "2026-07")];
+    expect(goalForAccountMonth(goals, "sav", "2026-06")).toBe("old");
+    expect(goalForAccountMonth(goals, "sav", "2026-07")).toBe("new");
+    expect(goalForAccountMonth(goals, "sav", "2027-03")).toBe("new");
+    expect(goalOwnedMonthRanges(goals, "old")).toEqual([{ from: "2025-01", to: "2026-07" }]);
+    // Before either started, the active goal is the fallback owner.
+    expect(goalOwnedMonthRanges(goals, "new")).toEqual([
+      { from: null, to: "2025-01" },
+      { from: "2026-07", to: null },
+    ]);
+  });
+
+  it("two active goals on one account never both own a month: the later start wins from its start, ties keep the given order", () => {
+    const goals = [link("ef", "sav", "2026-09"), link("vac", "sav", "2026-11")];
+    expect(["2026-08", "2026-09", "2026-10", "2026-11", "2026-12"].map((m) => goalForAccountMonth(goals, "sav", m))).toEqual(["ef", "ef", "ef", "vac", "vac"]);
+    expect(goalOwnedMonthRanges(goals, "ef")).toEqual([{ from: null, to: "2026-11" }]);
+    expect(goalOwnedMonthRanges(goals, "vac")).toEqual([{ from: "2026-11", to: null }]);
+    const tied = [link("a", "sav", "2026-09"), link("b", "sav", "2026-09")];
+    expect(goalForAccountMonth(tied, "sav", "2026-10")).toBe("a");
+    expect(goalOwnedMonthRanges(tied, "b")).toEqual([]);
+    expect(goalOwnedMonthRanges([link("solo", null, "2026-09")], "solo")).toEqual([]);
+    expect(goalOwnedMonthRanges(goals, "missing")).toEqual([]);
+  });
+
+  it("hands each account's monthly net to its owner exactly once", () => {
+    const goals = [link("ef", "sav", "2026-09"), link("vac", "sav", "2026-11"), link("car", "brk", "2026-01"), link("loose", null, "2026-01")];
+    const nets = [
+      { accountId: "sav", month: "2026-10", signedCents: 30000n, count: 2 },
+      { accountId: "sav", month: "2026-11", signedCents: 50000n, count: 1 },
+      { accountId: "brk", month: "2026-11", signedCents: 75000n, count: 1 },
+      { accountId: "chk", month: "2026-11", signedCents: -125000n, count: 2 },
+    ];
+    expect(assignGoalNets(nets, goals)).toEqual([
+      { goalId: "ef", month: "2026-10", signedCents: 30000n, count: 2 },
+      { goalId: "vac", month: "2026-11", signedCents: 50000n, count: 1 },
+      { goalId: "car", month: "2026-11", signedCents: 75000n, count: 1 },
+    ]);
   });
 });

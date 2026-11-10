@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { computePlan, goalProgress, isMonthKey, monthKey, monthRange, type GoalProgress, type IsoDate, type MonthKey, type PlanCategoryRowResult } from "@meridian/shared";
 import type { Db, DbOrTx } from "../index.js";
 import { account, category, savingsGoal } from "../schema/index.js";
@@ -7,9 +7,10 @@ import { insertCategory } from "./categories.js";
 import { loadPlanInput } from "./plan.js";
 
 /**
- * Savings goals: one per savings-bucket category. Progress and history come from
- * the plan engine over [start_month, current month], so the numbers on the Goals
- * page are exactly the goal category's grid cells.
+ * Savings goals: one per savings-bucket category, and one active goal per linked account
+ * (an account's transfers count toward exactly one goal, so the savings bucket always equals
+ * the money moved). Progress and history come from the plan engine over [start_month,
+ * current month], so the numbers on the Goals page are exactly the goal category's grid cells.
  */
 
 export interface GoalHistoryMonth {
@@ -149,6 +150,26 @@ async function assertAccount(tx: DbOrTx, accountId: string): Promise<void> {
   if (!row) throw new PlanError(400, "validation", "Linked account not found");
 }
 
+/**
+ * An account's transfers count toward one active goal: 409 `account_linked` when another
+ * active goal already links it. (A completed or archived goal may keep its link; the plan
+ * hands the account to the active goal from its start month, see `goalForAccountMonth`.)
+ */
+async function assertAccountFree(tx: DbOrTx, accountId: string, exceptGoalId?: string): Promise<void> {
+  const holders = await tx
+    .select({ id: savingsGoal.id, name: savingsGoal.name })
+    .from(savingsGoal)
+    .where(and(eq(savingsGoal.linkedAccountId, accountId), eq(savingsGoal.status, "active")));
+  const other = holders.find((g) => g.id !== exceptGoalId);
+  if (other) {
+    throw new PlanError(
+      409,
+      "account_linked",
+      `Transfers into that account already count toward the goal "${other.name}". An account can feed one active goal: link a different account, or leave this goal without one.`,
+    );
+  }
+}
+
 function validateAmounts(input: { targetCents?: bigint; monthlyContributionCents?: bigint; startingCents?: bigint; startMonth?: MonthKey; targetDate?: IsoDate | null }): void {
   if (input.targetCents !== undefined && input.targetCents <= 0n) throw new PlanError(400, "validation", "targetCents must be positive");
   if (input.monthlyContributionCents !== undefined && input.monthlyContributionCents < 0n) throw new PlanError(400, "validation", "monthlyContributionCents must not be negative");
@@ -156,7 +177,7 @@ function validateAmounts(input: { targetCents?: bigint; monthlyContributionCents
   if (input.startMonth !== undefined && !isMonthKey(input.startMonth)) throw new PlanError(400, "validation", "startMonth must be YYYY-MM");
 }
 
-/** Create a goal on a savings category (400 `goal_category` otherwise; 409 when the category already has one). Audited. */
+/** Create a goal on a savings category (400 `goal_category` otherwise; 409 when the category already has one, 409 `account_linked` when the linked account already feeds an active goal). Audited. */
 export async function createGoal(db: Db, input: CreateGoalInput, ctx: AuditContext & { today: IsoDate }): Promise<GoalRecord> {
   const name = input.name.trim();
   if (!name) throw new PlanError(400, "validation", "Name is required");
@@ -169,7 +190,10 @@ export async function createGoal(db: Db, input: CreateGoalInput, ctx: AuditConte
       categoryId = await insertCategory(tx, { name: input.newCategory.name, bucket: "savings", groupId: input.newCategory.groupId ?? null }, ctx);
     }
     await assertGoalCategory(tx, categoryId!);
-    if (input.linkedAccountId) await assertAccount(tx, input.linkedAccountId);
+    if (input.linkedAccountId) {
+      await assertAccount(tx, input.linkedAccountId);
+      await assertAccountFree(tx, input.linkedAccountId);
+    }
     const [row] = await tx
       .insert(savingsGoal)
       .values({
@@ -227,6 +251,12 @@ export async function updateGoal(db: Db, id: string, patch: UpdateGoalInput, ctx
     if (patch.startMonth !== undefined) set.startMonth = patch.startMonth;
     if (patch.startingCents !== undefined) set.startingCents = patch.startingCents;
     if (patch.status !== undefined) set.status = patch.status;
+    // A goal that becomes the active holder of an account (new link, or back to active) must be the only one.
+    const status = patch.status ?? existing.status;
+    const linkedAccountId = patch.linkedAccountId !== undefined ? patch.linkedAccountId : existing.linkedAccountId;
+    if (status === "active" && linkedAccountId && (linkedAccountId !== existing.linkedAccountId || existing.status !== "active")) {
+      await assertAccountFree(tx, linkedAccountId, id);
+    }
     if (Object.keys(set).length === 0) return;
     const [after] = await tx
       .update(savingsGoal)
