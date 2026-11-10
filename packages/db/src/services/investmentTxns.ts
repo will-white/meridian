@@ -31,7 +31,7 @@ import { requestPriceRefresh } from "./prices.js";
 import { decodeCursor, encodeCursor } from "./queryText.js";
 import { loadRules } from "./rules.js";
 import { cashSecurity, createSecurity, learnAliases, requireSecurity, resolveSecurity } from "./securities.js";
-import { pairTransfersInDb, unpairTransfer } from "./transfers.js";
+import { markAsTransfers, pairTransfersInDb, unpairTransfer } from "./transfers.js";
 
 /**
  * Investment transactions (imports design §3.9–§3.10 under plan decisions 5, 6 and 15; seams
@@ -40,10 +40,13 @@ import { pairTransfersInDb, unpairTransfer } from "./transfers.js";
  * rows are audited per row. Cash transfers reach the ledger: in SimpleFIN-fed accounts by
  * linking the Bridge's row (`linkToLedger`), elsewhere by a derived ledger row (`is_transfer`,
  * linked by `ledger_transaction_id`) so hand-entered 401(k) deferrals reach savings goals.
- * Only ledger rows this side wrote (a derived transfer row, or the income feed's synthetic
- * row) follow an investment row's edits and deletion; a bank row the linker merely matched is
- * the owner's and is never changed (`ownedLedgerTwin`). Every writer rebuilds the lots of the
- * accounts it touched inside its transaction.
+ * A bank row a cash transfer is linked to becomes a transfer in the ledger at that moment
+ * (`markAsTransfers`, audit decision A5), whatever its description said: goals and the flow
+ * loader read the ledger. Only ledger rows this side wrote (a derived transfer row, or the
+ * income feed's synthetic row) follow an investment row's edits and deletion; a bank row the
+ * linker matched is the owner's: its date and amount are never changed and it is never deleted
+ * (`ownedLedgerTwin`). Every writer rebuilds the lots of the accounts it touched inside its
+ * transaction.
  */
 
 type TxnRow = typeof investmentTxn.$inferSelect;
@@ -304,13 +307,36 @@ export interface LinkCandidate {
 export const LEDGER_LINK_DAYS = 3;
 
 /**
+ * The ledger rows a cash transfer was just linked to are transfers too (audit decision A5):
+ * of `links`, those whose investment row is a cash transfer get `is_transfer` and lose an
+ * unlocked category. Income and fee rows leave their bank row as it is.
+ */
+async function markLinkedCashTransfers(tx: DbOrTx, links: ReadonlyArray<{ txnId: string; ledgerId: string }>): Promise<void> {
+  const ledgerIds: string[] = [];
+  for (let i = 0; i < links.length; i += 500) {
+    const batch = links.slice(i, i + 500);
+    const cash = await tx
+      .select({ id: investmentTxn.id })
+      .from(investmentTxn)
+      .where(and(inArray(investmentTxn.id, batch.map((l) => l.txnId)), eq(investmentTxn.type, "transfer"), isNull(investmentTxn.securityId)));
+    const cashIds = new Set(cash.map((r) => r.id));
+    for (const l of batch) if (cashIds.has(l.txnId)) ledgerIds.push(l.ledgerId);
+  }
+  if (ledgerIds.length > 0) await markAsTransfers(tx, ledgerIds);
+}
+
+/**
  * Link investment rows to the ledger row they describe: the unlinked, posted ledger row of
  * the same account with the same amount within 3 days (never a synthetic feed row), nearest
  * date first, then the earliest id; each ledger row is used once. Sets
- * `ledger_transaction_id` and returns how many rows were linked.
+ * `ledger_transaction_id` and returns how many rows were linked. A bank row a cash transfer
+ * is linked to is marked a transfer (`markLinkedCashTransfers`), so a deposit whose
+ * description the ingest classifier did not recognise, and every withdrawal, is still a flow
+ * and still counts toward the account's goal.
  */
 export async function linkToLedger(tx: DbOrTx, rows: readonly LinkCandidate[]): Promise<number> {
   let linked = 0;
+  const links: Array<{ txnId: string; ledgerId: string }> = [];
   const byAccount = new Map<string, LinkCandidate[]>();
   for (const r of rows) byAccount.set(r.accountId, [...(byAccount.get(r.accountId) ?? []), r]);
   for (const [accountId, list] of byAccount) {
@@ -348,9 +374,11 @@ export async function linkToLedger(tx: DbOrTx, rows: readonly LinkCandidate[]): 
       if (!best) continue;
       used.add(best.id);
       await tx.update(investmentTxn).set({ ledgerTransactionId: best.id, updatedAt: new Date() }).where(eq(investmentTxn.id, row.id));
+      links.push({ txnId: row.id, ledgerId: best.id });
       linked++;
     }
   }
+  await markLinkedCashTransfers(tx, links);
   return linked;
 }
 
@@ -760,11 +788,13 @@ const SOURCE_OWNED = ["type", "transferDirection", "date", "securityId", "quanti
  * or direction (409 `transfer_leg_linked`) unless the request also clears the group, and a
  * paired cash transfer's amount or date change mirrors onto the other leg (negated amount,
  * same date) and the derived ledger row this side wrote for it, so the group stays equal and
- * opposite (the other leg is audited in the same batch); a
+ * opposite; a paired share transfer's date change mirrors onto the other leg as well, so the
+ * move has one date (the other leg is audited in the same batch); a
  * source-owned change on an imported row sets `user_edited`; picks that no longer apply are
  * dropped; a ledger row this side wrote (a derived transfer row or the feed's synthetic
  * income row) follows the date and amount, or goes when the row leaves its kind or the link
- * moves elsewhere, while a merely linked bank row is left alone; lots are rebuilt; audited.
+ * moves elsewhere, while a merely linked bank row keeps its date and amount; a bank row a cash
+ * transfer is newly linked to is marked a transfer; lots are rebuilt; audited.
  */
 export async function updateInvestmentTxn(db: Db, id: string, patch: UpdateInvestmentTxnInput, ctx: AuditContext & { today: IsoDate }): Promise<{ item: InvestmentTxnRecord; rebuildWarnings: EngineWarning[] }> {
   return db.transaction(async (tx) => {
@@ -869,21 +899,36 @@ export async function updateInvestmentTxn(db: Db, id: string, patch: UpdateInves
       }
     }
 
-    // A paired cash transfer stays equal and opposite: an amount or date change mirrors onto the
-    // other leg (negated amount, same date) and onto its owned ledger twin; a merely linked bank
-    // row on that side is the owner's and stays. The other leg is audited below with `otherLegs`.
-    if (groupId !== null && isCashTransfer(merged) && (merged.amountCents !== current.amountCents || date !== row.date)) {
+    // A cash transfer newly linked to a bank row (the link was set by hand, or the row became a
+    // cash transfer while linked) makes that row a transfer, as the linker does; an edit that
+    // leaves the link and the kind alone never overrules a later "not a transfer" on the bank row.
+    if (ledgerTransactionId !== null && isCashTransfer(merged) && (ledgerTransactionId !== row.ledgerTransactionId || !isCashTransfer(current))) {
+      await markAsTransfers(tx, [ledgerTransactionId]);
+    }
+
+    // A paired transfer is one move on one date. A cash pair stays equal and opposite: an amount
+    // or date change mirrors onto the other leg (negated amount, same date) and onto its owned
+    // ledger twin; a merely linked bank row on that side is the owner's and stays. A share pair's
+    // date change mirrors onto the other leg, so the shares never sit in both accounts, or in
+    // neither, between two dates (what moved cannot change while paired, see above). The other
+    // leg is audited below with `otherLegs`.
+    const dateChanged = date !== row.date;
+    const mirrorsCash = isCashTransfer(merged) && (merged.amountCents !== current.amountCents || dateChanged);
+    const mirrorsShares = merged.type === "transfer" && merged.securityId !== null && dateChanged;
+    if (groupId !== null && (mirrorsCash || mirrorsShares)) {
       const legs = await tx.select().from(investmentTxn).where(and(eq(investmentTxn.transferGroupId, groupId), ne(investmentTxn.id, id)));
       for (const leg of legs) {
         otherLegs.push({ row: leg, picks: (await listLotPicks(tx, [leg.id])).get(leg.id) ?? [] });
         accounts.add(leg.accountId);
-        const legAmountCents = -merged.amountCents;
-        const legTwin = await ownedLedgerTwin(tx, leg);
-        if (legTwin) await followOwnedTwin(tx, legTwin, { type: leg.type, securityId: leg.securityId, date, amountCents: legAmountCents }, { date: leg.date, amountCents: leg.amountCents });
-        await tx
-          .update(investmentTxn)
-          .set({ date, amountCents: legAmountCents, userEdited: leg.userEdited || leg.source !== "manual", updatedAt: new Date() })
-          .where(eq(investmentTxn.id, leg.id));
+        const userEdited = leg.userEdited || leg.source !== "manual";
+        if (mirrorsCash) {
+          const legAmountCents = -merged.amountCents;
+          const legTwin = await ownedLedgerTwin(tx, leg);
+          if (legTwin) await followOwnedTwin(tx, legTwin, { type: leg.type, securityId: leg.securityId, date, amountCents: legAmountCents }, { date: leg.date, amountCents: leg.amountCents });
+          await tx.update(investmentTxn).set({ date, amountCents: legAmountCents, userEdited, updatedAt: new Date() }).where(eq(investmentTxn.id, leg.id));
+        } else if (leg.date !== date) {
+          await tx.update(investmentTxn).set({ date, userEdited, updatedAt: new Date() }).where(eq(investmentTxn.id, leg.id));
+        }
       }
     }
 
@@ -1204,6 +1249,10 @@ export async function upsertInvestmentTxns(tx: DbOrTx, input: UpsertInvestmentTx
         patch.ledgerTransactionId = null;
         result.warnings.push({ rowIndex: d.trade.rowIndex, code: "ledger_row_removed", message: "The row is no longer a cash transfer or income; the ledger row written for it was removed" });
       }
+    }
+    // A row that became a cash transfer while linked to a bank row: that row is a transfer now.
+    if (row.ledgerTransactionId && patch.ledgerTransactionId !== null && !isCashTransfer(row) && isCashTransfer({ type: newType, securityId: newSecurity })) {
+      await markAsTransfers(tx, [row.ledgerTransactionId]);
     }
     patch.updatedAt = new Date();
     await tx.update(investmentTxn).set(patch).where(eq(investmentTxn.id, row.id));

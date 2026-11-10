@@ -810,6 +810,89 @@ describe("withdrawals leave at the end of their day: an account that is emptied 
   });
 });
 
+/**
+ * Holdings, lots and gains are the state on `asOf`, not today's. A: +1,000.00 on 01-02, buys 10
+ * ACME @ 100.00 on 01-05 (cash 0), sells 4 @ 150.00 on 09-01 (+600.00, a short-term gain of
+ * 4 × 50.00 = 200.00). Closes: 100 on 01-05, 120 on 06-30, 150 on 09-01, 160 on 10-13.
+ * By hand on 06-30, before the sale: 10 shares = 1,200.00 on a basis of 1,000.00 (unrealized
+ * 200.00), no cash, nothing realized. On 10-13: 6 shares = 960.00 on a basis of 600.00
+ * (unrealized 360.00), cash 600.00, realized 200.00.
+ */
+describe("holdings, lots and gains as of a date before a later sale", () => {
+  const A = "acct-asof";
+  const acct = account({
+    accountId: A,
+    txns: [buy(A, "b1", "2026-01-05", "ACME", "10", "100", -100000n), sell(A, "s1", "2026-09-01", "ACME", "4", "150", 60000n)],
+    cashFlows: [cash(A, "2026-01-02", 100000n)],
+  });
+  const prices = [series("ACME", [["2026-01-05", "100"], ["2026-06-30", "120"], ["2026-09-01", "150"], ["2026-10-13", "160"]])];
+  const run = (to: IsoDate, asOf: IsoDate) => computePerformance({ from: "2026-01-01", to, asOf, accounts: [acct], prices, benchmark: null }).accounts[0]!;
+  const brief = (a: ReturnType<typeof run>) => ({
+    end: a.endValueCents,
+    holdings: a.holdings.map((h) => [h.securityId, h.quantity, h.valueCents, h.costBasisCents, h.unrealizedCents]),
+    lots: a.lots.map((l) => [l.openedByTxnId, l.quantity, l.costBasisCents, l.closedDate]),
+    disposals: a.disposals.map((d) => [d.closeTxnId, d.date, d.quantity, d.gainCents]),
+    gains: { realized: a.gains!.realizedCents, short: a.gains!.realizedShortCents, unrealized: a.gains!.unrealizedCents, proceeds: a.gains!.proceedsCents, openValue: a.gains!.openValueCents, openBasis: a.gains!.openBasisCents },
+    realizedInWindow: a.realized!.shortTerm.gainCents,
+  });
+
+  it("a window ending on 06-30 shows the ten shares held that day and no realized gain", () => {
+    expect(brief(run("2026-06-30", "2026-06-30"))).toEqual({
+      end: 120000n,
+      holdings: [
+        ["ACME", f("10"), 120000n, 100000n, 20000n],
+        [null, 0n, 0n, null, null],
+      ],
+      lots: [["b1", f("10"), 100000n, null]],
+      disposals: [],
+      gains: { realized: 0n, short: 0n, unrealized: 20000n, proceeds: 0n, openValue: 120000n, openBasis: 100000n },
+      realizedInWindow: 0n,
+    });
+  });
+
+  it("the same account as of 10-13 shows the six shares left, the cash from the sale and the realized gain", () => {
+    expect(brief(run("2026-10-13", "2026-10-13"))).toEqual({
+      end: 156000n,
+      holdings: [
+        ["ACME", f("6"), 96000n, 60000n, 36000n],
+        [null, f("600"), 60000n, null, null],
+      ],
+      lots: [["b1", f("6"), 60000n, null]],
+      disposals: [["s1", "2026-09-01", f("4"), 20000n]],
+      gains: { realized: 20000n, short: 20000n, unrealized: 36000n, proceeds: 60000n, openValue: 96000n, openBasis: 60000n },
+      realizedInWindow: 20000n,
+    });
+  });
+
+  it("asOf before `to`: the holdings, lots and gain summary are 06-30's while the window's realized gains and disposals run to `to`", () => {
+    expect(brief(run("2026-10-13", "2026-06-30"))).toEqual({
+      end: 156000n,
+      holdings: [
+        ["ACME", f("10"), 120000n, 100000n, 20000n],
+        [null, 0n, 0n, null, null],
+      ],
+      lots: [["b1", f("10"), 100000n, null]],
+      disposals: [["s1", "2026-09-01", f("4"), 20000n]],
+      gains: { realized: 0n, short: 0n, unrealized: 20000n, proceeds: 0n, openValue: 120000n, openBasis: 100000n },
+      realizedInWindow: 20000n,
+    });
+  });
+
+  it("asOf after `to`: the sale between them is in the holdings, the gain summary and the disposal list, not in the window", () => {
+    expect(brief(run("2026-06-30", "2026-10-13"))).toEqual({
+      end: 120000n,
+      holdings: [
+        ["ACME", f("6"), 96000n, 60000n, 36000n],
+        [null, f("600"), 60000n, null, null],
+      ],
+      lots: [["b1", f("6"), 60000n, null]],
+      disposals: [["s1", "2026-09-01", f("4"), 20000n]],
+      gains: { realized: 20000n, short: 20000n, unrealized: 36000n, proceeds: 60000n, openValue: 96000n, openBasis: 60000n },
+      realizedInWindow: 0n,
+    });
+  });
+});
+
 describe("TC24. mixed household total: a full account plus a balance-only account entering after `from`", () => {
   const C = account({
     accountId: "C",

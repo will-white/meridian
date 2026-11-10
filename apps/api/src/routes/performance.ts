@@ -9,14 +9,15 @@ import { auditContext, resolveToday, usePlanErrors } from "./plan.js";
 /**
  * The lots area's routes (lots design §4.3, plan decision 17): the engine's performance
  * computation (a `readOnly` POST so the viewer role may call it, like the cash-flow
- * projection), the stored lots valued as of a date, realized gains from `lot_disposal`,
- * specific-lot picks on a sale, and the maintenance rebuild. Every read writes nothing.
+ * projection), the lots as they stood on a date and valued on it, realized gains from
+ * `lot_disposal`, specific-lot picks on a sale, and the maintenance rebuild. Every read
+ * writes nothing.
  */
 export async function performanceRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   usePlanErrors(app);
 
-  /** `detail: full` lots carry the valued columns of the stored lot with the same (stable) id. */
+  /** `detail: full` lots carry the valued columns of the lots list as of the same date (the ids are stable). */
   async function lotDetails(record: PerformanceRecord): Promise<Map<string, LotRecord>> {
     const out = new Map<string, LotRecord>();
     for (const a of record.accounts) {

@@ -25,6 +25,9 @@ const NOW = INV_SEED_NOW;
  * fake-provider price fetch for 10-13 → the reconcile preview against the 10-13 statement
  * within $1 (not exact: the statement's fund NAV differs from the carried one) → the commit →
  * the post-commit value equals the statement exactly → the dashboard counts nothing awaiting.
+ * Two further accounts are valued from their lots after their last statement and compared with
+ * a hand-made next statement before any commit: a margin account (negative cash) and one with
+ * trades, a dividend and a withdrawal.
  */
 describe.skipIf(!TEST_DATABASE_URL)("investments gate (G4, INV seed)", () => {
   let t: TestDb;
@@ -230,5 +233,79 @@ describe.skipIf(!TEST_DATABASE_URL)("investments gate (G4, INV seed)", () => {
       ["MGNX", "match", 0n],
       ["Cash", "match", 0n],
     ]);
+  });
+
+  /**
+   * A full-history account after its last statement is valued from its lots, and the next
+   * statement must agree before it is accepted. +10,000.00 on 09-14; 10 GATX @ 300.00 and 20 GATB
+   * @ 75.00 bought on 09-15 (cash 5,500.00); the 09-30 statement: GATX 3,050.00, GATB 1,480.00,
+   * cash 5,500.00, total 10,030.00. Then 4 GATX sold @ 310.00 (+1,240.00) and 10 GATB bought @
+   * 74.50 (−745.00) on 10-05, a 12.34 dividend on 10-06, 1,000.00 withdrawn on 10-07. By hand on
+   * 10-13 (GATX 312.00, GATB 74.80): 6 × 312 = 1,872.00, 30 × 74.80 = 2,244.00, cash
+   * 5,500.00 + 1,240.00 − 745.00 + 12.34 − 1,000.00 = 5,007.34: total 9,123.34.
+   */
+  it("values a full-history account from its lots after the last statement: trades, a dividend and a withdrawal later, the next statement matches to the cent before the commit", async () => {
+    const [row] = await t.db.insert(account).values({ name: "Lots Brokerage", type: "brokerage", taxTreatment: "taxable", onBudget: false }).returning({ id: account.id });
+    const L = row!.id;
+    const gatx = (await createSecurity(t.db, { ticker: "GATX", name: "Gate Stock ETF", type: "etf", assetClass: "us_stock" }, ctx())).id;
+    const gatb = (await createSecurity(t.db, { ticker: "GATB", name: "Gate Bond ETF", type: "etf", assetClass: "bonds" }, ctx())).id;
+    const cash = (await cashSecurity(t.db)).row.id;
+    await createInvestmentTxn(t.db, { accountId: L, date: "2026-09-14", type: "transfer", direction: "in", amountCents: 1000000n }, ctx());
+    await createInvestmentTxn(t.db, { accountId: L, date: "2026-09-15", type: "buy", securityId: gatx, quantity: f8("10"), price: f8("300") }, ctx());
+    await createInvestmentTxn(t.db, { accountId: L, date: "2026-09-15", type: "buy", securityId: gatb, quantity: f8("20"), price: f8("75") }, ctx());
+    await t.db.transaction(async (tx) => {
+      const result = await replaceHoldingSnapshot(tx, {
+        accountId: L,
+        date: "2026-09-30",
+        source: "csv",
+        positions: [
+          { securityId: gatx, quantity: f8("10"), price: f8("305"), valueCents: 305000n, reportedCostBasisCents: null },
+          { securityId: gatb, quantity: f8("20"), price: f8("74"), valueCents: 148000n, reportedCostBasisCents: null },
+          { securityId: cash, quantity: f8("5500"), price: f8("1"), valueCents: 550000n, reportedCostBasisCents: null },
+        ],
+        statementTotalCents: 1003000n,
+        today: TODAY,
+      });
+      expect(result).toMatchObject({ totalValueCents: 1003000n, balanceWritten: true, balanceCents: 1003000n });
+      await rebuildImpliedPrices(tx, { securityIds: result.securityIds, dates: ["2026-09-30"] });
+    });
+    const [onStatement] = await valueAccountsOn(t.db, { accountIds: [L], date: "2026-09-30", now: NOW });
+    expect(onStatement).toMatchObject({ basis: "snapshot", valueCents: 1003000n, balanceDiffCents: 0n, fidelity: "full_history" });
+
+    await createInvestmentTxn(t.db, { accountId: L, date: "2026-10-05", type: "sell", securityId: gatx, quantity: f8("4"), price: f8("310") }, ctx());
+    await createInvestmentTxn(t.db, { accountId: L, date: "2026-10-05", type: "buy", securityId: gatb, quantity: f8("10"), price: f8("74.5") }, ctx());
+    await createInvestmentTxn(t.db, { accountId: L, date: "2026-10-06", type: "dividend", securityId: gatx, amountCents: 1234n }, ctx());
+    await createInvestmentTxn(t.db, { accountId: L, date: "2026-10-07", type: "transfer", direction: "out", amountCents: -100000n }, ctx());
+    await setManualPrice(t.db, gatx, { date: "2026-10-13", close: f8("312") }, ctx());
+    await setManualPrice(t.db, gatb, { date: "2026-10-13", close: f8("74.8") }, ctx());
+
+    const [valued] = await valueAccountsOn(t.db, { accountIds: [L], date: "2026-10-13", now: NOW });
+    expect(valued).toMatchObject({ basis: "lots", asOf: "2026-10-06", cashAnchor: "2026-09-30", valueCents: 912334n, fidelity: "full_history" });
+    expect(valued!.lines.map((l) => [l.kind === "position" ? l.ticker : l.kind, l.valueCents]).sort()).toEqual([
+      ["GATB", 224400n],
+      ["GATX", 187200n],
+      ["carried_flows", -100000n],
+      ["cash", 50734n], // + 1,240.00 − 745.00 + 12.34
+      ["cash_plug", 550000n], // the 09-30 statement's cash
+    ]);
+
+    const statement = {
+      accountId: L,
+      date: "2026-10-13" as IsoDate,
+      statementTotalCents: 912334n,
+      rows: [{ ticker: "GATX", quantity: f8("6"), price: f8("312") }, { ticker: "GATB", quantity: f8("30"), price: f8("74.8") }, { isCash: true, quantity: f8("5007.34") }],
+    };
+    const preview = await previewReconciliation(t.db, statement, { today: TODAY, now: NOW });
+    expect(preview).toMatchObject({ statementTotalCents: 912334n, differenceCents: 0n, unexplainedCents: 0n, matchesToDollar: true, alreadyReconciled: false });
+    expect(preview.rows.map((r) => [r.ticker ?? r.name, r.status, r.valueDiffCents])).toEqual([
+      ["GATB", "match", 0n],
+      ["GATX", "match", 0n],
+      ["Cash", "match", 0n],
+    ]);
+    const commit = await commitReconciliation(t.db, { ...statement, accept: true }, ctx());
+    expect(commit).toMatchObject({ accepted: true, preCommitDifferenceCents: 0n, matchesToDollar: true });
+    expect(commit.app).toMatchObject({ basis: "snapshot", valueCents: 912334n, balanceDiffCents: 0n });
+    const [record] = await t.db.select().from(accountReconciliation).where(eq(accountReconciliation.accountId, L));
+    expect(record).toMatchObject({ statementDate: "2026-10-13", diffCents: 0n, reconciled: true, accepted: true, appBasis: "lots" });
   });
 });

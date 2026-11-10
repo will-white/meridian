@@ -69,6 +69,10 @@ describe.skipIf(!TEST_DATABASE_URL)("performance services (INV seed)", () => {
         { accountId: X, source: "manual", date: "2026-01-20", amountCents: 4321n, rawDescription: "DIVIDEND" },
         { accountId: X, source: "manual", date: "2026-02-27", amountCents: 20000n, rawDescription: "TRANSFER (PENDING)", isTransfer: true, pending: true },
         { accountId: X, source: "manual", date: "2026-02-15", amountCents: 9000n, rawDescription: "EFT RECEIVED", isTransfer: true },
+        // A bank row its trade-file twin is linked to but that is not a transfer (the owner said so, or it predates the linker marking it).
+        { accountId: X, source: "manual", date: "2026-02-20", amountCents: 3000n, rawDescription: "MONEYLINK TXN FROM CHK 1234" },
+        // Another deposit of the same amount a day later, a transfer in its own right.
+        { accountId: X, source: "manual", date: "2026-02-21", amountCents: 3000n, rawDescription: "EFT RECEIVED", isTransfer: true },
       ])
       .returning({ id: transaction.id, date: transaction.date, amountCents: transaction.amountCents });
     const ledgerId = (date: string, cents: bigint) => ledger.find((r) => r.date === date && r.amountCents === cents)!.id;
@@ -79,6 +83,8 @@ describe.skipIf(!TEST_DATABASE_URL)("performance services (INV seed)", () => {
         { accountId: X, securityId: null, date: "2026-02-10", type: "transfer", transferDirection: "in", quantity: null, amountCents: 7000n, source: "csv" },
         // Linked to its bank row: the ledger row is the flow.
         { accountId: X, securityId: null, date: "2026-02-15", type: "transfer", transferDirection: "in", quantity: null, amountCents: 9000n, source: "csv", ledgerTransactionId: ledgerId("2026-02-15", 9000n) },
+        // Linked to a bank row that is not a transfer: this row is the flow, and the next day's equal transfer is not its twin.
+        { accountId: X, securityId: null, date: "2026-02-20", type: "transfer", transferDirection: "in", quantity: null, amountCents: 3000n, source: "csv", ledgerTransactionId: ledgerId("2026-02-20", 3000n) },
       ])
       .returning({ id: investmentTxn.id, date: investmentTxn.date });
     const invId = (date: string) => inv.find((r) => r.date === date)!.id;
@@ -89,6 +95,8 @@ describe.skipIf(!TEST_DATABASE_URL)("performance services (INV seed)", () => {
       { date: "2026-01-15", amountCents: 5000n, kind: "cash", source: "ledger", accountId: X, counterpartyAccountId: null, pairId: null, sourceId: ledgerId("2026-01-15", 5000n) },
       { date: "2026-02-10", amountCents: 7000n, kind: "cash", source: "investment_txn", accountId: X, counterpartyAccountId: null, pairId: null, sourceId: invId("2026-02-10") },
       { date: "2026-02-15", amountCents: 9000n, kind: "cash", source: "ledger", accountId: X, counterpartyAccountId: null, pairId: null, sourceId: ledgerId("2026-02-15", 9000n) },
+      { date: "2026-02-20", amountCents: 3000n, kind: "cash", source: "investment_txn", accountId: X, counterpartyAccountId: null, pairId: null, sourceId: invId("2026-02-20") },
+      { date: "2026-02-21", amountCents: 3000n, kind: "cash", source: "ledger", accountId: X, counterpartyAccountId: null, pairId: null, sourceId: ledgerId("2026-02-21", 3000n) },
     ]);
     // The window is (from, to]: a flow dated `from` is excluded, one dated `to` is kept.
     expect((await loadExternalFlows(t.db, [X], "2026-01-02", "2026-01-15")).map((f) => f.date)).toEqual(["2026-01-15"]);
@@ -101,10 +109,10 @@ describe.skipIf(!TEST_DATABASE_URL)("performance services (INV seed)", () => {
     try {
       const securitiesOnly = await loadExternalFlows(t.db, [X], "2026-10-01", "2026-10-13", { openingValues: false });
       expect(securitiesOnly).toEqual([{ date: "2026-10-09", amountCents: 61800n, kind: "securities", source: "investment_txn", accountId: X, counterpartyAccountId: null, pairId: null, sourceId: inKind!.id }]);
-      // That trade makes X a full-history account the chain first values on 10-09 (2 VTI at 309 + the 121,000 of carried contributions): an opening value beside the securities flow.
+      // That trade makes X a full-history account the chain first values on 10-09 (2 VTI at 309 + the 127,000 of carried contributions): an opening value beside the securities flow.
       const october = await loadExternalFlows(t.db, [X], "2026-10-01", "2026-10-13", { now: INV_SEED_NOW });
       expect(october.map((f) => [f.date, f.kind, f.amountCents, f.source])).toEqual([
-        ["2026-10-09", "opening_value", 182800n, "engine"],
+        ["2026-10-09", "opening_value", 188800n, "engine"],
         ["2026-10-09", "securities", 61800n, "investment_txn"],
       ]);
     } finally {

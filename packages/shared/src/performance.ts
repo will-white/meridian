@@ -855,7 +855,9 @@ export interface PerformanceBlock {
   subPeriods: SubPeriod[];
   /** Flows in `(from, to]`, internal ones marked. */
   flows: FlowResult[];
+  /** Realized gains of the disposals dated in `(from, to]`. */
   realized: RealizedSummary | null;
+  /** The all-history gain summary as of `asOf`: realized through that day, unrealized on the lots open that day. */
   gains: GainSummary | null;
   income: EngineIncomeMonth[];
   warnings: EngineWarning[];
@@ -867,8 +869,11 @@ export interface AccountPerformance extends PerformanceBlock {
   type: AccountType;
   taxTreatment: TaxTreatment;
   fidelity: InvestmentFidelity;
+  /** The positions held at the end of `asOf` (and the cash line), priced on `asOf`. */
   holdings: PerformanceHolding[];
+  /** Every lot opened on or before `asOf`, with the quantity and basis left at the end of that day. */
   lots: LotResult[];
+  /** Every disposal dated on or before the later of `to` and `asOf` (the window's realized gains and the gain summary both read from it). */
   disposals: DisposalResult[];
   statementCheck: StatementCheck | null;
 }
@@ -1026,6 +1031,23 @@ function mergeIncome(lists: readonly (readonly EngineIncomeMonth[])[]): EngineIn
   });
 }
 
+/**
+ * The lot engine's state at the end of `asOf`: the full build when no row is dated after it,
+ * else a build over the rows dated on or before it (same picks, transfer sources and lot ids, so
+ * a lot keeps its id on every date). Picks of sales that have not happened yet are simply unused.
+ */
+function lotsAsOf(acct: PerformanceAccountInput, full: LotBuildResult, asOf: IsoDate): LotBuildResult {
+  if (!acct.txns.some((t) => t.date > asOf)) return full;
+  return buildLots({
+    accountId: acct.accountId,
+    lotMethod: acct.lotMethod,
+    txns: acct.txns.filter((t) => t.date <= asOf),
+    lotPicks: acct.lotPicks,
+    ...(acct.transferSources !== undefined ? { transferSources: acct.transferSources } : {}),
+    ...(acct.lotId !== undefined ? { lotId: acct.lotId } : {}),
+  });
+}
+
 function performAccount(input: PerformanceInput, acct: PerformanceAccountInput): AccountContext {
   const { from, to, asOf } = input;
   const accountId = acct.accountId;
@@ -1151,10 +1173,19 @@ function performAccount(input: PerformanceInput, acct: PerformanceAccountInput):
   let gains: GainSummary | null = null;
   let income: EngineIncomeMonth[] = [];
   let check: StatementCheck | null = null;
+  let lotsOnAsOf: LotResult[] = [];
+  let disposalsListed: DisposalResult[] = [];
   if (lots && valuationInput) {
+    // Holdings, lots and the gain summary are the state at the end of `asOf` (§3.14, §3.15): rows
+    // dated after it have not happened yet, so a later sale neither shrinks the lots held that
+    // day nor counts as realized. The values above already read the positions by date.
+    const asOfLots = lotsAsOf(acct, lots, asOf);
+    lotsOnAsOf = asOfLots.lots;
+    const listedThrough = asOf > to ? asOf : to;
+    disposalsListed = lots.disposals.filter((d) => d.date <= listedThrough);
     const asOfValuation = valueFullAccount(valuationInput, asOf);
     holdings = [
-      ...holdingsAsOf(lots.lots, asOf, priceLookupAt(priceOn, asOf)),
+      ...holdingsAsOf(asOfLots.lots, asOf, priceLookupAt(priceOn, asOf)),
       {
         securityId: null,
         quantity: centsToFixed8(asOfValuation.cashCents),
@@ -1172,7 +1203,7 @@ function performAccount(input: PerformanceInput, acct: PerformanceAccountInput):
       },
     ];
     realized = summarizeRealized(lots.disposals, { from, to });
-    gains = summarizeGains(lots.lots, lots.disposals, (securityId) => priceOn(securityId, asOf)?.close ?? null);
+    gains = summarizeGains(asOfLots.lots, asOfLots.disposals, (securityId) => priceOn(securityId, asOf)?.close ?? null);
     income = incomeByMonth(acct.txns.filter((t) => t.date > from && t.date <= to));
     const checkAnchor = latestAnchor(acct.cashAnchors, to, false);
     if (checkAnchor) {
@@ -1209,8 +1240,8 @@ function performAccount(input: PerformanceInput, acct: PerformanceAccountInput):
     income,
     warnings,
     holdings,
-    lots: lots?.lots ?? [],
-    disposals: lots?.disposals ?? [],
+    lots: lotsOnAsOf,
+    disposals: disposalsListed,
     statementCheck: check,
   };
   return { result, valueAt, boundaries, noValuations };

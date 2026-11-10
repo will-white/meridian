@@ -2,7 +2,7 @@ import { count } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { auditLog, balanceSnapshot, holdingSnapshot, investmentTxn, job, lot, lotDisposal, price } from "@meridian/db";
 import { INV_SEED_TODAY } from "@meridian/db/testing";
-import type { LotsResponse, PerformanceResponse, RealizedGainsResponse, RebuildLotsResponse } from "@meridian/shared";
+import type { AccountView, HoldingsView, LotsResponse, PerformanceResponse, RealizedGainsResponse, RebuildLotsResponse, SecurityView } from "@meridian/shared";
 import { TEST_DATABASE_URL } from "./test/helpers.js";
 import { freshInvestmentApp, viewerCookies, type InvestmentApp } from "./test/investments.js";
 
@@ -174,5 +174,92 @@ describe.skipIf(!TEST_DATABASE_URL)("performance, lots and realized routes", () 
     expect(rebuild.json().code).toBe("viewer");
     const picks = await A.t.app.inject({ method: "PUT", url: `/api/investments/txns/${A.S.txns["buyVti1"]}/lot-picks`, payload: { picks: [] }, cookies });
     expect(picks.statusCode).toBe(403);
+  });
+});
+
+/**
+ * A custom period that ends before a later sale (the Performance page sends `asOf = to`). One
+ * brokerage: +1,000.00 on 01-02, 10 ACME bought @ 100.00 on 01-05, 4 sold @ 150.00 on 09-01;
+ * closes 120 on 06-30, 150 on 09-01, 160 on 10-13. By hand on 06-30: 10 shares worth 1,200.00 on
+ * a basis of 1,000.00, +200.00 unrealized, nothing realized, no cash. On 10-13: 6 shares worth
+ * 960.00 on a basis of 600.00, cash 600.00, 200.00 realized.
+ */
+describe.skipIf(!TEST_DATABASE_URL)("performance and lots as of a date before a later sale", () => {
+  let A: InvestmentApp;
+  let accountId = "";
+  let acme = "";
+
+  beforeAll(async () => {
+    A = await freshInvestmentApp();
+    const send = async <T>(method: "POST" | "PUT", url: string, payload: object): Promise<T> => {
+      const res = await A.t.call({ method, url, payload });
+      expect(res.statusCode, `${method} ${url}: ${res.body}`).toBe(200);
+      return res.json() as T;
+    };
+    accountId = (await send<AccountView>("POST", "/api/accounts", { name: "As-of Brokerage", type: "brokerage" })).id;
+    acme = (await send<SecurityView>("POST", "/api/investments/securities", { ticker: "ACME", name: "Acme Corp", type: "stock", assetClass: "us_stock" })).id;
+    const txn = (body: object) => send("POST", "/api/investments/txns", { accountId, today: TODAY, ...body });
+    await txn({ type: "transfer", direction: "in", date: "2026-01-02", amountCents: "100000" });
+    await txn({ type: "buy", date: "2026-01-05", securityId: acme, quantity: "10", price: "100" });
+    await txn({ type: "sell", date: "2026-09-01", securityId: acme, quantity: "4", price: "150" });
+    for (const [date, close] of [["2026-06-30", "120"], ["2026-09-01", "150"], ["2026-10-13", "160"]] as const) await send("PUT", `/api/prices/${acme}/${date}`, { close, today: TODAY });
+  });
+  afterAll(async () => {
+    await A?.t.cleanup();
+  });
+
+  const performance = async (to: string) => {
+    const res = await A.t.call({ method: "POST", url: "/api/investments/performance", payload: { accountIds: [accountId], from: "2026-01-01", to, asOf: to, today: TODAY, detail: "full", benchmarkSecurityId: null } });
+    expect(res.statusCode, res.body).toBe(200);
+    return (res.json() as PerformanceResponse).accounts[0]!;
+  };
+  const lots = async (asOf: string) => {
+    const res = await A.t.call({ method: "GET", url: `/api/investments/lots?accountId=${accountId}&asOf=${asOf}&today=${TODAY}` });
+    expect(res.statusCode, res.body).toBe(200);
+    return (res.json() as LotsResponse).lots.map((l) => [l.quantity, l.costBasisCents, l.valueCents, l.unrealizedCents, l.term]);
+  };
+
+  const holdingRows = async (asOf: string) => {
+    const res = await A.t.call({ method: "GET", url: `/api/investments/holdings?accountId=${accountId}&asOf=${asOf}&today=${TODAY}` });
+    expect(res.statusCode, res.body).toBe(200);
+    return (res.json() as HoldingsView).rows.map((r) => [r.ticker ?? r.name, r.quantity, r.valueCents, r.costBasisCents, r.gainCents]);
+  };
+
+  it("to 06-30: the end value, the holdings, the lots and the gains all describe the ten shares held that day", async () => {
+    const a = await performance("2026-06-30");
+    expect(a.endValueCents).toBe("120000");
+    expect(a.holdings.map((h) => [h.ticker ?? h.securityName, h.quantity, h.valueCents, h.costBasisCents, h.unrealizedCents])).toEqual([
+      ["ACME", "10", "120000", "100000", "20000"],
+      ["Cash", "0", "0", null, null],
+    ]);
+    expect(a.gains).toMatchObject({ realizedCents: "0", realizedShortCents: "0", unrealizedCents: "20000", totalGainCents: "20000", proceedsCents: "0", openValueCents: "120000", openBasisCents: "100000" });
+    expect(a.realized).toMatchObject({ shortTerm: { count: 0, gainCents: "0" } });
+    expect(a.lots.map((l) => [l.quantity, l.costBasisCents, l.valueCents, l.unrealizedCents, l.term, l.priceDate, l.closedDate])).toEqual([["10", "100000", "120000", "20000", "short", "2026-06-30", null]]);
+    expect(a.disposals).toEqual([]);
+    expect(await lots("2026-06-30")).toEqual([["10", "100000", "120000", "20000", "short"]]);
+    // The Holdings page on the same date agrees; its cash row nets the 1,000.00 put in against the 1,000.00 spent, at no gain.
+    expect(await holdingRows("2026-06-30")).toEqual([
+      ["ACME", "10", "120000", "100000", "20000"],
+      ["Cash (USD)", null, "0", "0", "0"],
+    ]);
+  });
+
+  it("to 10-13: six shares, the cash from the sale and the realized gain", async () => {
+    const a = await performance("2026-10-13");
+    expect(a.endValueCents).toBe("156000");
+    expect(a.holdings.map((h) => [h.ticker ?? h.securityName, h.quantity, h.valueCents, h.costBasisCents, h.unrealizedCents])).toEqual([
+      ["ACME", "6", "96000", "60000", "36000"],
+      ["Cash", "600", "60000", null, null],
+    ]);
+    expect(a.gains).toMatchObject({ realizedCents: "20000", realizedShortCents: "20000", unrealizedCents: "36000", totalGainCents: "56000", proceedsCents: "60000" });
+    expect(a.realized).toMatchObject({ shortTerm: { count: 1, proceedsCents: "60000", basisCents: "40000", gainCents: "20000" } });
+    expect(a.lots.map((l) => [l.quantity, l.costBasisCents, l.valueCents, l.unrealizedCents])).toEqual([["6", "60000", "96000", "36000"]]);
+    expect(a.disposals.map((d) => [d.date, d.quantity, d.gainCents])).toEqual([["2026-09-01", "4", "20000"]]);
+    expect(await lots("2026-10-13")).toEqual([["6", "60000", "96000", "36000", "short"]]);
+    // Cash: 1,000.00 in − 1,000.00 spent + 600.00 from the sale; cash has no gain.
+    expect(await holdingRows("2026-10-13")).toEqual([
+      ["ACME", "6", "96000", "60000", "36000"],
+      ["Cash (USD)", null, "60000", "60000", "0"],
+    ]);
   });
 });

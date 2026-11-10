@@ -5,9 +5,11 @@ import { INV_SEED_TODAY } from "@meridian/db/testing";
 import type {
   AccountView,
   ConnectionView,
+  GoalView,
   HoldingSnapshotView,
   InvestmentTxnList,
   LotsResponse,
+  PerformanceView,
   PositionsImportResult,
   PositionsPreviewResponse,
   RealizedGainsResponse,
@@ -394,5 +396,97 @@ describe.skipIf(!TEST_DATABASE_URL)("positions and trades CSV import routes", ()
       expect(res.statusCode, url).toBe(403);
       expect(res.json().code).toBe("viewer");
     }
+  });
+});
+
+/**
+ * A deposit whose bank description is not one the contribution classifier knows. The bank side
+ * of a brokerage (a bank CSV, as a feed would deliver it): +5,000.00 "MONEYLINK TXN FROM CHK
+ * 1234" on 09-14 and +1,000.00 "ELECTRONIC FUNDS TRANSFER RECEIVED" on 09-20. Its trade
+ * history: both deposits and 20 VTI bought at 300.00 on 09-21 (−6,000.00). By hand on 10-13
+ * (VTI 312.50): 20 × 312.50 = 6,250.00; contributions 6,000.00; growth 250.00; the time-weighted
+ * return is 6,250 ÷ 6,000 − 1 (nothing moved before the buy); the goal linked to the account
+ * has 6,000.00 saved.
+ */
+describe.skipIf(!TEST_DATABASE_URL)("a deposit the bank describes in its own words is still a contribution once the trade history names it", () => {
+  let A: InvestmentApp;
+  let accountId = "";
+
+  beforeAll(async () => {
+    A = await freshInvestmentApp();
+  });
+  afterAll(async () => {
+    await A?.t.cleanup();
+  });
+
+  const send = async <T>(method: "POST" | "PATCH", url: string, payload: object): Promise<T> => {
+    const res = await A.t.call({ method, url, payload });
+    expect(res.statusCode, `${method} ${url}: ${res.body}`).toBe(200);
+    return res.json() as T;
+  };
+  const get = async <T>(url: string): Promise<T> => {
+    const res = await A.t.call({ method: "GET", url });
+    expect(res.statusCode, `GET ${url}: ${res.body}`).toBe(200);
+    return res.json() as T;
+  };
+  type LedgerRow = { id: string; date: string; amountCents: string; isTransfer: boolean };
+  const ledger = async () => (await get<{ items: LedgerRow[] }>(`/api/transactions?accountId=${accountId}`)).items.map((r) => [r.date, r.amountCents, r.isTransfer]).sort();
+  const saved = async () => (await get<GoalView[]>(`/api/goals?today=${TODAY}`)).find((g) => g.linkedAccountId === accountId)!.progress.savedCents;
+  const performance = async () => (await get<PerformanceView>(`/api/investments/performance?accountIds=${accountId}&period=all&today=${TODAY}`)).accounts.find((a) => a.accountId === accountId)!;
+
+  it("the bank rows arrive first: only the one that reads like a contribution is a transfer, and the goal sees only it", async () => {
+    accountId = (await send<AccountView>("POST", "/api/accounts", { name: "Schwab Moneylink", type: "brokerage" })).id;
+    const bankCsv = ["Date,Description,Amount", "09/14/2026,MONEYLINK TXN FROM CHK 1234,5000.00", "09/20/2026,ELECTRONIC FUNDS TRANSFER RECEIVED,1000.00"].join("\n");
+    const bank = await send<{ created: number }>("POST", "/api/import/csv/commit", {
+      accountId,
+      csvText: bankCsv,
+      mapping: { hasHeader: true, date: { column: "Date", format: "MM/DD/YYYY" }, description: { column: "Description" }, amount: { mode: "single", column: "Amount" } },
+    });
+    expect(bank.created).toBe(2);
+    expect(await ledger()).toEqual([
+      ["2026-09-14", "500000", false],
+      ["2026-09-20", "100000", true],
+    ]);
+    await send("POST", "/api/goals", { name: "Invest", newCategory: { name: "Investing goal" }, targetCents: "10000000", linkedAccountId: accountId, startMonth: "2026-09" });
+    expect(await saved()).toBe("100000");
+  });
+
+  it("the trade history links both deposits: both are transfers, the goal has 6,000.00 and the return counts 6,000.00 put in", async () => {
+    const trades = [
+      "Run Date,Action,Symbol,Description,Quantity,Price,Amount",
+      "09/14/2026,ELECTRONIC FUNDS TRANSFER RECEIVED,,,,,5000.00",
+      "09/20/2026,ELECTRONIC FUNDS TRANSFER RECEIVED,,,,,1000.00",
+      "09/21/2026,YOU BOUGHT,VTI,VANGUARD TOTAL STOCK MARKET ETF,20,300.00,-6000.00",
+    ].join("\n");
+    const mapping = { hasHeader: true, date: { column: "Run Date", format: "MM/DD/YYYY" }, action: { column: "Action" }, symbol: { column: "Symbol" }, name: { column: "Description" }, quantity: { column: "Quantity" }, price: { column: "Price" }, amount: { column: "Amount" } };
+    const result = await send<TradesImportResult>("POST", "/api/import/trades/commit", { csvText: trades, accountId, mapping, today: TODAY });
+    expect(result).toMatchObject({ created: 3, linked: 2, ledgerCreated: 0, errors: [] });
+    // Still two bank rows (nothing was duplicated), both transfers now.
+    expect(await ledger()).toEqual([
+      ["2026-09-14", "500000", true],
+      ["2026-09-20", "100000", true],
+    ]);
+    expect(await saved()).toBe("600000");
+
+    const a = await performance();
+    expect(a.block).toMatchObject({ method: "true_twr", startValueCents: "0", endValueCents: "625000", contributionsCents: "600000", withdrawalsCents: "0", netFlowsCents: "600000", growthCents: "25000", uncategorizedRows: 0 });
+    expect(a.block.flows.map((f) => [f.date, f.amountCents, f.kind, f.source])).toEqual([
+      ["2026-09-14", "500000", "cash", "ledger"],
+      ["2026-09-20", "100000", "cash", "ledger"],
+    ]);
+    expect(a.block.twr.rate).toBeCloseTo(625000 / 600000 - 1, 9);
+  });
+
+  it("\"not a transfer\" on the bank row takes it off the goal, and the return still counts the deposit", async () => {
+    const row = (await get<{ items: LedgerRow[] }>(`/api/transactions?accountId=${accountId}`)).items.find((r) => r.amountCents === "500000")!;
+    await send("PATCH", `/api/transactions/${row.id}`, { isTransfer: false });
+    expect(await saved()).toBe("100000");
+    const a = await performance();
+    expect(a.block).toMatchObject({ endValueCents: "625000", contributionsCents: "600000", growthCents: "25000" });
+    expect(a.block.flows.map((f) => [f.date, f.amountCents, f.source])).toEqual([
+      ["2026-09-14", "500000", "investment_txn"],
+      ["2026-09-20", "100000", "ledger"],
+    ]);
+    expect(a.block.twr.rate).toBeCloseTo(625000 / 600000 - 1, 9);
   });
 });

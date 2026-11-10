@@ -422,10 +422,11 @@ export type LotPicksParse = { ok: true; picks: LotPickInput[]; sumQuantity: stri
 /**
  * The dialog's quantities to `SetLotPicksBody.picks`, mirroring the route
  * (seams C7): blank rows are dropped, each pick is positive and at most the
- * lot's original quantity (the lots service reports today's remaining
- * quantity, which later sales have already consumed, so the original is the
- * client's upper bound and the route's dry rebuild is the authority for
- * `pick_exceeds_lot`), and Σ picks ≤ the sale's quantity (`picks_exceed_sale`;
+ * lot's original quantity (the lots service reports the quantity left at the
+ * end of the sale date, which this sale and the day's other sales have
+ * already consumed, so the original is the client's upper bound and the
+ * route's dry rebuild is the authority for `pick_exceeds_lot`), and Σ picks ≤
+ * the sale's quantity (`picks_exceed_sale`;
  * FIFO covers the remainder). An empty set clears the picks.
  */
 export function parseLotPicks(drafts: Readonly<Record<string, string>>, lots: ReadonlyArray<Pick<LotView, "id" | "originalQuantity">>, saleQuantity: string): LotPicksParse {

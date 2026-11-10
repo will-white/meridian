@@ -8,6 +8,7 @@ import { INV_SEED_TODAY, seedInvestmentFixture, type InvestmentSeed } from "../t
 import { listAudit } from "./audit.js";
 import { deleteInvestmentTxn } from "./investmentTxns.js";
 import { buildAccountLots, computeHoldings, listLots, listRealized, loadInvestmentTxns, rebuildLots, setLotPicks } from "./lots.js";
+import { createSecurity, setManualPrice } from "./securities.js";
 
 const f8 = parseFixed8;
 const ctx = (batchId = randomUUID()) => ({ userId: null, batchId });
@@ -302,5 +303,36 @@ describe.skipIf(!TEST_DATABASE_URL)("lots service (TC26)", () => {
       ["2025-03-04", f8("0.66666667"), 1000n, true, "transfer_in"],
       ["2025-03-05", f8("0.66666667"), 1000n, true, "transfer_in"],
     ]);
+  });
+
+  /**
+   * The lots list is the state on its date. 10 ACME bought @ 100.00 on 2026-01-05, 4 sold @ 150.00
+   * on 09-01 and the last 6 @ 155.00 on 10-01; closes 120 on 06-30, 150 on 09-01, 160 on 10-13.
+   * By hand: on 06-30 the lot holds 10 shares (basis 1,000.00, value 1,200.00, +200.00); on 09-15
+   * 6 shares (basis 600.00, value 6 × 150 = 900.00, +300.00); from 10-01 it is closed.
+   */
+  it("lists the lots as they stood on the as-of date: a later sale has not happened yet, and each lot keeps its id", async () => {
+    const [z] = await t.db.insert(account).values({ name: "As-of Brokerage", type: "brokerage", taxTreatment: "taxable", onBudget: false }).returning({ id: account.id });
+    const Z = z!.id;
+    const acme = (await createSecurity(t.db, { ticker: "ACME", name: "Acme Corp", type: "stock", assetClass: "us_stock" }, ctx())).id;
+    for (const [date, close] of [["2026-06-30", "120"], ["2026-09-01", "150"], ["2026-10-13", "160"]] as const) await setManualPrice(t.db, acme, { date, close: f8(close) }, ctx());
+    await insertTxn({ accountId: Z, securityId: acme, date: "2026-01-05", type: "buy", quantity: "10", price: "100", amountCents: -100000n });
+    await insertTxn({ accountId: Z, securityId: acme, date: "2026-09-01", type: "sell", quantity: "4", price: "150", amountCents: 60000n });
+    await insertTxn({ accountId: Z, securityId: acme, date: "2026-10-01", type: "sell", quantity: "6", price: "155", amountCents: 93000n });
+    await t.db.transaction((tx) => rebuildLots(tx, Z));
+    const [stored] = await lotsOf(Z);
+    expect(stored).toMatchObject({ quantity: 0n, costBasisCents: 0n, closedDate: "2026-10-01" });
+
+    const on = async (asOf: IsoDate, includeClosed = false) => (await listLots(t.db, { accountId: Z, asOf, includeClosed })).lots.map((l) => [l.id, l.quantity, l.costBasisCents, l.valueCents, l.unrealizedCents, l.term, l.closedDate, l.priceDate]);
+    expect(await on("2026-06-30")).toEqual([[stored!.id, f8("10"), 100000n, 120000n, 20000n, "short", null, "2026-06-30"]]);
+    expect(await on("2026-09-15")).toEqual([[stored!.id, f8("6"), 60000n, 90000n, 30000n, "short", null, "2026-09-01"]]);
+    // Closed on 10-01: gone from the open list, kept with the closed ones.
+    expect(await on("2026-10-13")).toEqual([]);
+    expect(await on("2026-10-13", true)).toEqual([[stored!.id, 0n, 0n, null, null, "none", "2026-10-01", null]]);
+    // Before the buy there was no lot at all.
+    expect(await on("2026-01-04", true)).toEqual([]);
+    // The security filter and the all-accounts listing read the same state.
+    const all = await listLots(t.db, { securityId: acme, asOf: "2026-06-30" });
+    expect(all.lots.map((l) => [l.accountName, l.ticker, l.quantity])).toEqual([["As-of Brokerage", "ACME", f8("10")]]);
   });
 });

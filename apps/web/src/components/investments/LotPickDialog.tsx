@@ -12,8 +12,9 @@ import { invalidateInvestments, INVESTMENTS_STALE_MS } from "./queries.js";
 /**
  * Specific identification for a sale or a transfer out (plan decision 5,
  * seams C7): the security's lots open on the sale date (GET /investments/lots
- * as of that date) with acquired date, open quantity, basis per share, term
- * and the gain a pick would realize; the owner types quantities; the
+ * as of that date, which lists the lots as they stood at the end of it) with
+ * acquired date, the quantity left that day, basis per share, term and the
+ * gain a pick would realize; the owner types quantities; the
  * validation mirrors the route (each pick ≤ the lot, Σ ≤ the sale; FIFO
  * covers the remainder). Saves through PUT /investments/txns/:id/lot-picks;
  * an empty set clears the picks. The engine's warnings come back with the
@@ -68,7 +69,11 @@ export function LotPickDialog({ txn, today, onClose }: { txn: InvestmentTxnView;
       <ErrorText error={lots.error} />
       {lots.isLoading && <p className="muted small">Loading the lots…</p>}
       {lots.data && candidates.length === 0 && <p className="muted small">No lots of this security were open on {shortDate(txn.date)}; the engine reports the sale as unmatched.</p>}
-      {candidates.length > 0 && <p className="muted small">"Open today" is what remains after every sale to date (this one included under FIFO); a pick may use up to the lot's quantity, and the server checks it against the lots open on the sale date.</p>}
+      {candidates.length > 0 && (
+        <p className="muted small">
+          "Left that day" is what remained of the lot at the end of {shortDate(txn.date)}, after this row under its current picks or FIFO; a pick may use up to the lot's quantity, and the server checks it against what was open just before the row.
+        </p>
+      )}
       {candidates.length > 0 && (
         <div className="scroll">
           <table className="table small inv-table">
@@ -76,7 +81,7 @@ export function LotPickDialog({ txn, today, onClose }: { txn: InvestmentTxnView;
               <tr>
                 <th>Acquired</th>
                 <th className="num">Lot</th>
-                <th className="num">Open today</th>
+                <th className="num">Left that day</th>
                 <th className="num">Basis / share</th>
                 <th>Term</th>
                 <th className="num">Pick</th>

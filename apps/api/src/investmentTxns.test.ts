@@ -167,6 +167,13 @@ describe.skipIf(!TEST_DATABASE_URL)("investment transaction and snapshot routes"
     const edit = await A.t.call({ method: "PATCH", url: `/api/investments/txns/${inLeg!.id}`, payload: { quantity: "5", today: TODAY } });
     expect(edit.statusCode).toBe(409);
     expect(edit.json().code).toBe("transfer_leg_linked");
+    // A date change is one move: the other leg follows, and both accounts are valued again.
+    const moved = await A.t.call({ method: "PATCH", url: `/api/investments/txns/${out!.id}`, payload: { date: "2026-10-12", today: TODAY } });
+    expect(moved.statusCode, moved.body).toBe(200);
+    expect(moved.json()).toMatchObject({ date: "2026-10-12", transferDirection: "out", transferGroupId: out!.transferGroupId });
+    expect((await A.t.call({ method: "GET", url: `/api/investments/txns/${inLeg!.id}` })).json()).toMatchObject({ date: "2026-10-12", transferDirection: "in", transferGroupId: out!.transferGroupId });
+    expect(await valuationJobs()).toEqual(valuationOf(B, R));
+    await clearValuationJobs();
     const del = await A.t.call({ method: "DELETE", url: `/api/investments/txns/${out!.id}` });
     expect(del.statusCode).toBe(409);
     expect(del.json().code).toBe("transfer_leg_linked");

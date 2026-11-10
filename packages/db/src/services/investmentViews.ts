@@ -264,8 +264,13 @@ function key(accountId: string, securityId: string): string {
   return `${accountId}|${securityId}`;
 }
 
-function lineKey(line: Pick<ViewLine, "accountId" | "securityId">): string {
-  return key(line.accountId, line.securityId ?? "");
+/**
+ * One key per line of an account: the security's, or for the inferred cash lines (no security:
+ * the plug, the trades' cash, the carried transfers) the line's kind, so two of them in one
+ * account never read each other's figures.
+ */
+function lineKey(line: Pick<ViewLine, "accountId" | "securityId" | "kind">): string {
+  return key(line.accountId, line.securityId ?? `#${line.kind}`);
 }
 
 function accountRef(a: InvestmentAccountRecord, f: AccountFidelityRecord | undefined): AccountRefRecord {

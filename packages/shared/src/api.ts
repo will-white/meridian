@@ -1549,7 +1549,7 @@ export const PerformanceRequestBody = z.object({
   from: IsoDateInput.optional(),
   /** Default: today; `from < to ≤ today`. */
   to: IsoDateInput.optional(),
-  /** Holdings valuation date; default: `to`. */
+  /** The date the holdings, lots and gain summary describe (the positions held at the end of it, priced on it); default: `to`. */
   asOf: IsoDateInput.optional(),
   /** Default: every open investment-type account. */
   accountIds: z.array(z.string().uuid()).max(50).optional(),
@@ -1762,8 +1762,11 @@ export const AccountPerformanceView = z.object({
   taxTreatment: TaxTreatment,
   fidelity: InvestmentFidelity,
   ...PerformanceBlock,
+  /** The positions and cash held at the end of `asOf`. */
   holdings: z.array(HoldingView),
+  /** The lots as they stood at the end of `asOf`. */
   lots: z.array(LotView),
+  /** Disposals dated on or before the later of `to` and `asOf`. */
   disposals: z.array(LotDisposalView),
   statementCheck: StatementCheckView.nullable(),
 });
@@ -1789,6 +1792,7 @@ export const PerformanceResponse = z.object({
 export const LotsQuery = z.object({
   accountId: z.string().uuid().optional(),
   securityId: z.string().uuid().optional(),
+  /** The lots as they stood at the end of this date (later sales and buys have not happened), priced on it; default: today. */
   asOf: IsoDateInput.optional(),
   today: IsoDateInput.optional(),
   includeClosed: QueryBoolean.default("false"),
