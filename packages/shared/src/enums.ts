@@ -102,11 +102,20 @@ export const AuditEntity = z.enum([
   "lot_pick",
   "account_reconciliation",
   "account",
+  // Household members: created, removed, password or second factor changed (never the secrets themselves).
+  "user",
 ]);
 export type AuditEntity = z.infer<typeof AuditEntity>;
 
 export const AuditAction = z.enum(["create", "update", "delete"]);
 export type AuditAction = z.infer<typeof AuditAction>;
+
+/**
+ * `sign_in_event.kind`: what the owner sees under Settings > Sign-in activity.
+ * `code_lockout` is the wrong code that ended a password session (the fifth).
+ */
+export const SignInEventKind = z.enum(["signed_in", "password_failed", "code_failed", "code_lockout"]);
+export type SignInEventKind = z.infer<typeof SignInEventKind>;
 
 export const GoalStatus = z.enum(["active", "completed", "archived"]);
 export type GoalStatus = z.infer<typeof GoalStatus>;

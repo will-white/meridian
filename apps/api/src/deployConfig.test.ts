@@ -63,6 +63,27 @@ describe("deploy files: where the API listens and which proxy it trusts", () => 
     expect(config.port).toBe(3000);
   });
 
+  it(".env.example states the session lifetimes the API defaults to: 30 days, 14 idle", () => {
+    const example = repo(".env.example");
+    expect(example).toMatch(/^SESSION_TTL_DAYS=30$/m);
+    expect(example).toMatch(/^SESSION_IDLE_DAYS=14$/m);
+    const defaults = loadConfig({ SESSION_SECRET: "0123456789abcdef0123456789abcdef", SECRETS_KEY: "s", DATABASE_URL: "postgres://x" });
+    expect([defaults.sessionTtlDays, defaults.sessionIdleDays]).toEqual([30, 14]);
+    const custom = loadConfig({ SESSION_SECRET: "0123456789abcdef0123456789abcdef", SECRETS_KEY: "s", DATABASE_URL: "postgres://x", SESSION_TTL_DAYS: "7", SESSION_IDLE_DAYS: "2" });
+    expect([custom.sessionTtlDays, custom.sessionIdleDays]).toEqual([7, 2]);
+    expect(() => loadConfig({ SESSION_SECRET: "0123456789abcdef0123456789abcdef", SECRETS_KEY: "s", DATABASE_URL: "postgres://x", SESSION_IDLE_DAYS: "0" })).toThrow();
+  });
+
+  it("the image ships the recovery command the README tells a locked-out owner to run", () => {
+    // Built beside the server, copied with it, and documented with the path it has in the container.
+    expect(JSON.parse(repo("apps/api/package.json")).scripts.build).toContain("bundle.mjs src/admin.ts dist/admin.js");
+    expect(repo("apps/api/Dockerfile")).toMatch(/^COPY --from=build \/app\/apps\/api\/dist \.\/apps\/api\/dist$/m);
+    const readme = repo("README.md");
+    for (const command of ["users", "reset-totp <username>", "reset-password <username>", "sign-out <username>"]) {
+      expect(readme, command).toContain(`docker compose -f deploy/docker-compose.yml exec web node apps/api/dist/admin.js ${command}`);
+    }
+  });
+
   it("the Vite dev server proxies /api to the loopback address the API binds", () => {
     expect(repo("apps/web/vite.config.ts")).toContain('proxy: { "/api": "http://127.0.0.1:3000" }');
   });

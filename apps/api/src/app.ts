@@ -33,6 +33,7 @@ import { ruleRoutes } from "./routes/rules.js";
 import { securityRoutes } from "./routes/securities.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { transactionRoutes } from "./routes/transactions.js";
+import { userRoutes } from "./routes/users.js";
 import { valuationRoutes } from "./routes/valuation.js";
 
 export interface BuildAppOptions {
@@ -41,9 +42,11 @@ export interface BuildAppOptions {
   logger?: FastifyServerOptions["logger"];
   /** Injectable clock; routes derive the server's "today" from it. */
   now?: () => Date;
+  /** Injectable clock for sign-in only (session lifetimes, authenticator codes); the real time unless a test moves it. */
+  authNow?: () => Date;
 }
 
-export async function buildApp({ db, config, logger, now }: BuildAppOptions) {
+export async function buildApp({ db, config, logger, now, authNow }: BuildAppOptions) {
   const app = Fastify({
     logger: logger ?? config.nodeEnv !== "test",
     // Only the listed reverse proxy may state the client address and the public host
@@ -56,6 +59,7 @@ export async function buildApp({ db, config, logger, now }: BuildAppOptions) {
   app.decorate("db", db);
   app.decorate("config", config);
   app.decorate("now", now ?? (() => new Date()));
+  app.decorate("authNow", authNow ?? (() => new Date()));
   registerErrorHandler(app);
 
   await app.register(helmet, {
@@ -81,6 +85,7 @@ export async function buildApp({ db, config, logger, now }: BuildAppOptions) {
   await app.register(
     async (api) => {
       await api.register(authRoutes);
+      await api.register(userRoutes);
       await api.register(connectionRoutes);
       await api.register(accountRoutes);
       await api.register(transactionRoutes);

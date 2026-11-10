@@ -13,6 +13,7 @@ import {
   JobStatus,
   JobType,
   LotMethod,
+  SignInEventKind,
   TaxTreatment,
   TransactionSource,
 } from "./enums.js";
@@ -137,11 +138,75 @@ export const AuthStatus = z.object({
 export type AuthStatus = z.infer<typeof AuthStatus>;
 
 export const Password = z.string().min(12, "Use at least 12 characters").max(256);
-export const SetupBody = z.object({ username: z.string().min(1).max(64), password: Password });
+/** A sign-in name: trimmed, 1 to 64 characters, no control characters. */
+export const Username = z
+  .string()
+  .trim()
+  .min(1, "Enter a username")
+  .max(64)
+  .regex(/^[^\u0000-\u001F\u007F-\u009F]+$/, "Use letters, digits and punctuation only");
+export const SetupBody = z.object({ username: Username, password: Password });
 export const LoginBody = z.object({ username: z.string().min(1).max(64), password: z.string().min(1).max(256) });
 export const TotpCodeBody = z.object({ code: z.string().regex(/^\d{6}$/, "6 digits") });
 export const TotpSetupResponse = z.object({ otpauthUrl: z.string(), qrDataUrl: z.string(), secret: z.string() });
 export type TotpSetupResponse = z.infer<typeof TotpSetupResponse>;
+
+// ---- Household members, passwords, second factor, sessions ----
+/** A household member as the owner sees them. Never carries a password hash or an authenticator secret. */
+export const UserView = z.object({
+  id: z.string().uuid(),
+  username: z.string(),
+  role: UserRole,
+  /** False until the member has scanned a code and proven it; they do that at their first sign-in. */
+  totpEnrolled: z.boolean(),
+  createdAt: z.string(),
+  passwordChangedAt: z.string(),
+  /** The last completed sign-in (password and code); null when they never signed in. */
+  lastSignInAt: z.string().nullable(),
+  /** Signed-in sessions that have not expired. */
+  activeSessions: z.number().int(),
+});
+export type UserView = z.infer<typeof UserView>;
+
+/** The owner adds a viewer with a first password; the viewer enrolls their own authenticator at first sign-in. */
+export const CreateViewerBody = z.object({ username: Username, password: Password });
+export type CreateViewerBody = z.infer<typeof CreateViewerBody>;
+/** The owner sets a new password for a viewer who forgot theirs. */
+export const SetUserPasswordBody = z.object({ password: Password });
+/** Anyone changes their own password by proving the current one. */
+export const ChangePasswordBody = z.object({ currentPassword: z.string().min(1).max(256), newPassword: Password });
+export type ChangePasswordBody = z.infer<typeof ChangePasswordBody>;
+/** Re-entering the password before a sensitive change (replacing the authenticator). */
+export const PasswordConfirmBody = z.object({ password: z.string().min(1).max(256) });
+
+/** A session is named by the SHA-256 of its cookie id (what the database stores); the id itself never leaves the cookie. */
+export const SessionIdParams = z.object({ id: z.string().regex(/^[0-9a-f]{64}$/, "not a session id") });
+export const SessionView = z.object({
+  id: z.string(),
+  createdAt: z.string(),
+  lastSeenAt: z.string(),
+  expiresAt: z.string(),
+  /** The session this request came in on. */
+  current: z.boolean(),
+  ip: z.string().nullable(),
+  userAgent: z.string().nullable(),
+});
+export type SessionView = z.infer<typeof SessionView>;
+export const RevokeSessionsResponse = z.object({ revoked: z.number().int() });
+export type RevokeSessionsResponse = z.infer<typeof RevokeSessionsResponse>;
+
+export const SignInEventView = z.object({
+  id: z.string().uuid(),
+  at: z.string(),
+  username: z.string(),
+  kind: SignInEventKind,
+  ip: z.string().nullable(),
+  userAgent: z.string().nullable(),
+});
+export type SignInEventView = z.infer<typeof SignInEventView>;
+/** The latest sign-in events (the owner sees everyone's, a viewer their own) and how many of the last 7 days' were failures. */
+export const SignInActivity = z.object({ items: z.array(SignInEventView), failedLast7Days: z.number().int() });
+export type SignInActivity = z.infer<typeof SignInActivity>;
 
 // ---- Connections ----
 export const ConnectionErrorView = z.object({ code: z.string(), message: z.string(), accountId: z.string().optional() });

@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { AuthStatus, TotpSetupResponse } from "@meridian/shared";
 import { api } from "../lib/api.js";
-import { AUTH_KEY, useAuthMutation, useLogout } from "../lib/auth.js";
+import { AUTH_KEY, noteSignedOut, useAuthMutation, useLogout, useSignInNotice } from "../lib/auth.js";
 import { ErrorText } from "../components/ui.js";
 
 function AuthFrame({ title, children }: { title: string; children: React.ReactNode }) {
@@ -30,7 +30,9 @@ export function SetupPage() {
   };
   return (
     <AuthFrame title="Create the owner account">
-      <p className="muted">This is a single-household app. One owner, protected by a password and an authenticator app.</p>
+      <p className="muted">
+        This is a single-household app. One owner, protected by a password and an authenticator app; the owner can add read-only viewers later under Settings.
+      </p>
       <form onSubmit={submit} className="stack">
         <label>
           Username
@@ -56,10 +58,12 @@ export function SetupPage() {
 
 export function LoginPage() {
   const login = useAuthMutation<{ username: string; password: string }>("/auth/login");
+  const notice = useSignInNotice();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   return (
     <AuthFrame title="Sign in">
+      {notice && !login.error && <p className="error">{notice}</p>}
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -90,7 +94,7 @@ export function TotpVerifyPage({ status }: { status: AuthStatus }) {
   const [code, setCode] = useState("");
   return (
     <AuthFrame title="Authenticator code">
-      <p className="muted">Signed in as {status.username}. Enter the 6-digit code from your authenticator app.</p>
+      <p className="muted">Password accepted for {status.username}. Enter the 6-digit code from your authenticator app within ten minutes; each code works once.</p>
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -113,10 +117,14 @@ export function TotpVerifyPage({ status }: { status: AuthStatus }) {
 
 export function TotpEnrollPage({ status }: { status: AuthStatus }) {
   const qc = useQueryClient();
-  const start = useMutation({ mutationFn: () => api<TotpSetupResponse>("/auth/totp/setup", { method: "POST", body: {} }) });
+  const start = useMutation({ mutationFn: () => api<TotpSetupResponse>("/auth/totp/setup", { method: "POST", body: {} }), onError: (error) => noteSignedOut(qc, error) });
   const confirm = useMutation({
     mutationFn: (code: string) => api<AuthStatus>("/auth/totp/confirm", { method: "POST", body: { code } }),
-    onSuccess: (s) => qc.setQueryData(AUTH_KEY, s),
+    onSuccess: (s) => {
+      qc.setQueryData(AUTH_KEY, s);
+      void qc.invalidateQueries();
+    },
+    onError: (error) => noteSignedOut(qc, error),
   });
   const logout = useLogout();
   const [code, setCode] = useState("");
@@ -124,7 +132,7 @@ export function TotpEnrollPage({ status }: { status: AuthStatus }) {
     <AuthFrame title="Set up two-factor authentication">
       <p className="muted">
         Welcome, {status.username}. Two-factor authentication is required: scan the code with an authenticator app (Aegis, 1Password, Google Authenticator), then
-        enter the 6-digit code it shows.
+        enter the 6-digit code it shows. You have ten minutes; after that, sign in again and pick up here.
       </p>
       {!start.data ? (
         <div className="stack">

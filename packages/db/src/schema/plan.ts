@@ -23,6 +23,8 @@ export const AUDIT_ENTITIES = [
   "lot_pick",
   "account_reconciliation",
   "account",
+  // Household members (audit remediation)
+  "user",
 ] as const;
 
 /** Category groups sit under bucket headers in the grid. A group belongs to exactly one bucket. */

@@ -29,6 +29,13 @@
       "when": 1792926949601,
       "tag": "0003_security_name_index",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794332547295,
+      "tag": "0004_auth_hardening",
+      "breakpoints": true
     }
   ]
 }

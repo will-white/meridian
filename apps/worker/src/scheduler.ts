@@ -8,6 +8,8 @@ import {
   isValidTimeZone,
   job,
   priceRefreshDedupeKey,
+  purgeExpiredSessions,
+  purgeSignInEvents,
   requestPriceRefresh,
   type JobType,
 } from "@meridian/db";
@@ -120,11 +122,39 @@ export async function schedulePriceJobs(ctx: JobContext): Promise<number> {
   return queued;
 }
 
+/**
+ * Sign-in housekeeping: deletes sessions past their absolute or idle end (every sign-in adds
+ * a row; the API only clears a member's own expired ones when they sign in again) and
+ * sign-in activity older than its 90-day retention. Plain deletes, safe to repeat.
+ */
+export async function purgeSignInData(ctx: Pick<JobContext, "db" | "now">): Promise<{ sessions: number; events: number }> {
+  const sessions = await purgeExpiredSessions(ctx.db, ctx.now());
+  const events = await purgeSignInEvents(ctx.db);
+  return { sessions, events };
+}
+
+export const SIGN_IN_PURGE_INTERVAL_MS = 3600_000;
+
+/** Wraps a task so it runs at most once per `everyMs` of the context's clock. The first call runs; a failed run is retried on the next call. */
+export function atMostEvery<C extends Pick<JobContext, "now">, T>(everyMs: number, task: (ctx: C) => Promise<T>): (ctx: C) => Promise<T | null> {
+  let lastRun: number | null = null;
+  return async (ctx) => {
+    const now = ctx.now().getTime();
+    if (lastRun !== null && now - lastRun < everyMs) return null;
+    const result = await task(ctx);
+    lastRun = now;
+    return result;
+  };
+}
+
 export function startScheduler(ctx: JobContext, everyMs = 60_000): () => void {
   let stopped = false;
+  const hourlyPurge = atMostEvery(SIGN_IN_PURGE_INTERVAL_MS, purgeSignInData);
   const tick = async () => {
     if (stopped) return;
     try {
+      const purged = await hourlyPurge(ctx);
+      if (purged && purged.sessions + purged.events > 0) ctx.log.info(`[scheduler] removed ${purged.sessions} expired session(s) and ${purged.events} old sign-in event(s)`);
       const n = await scheduleDueSyncs(ctx);
       if (n > 0) ctx.log.info(`[scheduler] queued ${n} sync job(s)`);
       const d = await scheduleDailyJobs(ctx);

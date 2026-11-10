@@ -19,6 +19,9 @@ export const SIGN_IN_LIMIT = {
   /** Per username, as typed (trimmed, case-folded). */
   passwordPerUsername: { max: 20, timeWindow: "1 minute" },
   codePerAddress: { max: 10, timeWindow: "1 minute" },
-  /** Per user: 5 codes per 15 minutes is 480 guesses a day against a 6-digit code with a 3-step window. */
+  /**
+   * Per user: 5 codes per 15 minutes is 480 guesses a day against a 6-digit code with a 3-step window.
+   * Separately (in the database, not here) a password-only session is deleted at its fifth wrong code.
+   */
   codePerUser: { max: 5, timeWindow: "15 minutes" },
 } as const;

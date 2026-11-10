@@ -1,11 +1,10 @@
-import { randomBytes } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import * as OTPAuth from "otpauth";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { balanceSnapshot, session, user } from "@meridian/db";
+import { balanceSnapshot } from "@meridian/db";
 import { INV_SEED_TODAY, PLAN_SEED_TODAY, seedPlanFixture, type PlanSeed } from "@meridian/db/testing";
 import type { DashboardView } from "@meridian/shared";
-import { createTestApp, TEST_DATABASE_URL, type TestApp } from "./test/helpers.js";
+import { createTestApp, TEST_DATABASE_URL, viewerCookies, type TestApp } from "./test/helpers.js";
 import { freshInvestmentApp, type InvestmentApp } from "./test/investments.js";
 
 /**
@@ -29,17 +28,6 @@ async function freshApp(): Promise<{ t: TestApp; S: PlanSeed }> {
   const code = new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(setup.json().secret), digits: 6, period: 30 }).generate();
   await t.call({ method: "POST", url: "/api/auth/totp/confirm", payload: { code } });
   return { t, S };
-}
-
-/** A viewer-role user with a verified session, inserted directly; returns the cookie jar for inject(). */
-async function viewerCookies(t: TestApp): Promise<Record<string, string>> {
-  const [row] = await t.db.db
-    .insert(user)
-    .values({ username: "viewer", passwordHash: "never-verified", role: "viewer", totpConfirmedAt: new Date() })
-    .returning({ id: user.id });
-  const id = randomBytes(32).toString("hex");
-  await t.db.db.insert(session).values({ id, userId: row!.id, expiresAt: new Date(Date.now() + 86_400_000), totpVerified: true });
-  return { meridian_session: t.app.signCookie(id) };
 }
 
 describe.skipIf(!TEST_DATABASE_URL)("GET /api/dashboard", () => {

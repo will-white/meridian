@@ -1,18 +1,19 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import * as OTPAuth from "otpauth";
-import { createTestApp, TEST_DATABASE_URL, type TestApp } from "./test/helpers.js";
+import { createTestApp, SECOND, TEST_DATABASE_URL, testClock, totpCode, type TestApp } from "./test/helpers.js";
 
 describe.skipIf(!TEST_DATABASE_URL)("auth flow", () => {
   let t: TestApp;
   let secret = "";
+  // The sign-in clock, so the second sign-in below can happen 30 seconds later: a code is accepted once.
+  const clock = testClock();
   beforeAll(async () => {
-    t = await createTestApp();
+    t = await createTestApp({ authNow: clock.now });
   });
   afterAll(async () => {
     await t?.cleanup();
   });
 
-  const code = () => new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(secret), digits: 6, period: 30 }).generate();
+  const code = () => totpCode(secret, clock.now());
 
   it("answers the health check without auth", async () => {
     const res = await t.call({ method: "GET", url: "/api/health" });
@@ -39,7 +40,7 @@ describe.skipIf(!TEST_DATABASE_URL)("auth flow", () => {
   it("creates the owner, signs in, and requires TOTP enrollment before the app opens", async () => {
     const res = await t.call({ method: "POST", url: "/api/auth/setup", payload: { username: "owner", password: "correct horse battery staple" } });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ authenticated: true, totpEnrolled: false });
+    expect(res.json()).toEqual({ setupRequired: false, authenticated: true, totpRequired: false, totpEnrolled: false, username: "owner", role: "owner" });
     expect(t.cookies["meridian_session"]).toBeTruthy();
     const again = await t.call({ method: "POST", url: "/api/auth/setup", payload: { username: "two", password: "correct horse battery staple" } });
     expect(again.statusCode).toBe(403);
@@ -80,11 +81,12 @@ describe.skipIf(!TEST_DATABASE_URL)("auth flow", () => {
 
     const login = await t.call({ method: "POST", url: "/api/auth/login", payload: { username: "owner", password: "correct horse battery staple" } });
     expect(login.statusCode).toBe(200);
-    expect(login.json()).toMatchObject({ authenticated: false, totpRequired: true, totpEnrolled: true });
+    expect(login.json()).toEqual({ setupRequired: false, authenticated: false, totpRequired: true, totpEnrolled: true, username: "owner", role: "owner" });
     const half = await t.call({ method: "GET", url: "/api/accounts" });
     expect(half.statusCode).toBe(401);
     expect(half.json().code).toBe("totp_required");
 
+    clock.advance(30 * SECOND); // the authenticator shows its next code
     const verify = await t.call({ method: "POST", url: "/api/auth/totp/verify", payload: { code: code() } });
     expect(verify.statusCode).toBe(200);
     expect((await t.call({ method: "GET", url: "/api/accounts" })).statusCode).toBe(200);

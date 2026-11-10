@@ -9,6 +9,7 @@ import { bpToPpInput, dollarsToCents, ppToBp } from "../lib/investments.js";
 import { securityLabel } from "../lib/investmentForms.js";
 import { Card, ErrorText } from "../components/ui.js";
 import { useIsViewer } from "../components/investments/queries.js";
+import { SecuritySettings } from "../components/settings/SecuritySettings.js";
 import "./SettingsPage.css";
 
 interface Form {
@@ -116,6 +117,8 @@ function zoneList(): string[] {
  * the cash-flow threshold and primary account, the default projection horizon
  * and the IANA time zone that defines "today" for the worker. The server
  * validates the time zone and the primary account; its message is shown as is.
+ * Below it: sign-in and security (password, authenticator, sessions, household
+ * members, sign-in activity), which is not part of the household form.
  */
 export function SettingsPage() {
   const qc = useQueryClient();
@@ -330,6 +333,8 @@ export function SettingsPage() {
           <ErrorText error={save.error} />
         </form>
       )}
+      {/* Outside the household form: every member manages their own sign-in, the owner also the household's members. */}
+      <SecuritySettings />
     </>
   );
 }
