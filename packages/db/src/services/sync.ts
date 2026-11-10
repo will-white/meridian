@@ -6,8 +6,10 @@ import {
   parseDecimalToCents,
   parseSimplefinHoldings,
   sanitizeText,
+  simplefinFeedHealth,
   simplefinTransactionDate,
   toIsoDate,
+  unixToIsoDate,
   type AccountType,
   type Fixed8,
   type HoldingsParseResult,
@@ -89,6 +91,14 @@ export interface ApplyAccountSetResult {
   investmentTxnsLinked: number;
   /** Phase 3: synced investment accounts with an income feed on (the worker queues `investments.income_feed` when > 0 after a full sync). */
   incomeFeedAccounts: number;
+  /**
+   * The Bridge reported a connection or account problem (`simplefinFeedHealth`): the data of
+   * the accounts it covers may be stale or partial. Their pending rows were kept, and the
+   * connection's high-water mark must not move.
+   */
+  incomplete: boolean;
+  /** The balance date of every account in the response the household has not closed: how fresh the Bridge's copy of each is. */
+  balanceDates: IsoDate[];
 }
 
 /** Map one SimpleFIN transaction to the ingest shape, sanitizing every text field. */
@@ -273,6 +283,10 @@ async function syncToday(db: Db, now: Date): Promise<IsoDate> {
  * Persist a parsed Account Set: accounts, balances, holdings (Phase 3, per account in its own
  * transaction so one bad container never fails the sync), transactions, transfers, then the
  * links from unlinked investment rows to the bank rows this sync delivered.
+ *
+ * An account covered by an `errlist` problem (the Bridge could not read it, read part of it,
+ * or its bank needs re-authentication) is applied like any other, except that its list is
+ * not taken as complete: pending rows missing from it stay.
  */
 export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): Promise<ApplyAccountSetResult> {
   const rules = await loadRules(db);
@@ -285,14 +299,17 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
   let earliest: IsoDate | undefined;
   const now = options.now ?? new Date();
   const today = await syncToday(db, now);
+  const health = simplefinFeedHealth(options.accountSet.errlist);
+  const balanceDates: IsoDate[] = [];
 
   for (const sf of options.accountSet.accounts) {
     const { id: accountId, created } = await db.transaction((tx) => upsertSimplefinAccount(tx, options.connectionId, sf));
     if (created) accountsCreated++;
     const [row] = await db
-      .select({ name: account.name, type: account.type, investmentIncomeFeed: account.investmentIncomeFeed })
+      .select({ name: account.name, type: account.type, closed: account.closed, investmentIncomeFeed: account.investmentIncomeFeed })
       .from(account)
       .where(eq(account.id, accountId));
+    if (!row?.closed) balanceDates.push(unixToIsoDate(sf["balance-date"]));
     const accountName = row?.name ?? (sanitizeText(sf.name, 100) || "Account");
     const accountType: AccountType = row?.type ?? "checking";
     if (row && isInvestmentAccountType(row.type)) {
@@ -325,6 +342,7 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
     const ingestOptions: Parameters<typeof ingestTransactions>[2] = { accountId, source: "simplefin", rules };
     if (options.importLogId) ingestOptions.importLogId = options.importLogId;
     if (options.windowStart) ingestOptions.windowStart = options.windowStart;
+    if (health.affects(sf)) ingestOptions.keepUnmatchedPending = true;
     const stats = await ingestTransactions(db, incoming, ingestOptions);
     totals.created += stats.created;
     totals.updated += stats.updated;
@@ -354,5 +372,7 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
     holdings,
     investmentTxnsLinked,
     incomeFeedAccounts,
+    incomplete: health.incomplete,
+    balanceDates,
   };
 }

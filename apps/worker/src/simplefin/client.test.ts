@@ -97,6 +97,35 @@ describe("fetchAccounts", () => {
     expect(net).toMatchObject({ kind: "network", permanent: false });
   });
 
+  it("says why the server could not be reached: a certificate problem does not read as an outage, and the access URL is never quoted", async () => {
+    const failure = (run: Promise<unknown>): Promise<SimplefinError> => run.then(() => new SimplefinError("http", "the request was expected to fail")).catch((e: unknown) => e as SimplefinError);
+    const failing = (cause: unknown) =>
+      failure(
+        fetchAccounts(ACCESS, {}, {
+          fetch: mockFetch(() => {
+            throw new TypeError("fetch failed", { cause });
+          }),
+        }),
+      );
+    const certificate = await failing(Object.assign(new Error("self-signed certificate"), { code: "DEPTH_ZERO_SELF_SIGNED_CERT" }));
+    expect(certificate).toMatchObject({ kind: "network", permanent: false });
+    expect(certificate.message).toBe("Could not reach the SimpleFIN server: its certificate was not accepted: self-signed certificate (DEPTH_ZERO_SELF_SIGNED_CERT)");
+    const refused = await failing(Object.assign(new Error("connect ECONNREFUSED 203.0.113.7:443"), { code: "ECONNREFUSED" }));
+    expect(refused.message).toBe("Could not reach the SimpleFIN server: connect ECONNREFUSED 203.0.113.7:443");
+    const timedOut = await failure(
+      fetchAccounts(ACCESS, {}, {
+        timeoutMs: 60_000,
+        fetch: mockFetch(() => {
+          throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+        }),
+      }),
+    );
+    expect(timedOut.message).toBe("Could not reach the SimpleFIN server: timeout (no answer within 60 seconds)");
+    const quoting = await failing(new Error(`request to ${ACCESS}/accounts?version=2 failed`));
+    expect(quoting.message).toBe("Could not reach the SimpleFIN server: request to https://bridge.example.test failed");
+    expect(quoting.message).not.toContain("s3cret");
+  });
+
   it("rejects a response that is not an account set", async () => {
     const bad = await fetchAccounts(ACCESS, {}, { fetch: mockFetch(() => new Response(JSON.stringify({ accounts: [{ id: 1 }] }), { status: 200 })) }).catch(
       (e: unknown) => e as SimplefinError,

@@ -1,4 +1,4 @@
-import { date, index, integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { boolean, date, index, integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
 export interface ConnectionError {
   code: string;
@@ -47,11 +47,27 @@ export const connection = pgTable("connection", {
   /** Phase 3: bank | positions | trades; existing rows are `bank` by the default. */
   csvKind: text("csv_kind", { enum: CSV_KINDS }).notNull().default("bank"),
   status: text("status", { enum: ["ok", "claiming", "auth_required", "error", "disabled"] }).notNull().default("ok"),
+  /** When a sync (or a csv import) last succeeded. */
   lastSyncAt: timestamp("last_sync_at", { withTimezone: true }),
-  /** High-water mark of the last successful sync; the next window starts 7 days before it. */
+  /**
+   * When a sync last ran to its end, whether it worked or not. Scheduled syncs are spaced
+   * from this, so a connection that fails is asked no more often than one that works.
+   */
+  lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+  /**
+   * The Bridge refused the access URL (403) or asked for payment (402): trying again cannot
+   * help, so the scheduler leaves the connection alone until a sync the household starts
+   * succeeds, or the connection is switched back on.
+   */
+  syncPaused: boolean("sync_paused").notNull().default(false),
+  /**
+   * High-water mark: the day through which every account's transactions are complete. It
+   * moves only after a response with no connection or account problem and no stale account
+   * (`highWaterMarkAfterSync`); the next window starts 7 days before it.
+   */
   syncedThrough: date("synced_through"),
   lastError: text("last_error"),
-  /** SimpleFIN errlist entries from the last sync, sanitized. */
+  /** SimpleFIN errlist entries (and holdings notes) from the last successful sync, sanitized; emptied when a sync fails. */
   lastErrors: jsonb("last_errors").$type<ConnectionError[]>().notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

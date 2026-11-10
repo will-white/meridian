@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ConnectionView, ImportLogView, JobView } from "@meridian/shared";
 import { api } from "../lib/api.js";
+import { syncAdvice, syncControls, syncSummary } from "../lib/connections.js";
 import { relativeTime } from "../lib/format.js";
 import { csvKindLabel } from "../lib/importMapping.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
@@ -44,9 +45,10 @@ export function ConnectionsPage() {
       invalidate();
     },
   });
+  // A full resync asks the Bridge for the whole first-sync window again (after a bank was unreadable for a while).
   const sync = useMutation({
-    mutationFn: ({ id, balancesOnly }: { id: string; balancesOnly?: boolean }) =>
-      api(`/connections/${id}/sync`, { method: "POST", body: { balancesOnly: balancesOnly ?? false } }),
+    mutationFn: ({ id, balancesOnly, fullResync }: { id: string; balancesOnly?: boolean; fullResync?: boolean }) =>
+      api(`/connections/${id}/sync`, { method: "POST", body: { balancesOnly: balancesOnly ?? false, fullResync: fullResync ?? false } }),
     onSuccess: invalidate,
   });
   const remove = useMutation({ mutationFn: (id: string) => api(`/connections/${id}`, { method: "DELETE" }), onSuccess: invalidate });
@@ -76,7 +78,8 @@ export function ConnectionsPage() {
       <Card title="SimpleFIN">
         <p className="muted">
           Create a setup token at the SimpleFIN Bridge and paste it here. The worker exchanges it for an access URL, stores that encrypted, and syncs every 6
-          hours. Nothing here can move money.
+          hours. While a bank needs attention at the Bridge nothing is lost: the first complete sync afterwards fetches everything since the last one. Nothing
+          here can move money.
         </p>
         <form
           className="row"
@@ -108,12 +111,10 @@ export function ConnectionsPage() {
                       {c.activeJob.type.replace("simplefin.", "")} {c.activeJob.status}
                     </Badge>
                   )}
-                  <span className="muted">
-                    {c.accountCount} account{c.accountCount === 1 ? "" : "s"} · last sync {relativeTime(c.lastSyncAt)}
-                    {c.syncedThrough ? ` · through ${c.syncedThrough}` : ""}
-                  </span>
+                  <span className="muted">{syncSummary(c, relativeTime)}</span>
                 </div>
                 {c.lastError && <p className="error small">{c.lastError}</p>}
+                {syncAdvice(c) && <p className="muted small">{syncAdvice(c)}</p>}
                 <HoldingsLine connection={c} />
                 {c.lastErrors.filter((e) => !e.code.startsWith("holdings.")).length > 0 && (
                   <ul className="errors">
@@ -130,12 +131,22 @@ export function ConnectionsPage() {
                 {openLog === c.id && <ImportLogs connectionId={c.id} />}
               </div>
               <div className="row">
-                <button onClick={() => sync.mutate({ id: c.id })} disabled={sync.isPending || !!c.activeJob || c.status === "disabled"}>
+                <button onClick={() => sync.mutate({ id: c.id })} disabled={sync.isPending || !syncControls(c).syncNow}>
                   Sync now
                 </button>
-                <button className="secondary" onClick={() => sync.mutate({ id: c.id, balancesOnly: true })} disabled={sync.isPending || !!c.activeJob || c.status !== "ok"}>
+                <button className="secondary" onClick={() => sync.mutate({ id: c.id, balancesOnly: true })} disabled={sync.isPending || !syncControls(c).balancesOnly}>
                   Balances only
                 </button>
+                {!viewer && (
+                  <button
+                    className="secondary"
+                    onClick={() => sync.mutate({ id: c.id, fullResync: true })}
+                    disabled={sync.isPending || !syncControls(c).fullResync}
+                    title="Ask the Bridge again for everything a first sync asks for (about three months). Use it after a bank was unreadable for a while; nothing is added twice"
+                  >
+                    Full resync
+                  </button>
+                )}
                 {!viewer && (
                   <button
                     className="secondary"

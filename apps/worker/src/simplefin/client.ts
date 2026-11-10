@@ -1,4 +1,5 @@
 import { decodeSetupToken, isoDateToUtcMs, parseAccessUrl, SimplefinAccountSet, type IsoDate } from "@meridian/shared";
+import { describeFetchFailure } from "../fetchError.js";
 
 /**
  * SimpleFIN protocol v2 client. HTTPS only (enforced when the URLs are parsed),
@@ -38,7 +39,8 @@ function makeFetch(options: ClientOptions) {
     try {
       return await f(url, { ...init, signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
     } catch (err) {
-      throw new SimplefinError("network", `Could not reach the SimpleFIN server: ${(err as Error).message}`);
+      // The reason (DNS, refused, certificate, timeout) and never the URL, which carries the credentials or the claim token.
+      throw new SimplefinError("network", `Could not reach the SimpleFIN server: ${describeFetchFailure(err, { timeoutMs })}`);
     }
   };
 }

@@ -59,6 +59,15 @@ docker compose -f deploy/docker-compose.yml exec web node apps/api/dist/admin.js
 
 `reset-totp` clears the authenticator: sign in with the password and set up a new one straight away, because until then the password alone reaches that setup screen. `reset-password` prints a temporary password once; sign in with it and change it under Settings. `users` lists the accounts that exist: if the app shows "Sign in" before you ever created an account, someone else on your network got there first; check with `users`, then reset that account or start again with an empty database. In development the same commands run as `pnpm --filter @meridian/api admin <command>`, with `DATABASE_URL` set as for `pnpm dev`.
 
+## Bank sync
+
+The worker syncs each SimpleFIN connection every 6 hours (`SYNC_INTERVAL_HOURS`), asking the Bridge for everything from 7 days before the last complete sync. The Connections page shows that day as "complete through".
+
+- **A bank needs re-authentication, or the Bridge could not read an account.** The Bridge still answers, with what it last knew. Syncs keep running, "complete through" stays where it was, and the first complete sync afterwards fetches everything since, so an outage of weeks loses nothing. Pending rows of the affected accounts are kept in the meantime. A sync never asks for more than 93 days (`SIMPLEFIN_INITIAL_WINDOW_DAYS`); if a bank was unreadable for longer, the connection says which days were not requested, and a CSV import covers them.
+- **The Bridge is down or unreachable.** The sync is retried twice within minutes, then once every 6 hours until it works. The error says why (a name that does not resolve, a refused connection, a certificate that was not accepted, a timeout).
+- **The Bridge refuses the access URL (403) or asks for payment (402).** Trying again cannot help, so scheduled syncs for that connection stop. Fix it at the Bridge, then press **Sync now**; when that sync works the schedule resumes. A revoked access URL needs a new setup token (add a new connection, remove the old one).
+- **Full resync** asks again for the whole first-sync window (93 days). Nothing is added twice. Use it when something looks missing after an outage.
+
 ## Commands
 
 | Command | What |

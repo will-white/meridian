@@ -9,6 +9,9 @@ import { scheduleDueSyncs } from "../scheduler.js";
 import type { JobContext } from "./context.js";
 import { syncWindowStart } from "./sync.js";
 
+type SfAccount = SimplefinAccountSet["accounts"][number];
+type SfTxn = SfAccount["transactions"][number];
+
 const ACCESS = "https://alice:s3cret@bridge.example.test/simplefin";
 
 describe("syncWindowStart", () => {
@@ -346,5 +349,181 @@ describe.skipIf(!TEST_DATABASE_URL)("sync with holdings in extra", () => {
     const [linked] = await db.select({ ledgerTransactionId: investmentTxn.ledgerTransactionId }).from(investmentTxn).where(eq(investmentTxn.id, dividend!.id));
     expect(linked!.ledgerTransactionId).toBe(bankRow!.id);
     expect(await jobsOf("prices.fetch")).toHaveLength(1);
+  });
+});
+
+/**
+ * The high-water mark (`connection.synced_through`) is the day through which every account
+ * is complete; the next window starts 7 days before it. One checking account whose bank
+ * books a $10.00 purchase every day from 2026-09-01 on, so a missing day is a missing row.
+ */
+describe.skipIf(!TEST_DATABASE_URL)("sync high-water mark", () => {
+  let t: TestDb;
+  let ctx: JobContext;
+  let connectionId: string;
+  const secretsKey = generateSecretsKey();
+  let now = new Date("2026-09-10T12:00:00Z");
+  const requests: URL[] = [];
+  let respond: (url: URL) => SimplefinAccountSet = () => ({ errors: [], errlist: [], accounts: [] });
+  const config: WorkerConfig = { databaseUrl: "unused", secretsKey, workerId: "test-worker", syncIntervalHours: 6, pollIntervalMs: 10, initialWindowDays: 93, overlapDays: 7, requestTimeoutMs: 5000 };
+
+  const unix = (date: IsoDate, hour = 12) => Math.floor(isoDateToUtcMs(date) / 1000) + hour * 3600;
+  const day = (d: Date): IsoDate => d.toISOString().slice(0, 10) as IsoDate;
+  const startAsked = (url: URL): IsoDate => day(new Date(Number(url.searchParams.get("start-date")) * 1000));
+  /** The bank's real history inside the requested window, as far as the Bridge has read it (`through`). */
+  const purchases = (url: URL, through: IsoDate, prefix = "T"): SfTxn[] => {
+    const out: SfTxn[] = [];
+    for (let d: IsoDate = "2026-09-01"; d <= through; d = addDays(d, 1)) {
+      if (d >= startAsked(url)) out.push({ id: `${prefix}-${d}`, posted: unix(d), amount: "-10.00", description: "KING SOOPERS #0123", pending: false });
+    }
+    return out;
+  };
+  const checking = (url: URL, through: IsoDate, balanceDay: IsoDate = through): SfAccount => ({
+    org: { name: "First Example Bank" },
+    id: "CHK",
+    name: "Everyday Checking",
+    currency: "USD",
+    balance: "100.00",
+    "balance-date": unix(balanceDay, 6),
+    transactions: purchases(url, through),
+  });
+  const healthy = (url: URL): SimplefinAccountSet => ({ errors: [], errlist: [], accounts: [checking(url, day(now))] });
+  const syncOn = async (date: IsoDate, payload: Record<string, unknown> = {}) => {
+    now = new Date(`${date}T12:00:00Z`);
+    requests.length = 0;
+    await enqueueJob(t.db, "simplefin.sync", { connectionId, ...payload });
+    await drainQueue(ctx);
+  };
+  const conn = async () => (await t.db.select().from(connection).where(eq(connection.id, connectionId)))[0]!;
+  const ids = async () => (await t.db.select({ ext: transaction.externalId }).from(transaction).orderBy(asc(transaction.externalId))).map((r) => r.ext);
+  const expected = (through: IsoDate, prefix = "T") => {
+    const out: string[] = [];
+    for (let d: IsoDate = "2026-09-01"; d <= through; d = addDays(d, 1)) out.push(`${prefix}-${d}`);
+    return out;
+  };
+
+  beforeAll(async () => {
+    t = await createTestDb();
+    ctx = {
+      db: t.db,
+      config,
+      client: {
+        fetch: (async (input: string | URL | Request) => {
+          const url = new URL(String(input));
+          requests.push(url);
+          return new Response(JSON.stringify(respond(url)), { status: 200 });
+        }) as typeof fetch,
+      },
+      now: () => now,
+      log: { info: () => {}, warn: () => {}, error: () => {} },
+    };
+    const [row] = await t.db.insert(connection).values({ type: "simplefin", name: "Bank", status: "ok", accessUrlEnc: await encryptSecret(ACCESS, secretsKey) }).returning({ id: connection.id });
+    connectionId = row!.id;
+  });
+  afterAll(async () => {
+    await t?.cleanup();
+  });
+
+  it("does not move while a bank needs re-authentication, so three weeks of outage lose nothing", async () => {
+    // 09-10: a healthy first sync. 93 days back is 2026-06-09; the bank has ten purchases so far.
+    respond = healthy;
+    await syncOn("2026-09-10");
+    expect(startAsked(requests[0]!)).toBe("2026-06-09");
+    expect(await ids()).toEqual(expected("2026-09-10"));
+    expect(await conn()).toMatchObject({ status: "ok", syncedThrough: "2026-09-10" });
+
+    // 09-11 to 10-01, 21 days: the bank login is broken at the Bridge. It answers 200 with con.auth and
+    // what it last read (nothing after 09-10), under a balance date that looks current.
+    respond = (url) => ({ errors: [], errlist: [{ code: "con.auth", msg: "re-login", conn_id: "CON-1" }], accounts: [checking(url, "2026-09-10", day(now))] });
+    for (let d: IsoDate = "2026-09-11"; d <= "2026-10-01"; d = addDays(d, 1)) await syncOn(d);
+    expect(await conn()).toMatchObject({ status: "auth_required", syncedThrough: "2026-09-10" });
+    // Every one of those syncs asked from 7 days before the mark, not from 7 days before itself.
+    expect(startAsked(requests[0]!)).toBe("2026-09-03");
+
+    // 10-02: re-authenticated. The window still starts at 09-03, so 09-11 to 10-02 all arrive: 32 purchases, none missing.
+    respond = healthy;
+    await syncOn("2026-10-02");
+    expect(startAsked(requests[0]!)).toBe("2026-09-03");
+    expect(await ids()).toEqual(expected("2026-10-02"));
+    expect(await ids()).toHaveLength(32);
+    expect(await conn()).toMatchObject({ status: "ok", syncedThrough: "2026-10-02", lastErrors: [], lastError: null });
+  });
+
+  it("does not move past data the overlap can no longer cover when the Bridge serves a stale copy without saying so", async () => {
+    // 10-03 to 10-12: no error entry, but the Bridge has read nothing since 10-02 (the balance date says so).
+    respond = (url) => ({ errors: [], errlist: [], accounts: [checking(url, "2026-10-02")] });
+    for (let d: IsoDate = "2026-10-03"; d <= "2026-10-12"; d = addDays(d, 1)) await syncOn(d);
+    // Through 10-09 the copy is at most 7 days old and the next window still reaches it; from 10-10 it is not.
+    expect(await conn()).toMatchObject({ status: "ok", syncedThrough: "2026-10-09" });
+
+    // 10-13: the Bridge catches up. The window starts at 10-02, so 10-03 and 10-04 are not lost: 43 purchases.
+    respond = healthy;
+    await syncOn("2026-10-13");
+    expect(startAsked(requests[0]!)).toBe("2026-10-02");
+    expect(await ids()).toEqual(expected("2026-10-13"));
+    expect(await ids()).toHaveLength(43);
+    expect((await conn()).syncedThrough).toBe("2026-10-13");
+  });
+
+  it("gives an account that appears later the first-sync window on the next sync", async () => {
+    // 10-14: a second bank was added at the Bridge. This window only reaches back to 10-06.
+    const savings = (url: URL): SfAccount => ({ ...checking(url, day(now)), id: "SAV", name: "Savings", transactions: purchases(url, day(now), "S") });
+    respond = (url) => ({ errors: [], errlist: [], accounts: [checking(url, day(now)), savings(url)] });
+    await syncOn("2026-10-14");
+    expect(startAsked(requests[0]!)).toBe("2026-10-06");
+    expect((await ids()).filter((id) => id!.startsWith("S-"))).toHaveLength(9); // 10-06 to 10-14
+    expect((await conn()).syncedThrough).toBeNull();
+
+    // 10-15: no mark, so 93 days back (2026-07-14): the savings account's whole history arrives.
+    await syncOn("2026-10-15");
+    expect(startAsked(requests[0]!)).toBe("2026-07-14");
+    expect((await ids()).filter((id) => id!.startsWith("S-"))).toEqual(expected("2026-10-15", "S"));
+    expect((await conn()).syncedThrough).toBe("2026-10-15");
+    // And the next one is an ordinary 7-day overlap again.
+    await syncOn("2026-10-16");
+    expect(startAsked(requests[0]!)).toBe("2026-10-08");
+  });
+
+  it("a full resync asks for the first-sync window whatever the mark, and a balances-only refresh leaves the mark alone", async () => {
+    await syncOn("2026-10-17", { fullResync: true });
+    expect(startAsked(requests[0]!)).toBe("2026-07-16");
+    expect((await conn()).syncedThrough).toBe("2026-10-17");
+
+    now = new Date("2026-10-19T12:00:00Z");
+    requests.length = 0;
+    await enqueueJob(t.db, "simplefin.balances", { connectionId });
+    await drainQueue(ctx);
+    expect(requests[0]!.searchParams.get("balances-only")).toBe("1");
+    expect(requests[0]!.searchParams.get("start-date")).toBeNull();
+    expect((await conn()).syncedThrough).toBe("2026-10-17");
+  });
+
+  it("says so when the last complete sync is further back than a sync can ask for", async () => {
+    // The bank was unreadable from 2026-06-01 until today, 2026-10-20: 141 days. 93 days back is 2026-07-19.
+    await t.db.update(connection).set({ syncedThrough: "2026-06-01" }).where(eq(connection.id, connectionId));
+    await syncOn("2026-10-20");
+    expect(startAsked(requests[0]!)).toBe("2026-07-19");
+    const gap = {
+      code: "sync.gap",
+      message: "The last complete sync was 2026-06-01. A sync asks the Bridge for at most 93 days, so transactions from 2026-06-02 to 2026-07-18 were not requested. Import a CSV from the bank for that period if any are missing.",
+    };
+    expect(await conn()).toMatchObject({ status: "ok", syncedThrough: "2026-10-20", lastErrors: [gap] });
+    const [log] = await t.db.select().from(importLog).where(eq(importLog.kind, "simplefin.sync")).orderBy(desc(importLog.startedAt), desc(importLog.id)).limit(1);
+    expect(log!.errors).toEqual([gap]);
+    // The next sync has nothing to report.
+    await syncOn("2026-10-21");
+    expect((await conn()).lastErrors).toEqual([]);
+  });
+
+  it("a failed sync records the attempt, drops the previous sync's entries and leaves the last success and the mark alone", async () => {
+    const before = await conn();
+    await t.db.update(connection).set({ lastErrors: [{ code: "act.missingdata", message: "The Bridge returned incomplete data for this account.", accountId: "CHK" }] }).where(eq(connection.id, connectionId));
+    ctx.client.fetch = (async () => new Response("", { status: 402 })) as typeof fetch;
+    await syncOn("2026-10-22");
+    const after = await conn();
+    expect(after).toMatchObject({ status: "error", lastErrors: [], syncedThrough: before.syncedThrough, syncPaused: true });
+    expect(after.lastError).toMatch(/402/);
+    expect(after.lastSyncAt).toEqual(before.lastSyncAt);
+    expect(after.lastAttemptAt).toEqual(new Date("2026-10-22T12:00:00Z"));
   });
 });

@@ -28,6 +28,12 @@ export interface IngestOptions {
    * CSV imports leave this unset: a file is never a complete view of pending items.
    */
   windowStart?: IsoDate;
+  /**
+   * The feed's list for this account is known to be incomplete (the Bridge reported a problem
+   * with the account or its bank connection): a pending row it does not return has not
+   * vanished, so none is deleted. A posted item still replaces its pending row in place.
+   */
+  keepUnmatchedPending?: boolean;
   rules: readonly RuleLike[];
   /**
    * Phase 3: the account's type, for the contribution classifier (an inflow into an
@@ -63,7 +69,8 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
  *   an inflow into an investment-type account that reads like a contribution is inserted
  *   with `is_transfer = true` and no category (`classifyInvestmentInflow`); cross-account
  *   pairing may still pair it later.
- * - Pending rows the feed stopped returning are removed (SimpleFIN only).
+ * - Pending rows the feed stopped returning are removed (SimpleFIN only, and only when the
+ *   feed's list for the account is complete: `keepUnmatchedPending`).
  *
  * Takes a db or a transaction handle (a nested call becomes a savepoint), so the trades
  * importer can write the cash rows of a file inside its own transaction.
@@ -231,7 +238,7 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
       stats.insertedIds.push(inserted.id);
     }
 
-    if (options.windowStart) {
+    if (options.windowStart && !options.keepUnmatchedPending) {
       const stale = localPending.filter((p) => !matchedLocalIds.has(p.id)).map((p) => p.id);
       if (stale.length > 0) {
         await tx.delete(transaction).where(inArray(transaction.id, stale));

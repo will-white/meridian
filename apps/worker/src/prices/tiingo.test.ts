@@ -75,6 +75,11 @@ describe("TiingoProvider", () => {
     });
     expect(network).toMatchObject({ ok: false, kind: "network" });
     expect((network as { message: string }).message).toContain("ECONNRESET");
+    // Node keeps the reason in `cause`; without it a certificate problem reads as "fetch failed".
+    const certificate = await status(() => {
+      throw new TypeError("fetch failed", { cause: Object.assign(new Error("self-signed certificate in certificate chain"), { code: "SELF_SIGNED_CERT_IN_CHAIN" }) });
+    });
+    expect(certificate).toEqual({ ok: false, kind: "network", message: "tiingo: could not reach the price server: its certificate was not accepted: self-signed certificate in certificate chain (SELF_SIGNED_CERT_IN_CHAIN)" });
     const html = await status(new Response("<html><body>Sign in</body></html>", { status: 200 }));
     expect(html).toMatchObject({ ok: false, kind: "invalid_response", body: "<html><body>Sign in</body></html>" });
     expect((html as { message: string }).message).toMatch(/^tiingo: /);

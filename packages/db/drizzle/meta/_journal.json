@@ -43,6 +43,13 @@
       "when": 1794336786975,
       "tag": "0005_linked_cash_transfers",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794338037837,
+      "tag": "0006_sync_attempts",
+      "breakpoints": true
     }
   ]
 }

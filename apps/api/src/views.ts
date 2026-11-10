@@ -98,6 +98,8 @@ export function toConnectionView(
     name: r.name,
     status: r.status,
     lastSyncAt: iso(r.lastSyncAt),
+    lastAttemptAt: iso(r.lastAttemptAt),
+    syncPaused: r.syncPaused,
     syncedThrough: r.syncedThrough,
     lastError: r.lastError,
     lastErrors: r.lastErrors.map((e) => (e.accountId ? { code: e.code, message: e.message, accountId: e.accountId } : { code: e.code, message: e.message })),

@@ -215,9 +215,16 @@ export const ConnectionView = z.object({
   type: ConnectionType,
   name: z.string(),
   status: ConnectionStatus,
+  /** When a sync (or a csv import) last succeeded. */
   lastSyncAt: z.string().nullable(),
+  /** When a sync last ran to its end, whether it worked or not; scheduled syncs are spaced from it. */
+  lastAttemptAt: z.string().nullable(),
+  /** The Bridge refused the access URL or asked for payment: nothing is scheduled until a sync started by hand succeeds or the connection is switched back on. */
+  syncPaused: z.boolean(),
+  /** The day through which every account's transactions are complete; it does not move while a bank is unreadable. */
   syncedThrough: IsoDateString.nullable(),
   lastError: z.string().nullable(),
+  /** Entries from the last successful sync (errlist, holdings notes, `sync.gap`); empty after a failed one. */
   lastErrors: z.array(ConnectionErrorView),
   /** The bank mapping; null for other kinds. */
   csvMapping: CsvMapping.nullable(),
