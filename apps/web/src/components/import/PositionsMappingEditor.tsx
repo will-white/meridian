@@ -38,7 +38,7 @@ export function PositionsMappingEditor({
       <label>
         Statement date column
         <select value={asOfColumn} onChange={(e) => onChange(setPositionsAsOf(mapping, e.target.value, asOfFormat))}>
-          <option value="">— none: enter the date below —</option>
+          <option value="">— none: enter the statement date —</option>
           {options}
         </select>
       </label>

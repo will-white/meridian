@@ -25,7 +25,8 @@ import { MAX_SPLIT_TERM } from "./wire.js";
  * seams C3, C6, C53), on the Phase 1 bank-mapper pattern: a Zod mapping, column refs by header
  * or index, rows that cannot be mapped are reported rather than thrown, stable ids, a guesser.
  * The mapping contracts (`PositionsCsvMapping`, `TradesCsvMapping`, `TradeKind`) live in api.ts.
- * Pure: no DB, no clock (a snapshot is never dated by the clock: `as_of_required` is thrown).
+ * Pure: no DB, no clock (a snapshot is never dated by the clock: `as_of_required` is thrown, and
+ * a preview's `readPositionsCsvRows` reports no date rather than inventing one).
  */
 
 // ---- Shared ----
@@ -152,6 +153,9 @@ export interface MappedPositions {
   pendingActivityCents: bigint;
 }
 
+/** What a positions file reads as before it has a date: `asOf` is null when neither the file nor the request gave one. */
+export type ReadPositions = Omit<MappedPositions, "asOf"> & { asOf: IsoDate | null };
+
 export interface MapPositionsOptions {
   /** The snapshot date when the mapping's `asOf.mode` is `request` (or the column yields none). */
   asOfDate?: IsoDate;
@@ -203,6 +207,19 @@ export function mapPositionsCsvRows(rows: readonly string[][], mappingInput: Pos
   if (mapping.asOf.mode === "request" && opts.asOfDate === undefined) {
     throw new CsvImportError("as_of_required", "The file has no date column: an as-of date is required");
   }
+  const read = readPositionsCsvRows(rows, mappingInput, opts);
+  if (read.asOf === null) throw new CsvImportError("as_of_required", "No row carries a readable date: an as-of date is required");
+  return { ...read, asOf: read.asOf };
+}
+
+/**
+ * `mapPositionsCsvRows` for a preview: a file that gives no date is read all the same and
+ * `asOf` is null (still never the clock), so the page can show the mapping and the rows that
+ * had no readable date and ask for the statement date. A mapping the file does not fit still
+ * throws (`bad_mapping`).
+ */
+export function readPositionsCsvRows(rows: readonly string[][], mappingInput: PositionsCsvMappingInput, opts: MapPositionsOptions = {}): ReadPositions {
+  const mapping = PositionsCsvMapping.parse(mappingInput);
   const { headers, data, offset } = splitRows(rows, mapping);
   const col = (ref: { column: ColumnRef } | undefined) => (ref ? resolveColumn(ref.column, headers) : undefined);
   const symbolCol = col(mapping.symbol);
@@ -365,9 +382,7 @@ export function mapPositionsCsvRows(rows: readonly string[][], mappingInput: Pos
   }
   const positions = [...groups.values()].map(mergePositions);
 
-  const asOf = columnAsOf ?? opts.asOfDate;
-  if (asOf === undefined) throw new CsvImportError("as_of_required", "No row carries a readable date: an as-of date is required");
-  return { positions, asOf, errors, skipped, filterValues, pendingActivityCents };
+  return { positions, asOf: columnAsOf ?? opts.asOfDate ?? null, errors, skipped, filterValues, pendingActivityCents };
 }
 
 const POS_DATE_HEADERS = ["as of", "as of date", "date", "price date"];

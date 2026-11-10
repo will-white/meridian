@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { PositionsCsvMapping, TradesCsvMapping } from "@meridian/shared";
 import {
+  bankPreviewBody,
+  bankResultText,
   columnRef,
   columnValue,
   csvKindFromParam,
@@ -10,6 +12,7 @@ import {
   hasFeeColumn,
   positionsCommitLabel,
   positionsMappingIssues,
+  positionsPreviewBody,
   positionsResultText,
   previewWarningText,
   reconciliationLine,
@@ -26,8 +29,10 @@ import {
   tradeRowMarker,
   tradesCommitLabel,
   tradesMappingIssues,
+  tradesPreviewBody,
   tradesResultText,
   unknownActionsText,
+  unreadableDateText,
 } from "./importMapping.js";
 
 const FID_HEADERS = ["Symbol", "Description", "Quantity", "Last Price", "Current Value", "Cost Basis Total"];
@@ -151,6 +156,70 @@ describe("trades mapping edits and validation", () => {
   });
 });
 
+describe("preview requests", () => {
+  const CSV = "Date,Description,Amount\n11/01/2026,RENT,-1800.00\n";
+  const ACCT = "7f0e1c7e-3a53-4b0e-9a4c-0d6a4f3a1b11";
+  const PROFILE = "5b0c2f4e-9d1a-4a8e-8c57-2e1f6f0a9c22";
+
+  it("asks for a bank preview as soon as there is a file; the account and the saved profile are added when chosen", () => {
+    expect(bankPreviewBody({ csvText: "", accountId: ACCT, profileId: "", mapping: null })).toBeNull();
+    expect(bankPreviewBody({ csvText: CSV, accountId: "", profileId: "", mapping: null })).toEqual({ csvText: CSV });
+    expect(bankPreviewBody({ csvText: CSV, accountId: ACCT, profileId: PROFILE, mapping: null })).toEqual({ csvText: CSV, accountId: ACCT, profileId: PROFILE });
+  });
+
+  it("names the page's mapping instead of the profile it came from, and nothing else changes", () => {
+    const mapping = { hasHeader: true, date: { column: "Date", format: "MM/DD/YYYY" as const }, description: { column: "Description" }, amount: { mode: "single" as const, column: "Amount", invert: false } };
+    expect(bankPreviewBody({ csvText: CSV, accountId: ACCT, profileId: PROFILE, mapping })).toEqual({ csvText: CSV, accountId: ACCT, mapping });
+  });
+
+  const positions = handBuiltPositionsMapping(FID_HEADERS);
+  const pState = { csvText: CSV, accountId: ACCT, profileId: "", mapping: null, asOfDate: "", accountFilterValue: "", choices: [] };
+
+  it("waits for a positions file and its account, then lets the server guess", () => {
+    expect(positionsPreviewBody({ ...pState, csvText: "" })).toBeNull();
+    expect(positionsPreviewBody({ ...pState, accountId: "" })).toBeNull();
+    // No mapping yet and no date yet: the request still goes, so the server can answer with its guess and ask for the date.
+    expect(positionsPreviewBody(pState)).toEqual({ csvText: CSV, accountId: ACCT, choices: [] });
+    expect(positionsPreviewBody({ ...pState, profileId: PROFILE, asOfDate: "2026-10-30" })).toEqual({ csvText: CSV, accountId: ACCT, choices: [], profileId: PROFILE, asOfDate: "2026-10-30" });
+  });
+
+  it("sends no positions preview while the page's mapping is incomplete or still needs the statement date", () => {
+    expect(positionsPreviewBody({ ...pState, mapping: positions })).toBeNull();
+    expect(positionsPreviewBody({ ...pState, mapping: setPositionsColumn(positions, "symbol", ""), asOfDate: "2026-10-30" })).toBeNull();
+    const choices = [{ rowIndex: 3, security: { kind: "existing" as const, securityId: PROFILE } }];
+    expect(positionsPreviewBody({ ...pState, profileId: PROFILE, mapping: positions, asOfDate: "2026-10-30", accountFilterValue: "Z123", choices })).toEqual({
+      csvText: CSV,
+      accountId: ACCT,
+      choices,
+      mapping: positions,
+      asOfDate: "2026-10-30",
+      accountFilterValue: "Z123",
+    });
+    // A file with a date column needs no typed date.
+    const dated = setPositionsAsOf(positions, "As of", "MM/DD/YYYY");
+    expect(positionsPreviewBody({ ...pState, mapping: dated })).toEqual({ csvText: CSV, accountId: ACCT, choices: [], mapping: dated });
+  });
+
+  it("builds the trades request the same way", () => {
+    const tState = { csvText: CSV, accountId: ACCT, profileId: PROFILE, mapping: null, accountFilterValue: "", choices: [] };
+    expect(tradesPreviewBody({ ...tState, accountId: "" })).toBeNull();
+    expect(tradesPreviewBody(tState)).toEqual({ csvText: CSV, accountId: ACCT, choices: [], profileId: PROFILE });
+    const trades = handBuiltTradesMapping(["Run Date", "Action", "Symbol", "Amount ($)"]);
+    expect(tradesPreviewBody({ ...tState, mapping: trades, accountFilterValue: "Z123" })).toEqual({ csvText: CSV, accountId: ACCT, choices: [], mapping: trades, accountFilterValue: "Z123" });
+    // Date and action on one column cannot be previewed.
+    expect(tradesPreviewBody({ ...tState, mapping: { ...trades, action: { column: "Run Date" } } })).toBeNull();
+  });
+
+  it("says what to do when the chosen date column gives no date, and nothing when the preview is dated or the date is typed", () => {
+    const dated = setPositionsAsOf(positions, "As of", "MM/DD/YYYY");
+    expect(unreadableDateText({ asOfRequired: true }, dated)).toBe('No row has a readable date in the statement date column. Pick another column or date format, or set the column to "none" and enter the statement date.');
+    expect(unreadableDateText({ asOfRequired: false }, dated)).toBeNull();
+    // Without a date column the editor's own date field and its message ask for the date.
+    expect(unreadableDateText({ asOfRequired: true }, positions)).toBeNull();
+    expect(unreadableDateText({ asOfRequired: true }, null)).toBeNull();
+  });
+});
+
 describe("actions and rows", () => {
   it("lists unknown actions first, then by count", () => {
     const sorted = sortActions([
@@ -240,6 +309,16 @@ describe("buttons and results", () => {
     expect(tradesCommitLabel(10, 6)).toBe("Import 4 trades (6 already imported)");
     expect(tradesCommitLabel(1, 0)).toBe("Import 1 trade");
     expect(tradesCommitLabel(2, 5)).toBe("Import 0 trades (5 already imported)");
+  });
+
+  it("summarises a bank import with the duplicates counted when it was committed", () => {
+    const result = { created: 11, updated: 0, replacedPending: 0, removedPending: 0, skipped: 0, transfersPaired: 1, errors: [] };
+    expect(bankResultText(result, 0)).toBe("Imported 11 new, skipped 0 duplicates, paired 1 transfer.");
+    // 3 rows were already imported before the commit and the file repeats 1 row: 4 duplicates.
+    expect(bankResultText({ ...result, created: 7, skipped: 1, transfersPaired: 0, errors: [{ rowIndex: 4, message: "Unreadable date" }] }, 3)).toBe(
+      "Imported 7 new, skipped 4 duplicates, paired 0 transfers. 1 row could not be read.",
+    );
+    expect(bankResultText({ ...result, created: 0, transfersPaired: 2, errors: [{ message: "a" }, { message: "b" }] }, 1)).toBe("Imported 0 new, skipped 1 duplicate, paired 2 transfers. 2 rows could not be read.");
   });
 
   it("summarises a positions import", () => {

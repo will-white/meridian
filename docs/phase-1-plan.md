@@ -59,6 +59,8 @@ Candidates are unpaired transactions in the user's own accounts. An outflow pair
 
 Mapping per institution is stored on a `connection` of type `csv` (`csv_mapping`). The mapper supports header or index columns, several date formats, a single signed amount column (with optional inversion) or separate debit and credit columns, and optional memo and id columns. Rows without a bank id get a stable external id: `csv:` + SHA-256 of date, amount and normalized description, with an ordinal for identical rows in the same file. Re-importing the same or an overlapping file creates no duplicates.
 
+The Import page previews the file before anything is written: one preview per change of the file, account, saved profile or mapping (audit decision 24), the rows the ledger already has marked as duplicates, and the commit enabled only for the preview that is on screen.
+
 ## Auth
 
 First run creates the owner (`POST /api/auth/setup`; of any number of setup requests that arrive together, exactly one creates an account). Passwords hash with Argon2id (19 MiB, 2 iterations, parallelism 1). TOTP enrollment is required before the app opens; the secret is stored encrypted with `SECRETS_KEY`, and a code is accepted once (the last accepted 30-second step is kept per user). Login routes are rate-limited, per client address and per account (see the audit decisions at the end of this file).
@@ -87,6 +89,7 @@ The guard runs in Fastify's `onRequest` hook, before a body is read: every route
 | Pending → posted | matched by amount, window and description; row id and category preserved; vanished pending removed | shared + db |
 | Dedupe | same payload twice, overlapping windows, CSV re-import | db |
 | CSV | parsing quoted fields, mapping, date formats, debit/credit columns, stable ids | shared |
+| Import page | one preview per change of file, account, profile or mapping; the guessed mapping taken once without a second request; a response never replaces an edited mapping; a refused change keeps the last preview; the result line | web (flow and helper checks) |
 | SimpleFIN client | claim 200 and 403, accounts 200/402/403, `errlist` surfaced, HTTPS enforced | worker |
 | Auth | setup, login, TOTP, guard | api |
 | Sign-in hardening | a code is accepted once (enrollment code included); the fifth wrong code ends the password session; ten-minute password sessions; a new id at the second factor; hashed ids; idle and absolute expiry; expired rows purged; one owner from concurrent setups; the 0004 migration on existing sessions | api + db + worker |
@@ -126,3 +129,6 @@ Authentication and household members (audit batch "auth and users"):
 22. **Replacing an authenticator never leaves the account without one.** The member re-enters the password, gets a new secret, and the old authenticator stays in force until a code from the new one is accepted; then the others' sessions end. Clearing a second factor outright (`/api/users/:id/totp/reset`, or `reset-totp` on the console) is for a lost device: until the member enrolls again their password alone reaches the enrollment screen, so the screens say to do it at once. The owner cannot clear or reset their own account through member management; that is the console's job.
 23. **Recovery is a command on the server, not a route.** `apps/api/dist/admin.js` (`users`, `reset-totp`, `reset-password`, `sign-out`) needs a shell in the web container and the database settings only. `reset-password` prints a generated temporary password instead of reading one, so nothing typed ends up in shell history. Its changes are audited with no user.
 
+Import page (audit batch "import UI"):
+
+24. **The bank CSV preview runs once per change.** The page re-ran the preview from an effect that depended on the mapping object and stored the mapping of every response, a new object each time, so it asked about a hundred times a second and the preview never stayed on screen: no file could be imported from the page. The preview is now a query keyed by its request (file, account, profile, mapping), shared with the Phase 3 positions and trades flows (`useCsvPreview`; Phase 3 audit decision A10 has the details): the server's guess or the profile's mapping becomes the page's once, without a second request, and a response never replaces a mapping the owner has edited. A change the server refuses leaves the last preview and the editor on screen with the commit disabled. After a commit the preview runs again and marks the imported rows as duplicates; the result line counts the duplicates as they were when the import was committed.

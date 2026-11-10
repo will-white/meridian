@@ -11,6 +11,7 @@ import {
   mapPositionsCsvRows,
   mapTradesCsvRows,
   parseSplitRatio,
+  readPositionsCsvRows,
   type MappedTrade,
 } from "./investmentsCsv.js";
 
@@ -144,6 +145,43 @@ describe("mapPositionsCsvRows", () => {
     } catch (err) {
       expect((err as CsvImportError).code).toBe("as_of_required");
     }
+  });
+
+  it("reads a file without a date for a preview: the rows are mapped and no date is made up", () => {
+    const read = readPositionsCsvRows(FIDELITY_POSITIONS, positionsMapping);
+    expect(read.asOf).toBeNull();
+    // The same rows as with a date: VTI 2,625.00 + 562.50 = 3,187.50; SPAXX 150.25.
+    expect(read.positions.map((p) => [p.ticker, p.valueCents])).toEqual([
+      ["VTI", 318_750n],
+      ["SPAXX", 15_025n],
+    ]);
+    expect(read.skipped).toEqual([
+      { rowIndex: 4, reason: "pending_activity" },
+      { rowIndex: 5, reason: "totals_row" },
+    ]);
+    expect(read.pendingActivityCents).toBe(1_234n);
+    expect(read.errors).toEqual([]);
+    // With the date it is the mapper's own result.
+    expect(readPositionsCsvRows(FIDELITY_POSITIONS, positionsMapping, { asOfDate: "2026-10-13" })).toEqual(mapPositionsCsvRows(FIDELITY_POSITIONS, positionsMapping, { asOfDate: "2026-10-13" }));
+  });
+
+  it("says which rows had no readable date when the date column yields none, and the commit still refuses the file", () => {
+    const rows = [
+      ["As of", "Symbol", "Quantity", "Price"],
+      ["", "VTI", "1", "250.00"],
+      ["n/a", "BND", "2", "70.00"],
+    ];
+    const mapping = { asOf: { mode: "column" as const, column: "As of", format: "MM/DD/YYYY" as const }, symbol: { column: "Symbol" }, quantity: { column: "Quantity" }, price: { column: "Price" } };
+    const read = readPositionsCsvRows(rows, mapping);
+    expect(read.asOf).toBeNull();
+    expect(read.positions).toEqual([]);
+    expect(read.errors).toEqual([
+      { rowIndex: 1, code: "unreadable_date", message: 'Unreadable date ""' },
+      { rowIndex: 2, code: "unreadable_date", message: 'Unreadable date "n/a"' },
+    ]);
+    expect(() => mapPositionsCsvRows(rows, mapping)).toThrow("No row carries a readable date: an as-of date is required");
+    // A mapping that names a column the file does not have is still a refusal, with or without a date.
+    expect(() => readPositionsCsvRows(rows, { ...mapping, symbol: { column: "Ticker" } })).toThrow('Column "Ticker" not found in header');
   });
 
   it("filters a multi-account export and lists the values seen", () => {

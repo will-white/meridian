@@ -103,9 +103,6 @@ describe.skipIf(!TEST_DATABASE_URL)("positions and trades CSV import routes", ()
   const commitTrades = async (payload: Record<string, unknown>) => A.t.call({ method: "POST", url: "/api/import/trades/commit", payload: { today: TODAY, ...payload } });
 
   it("previews a positions file without creating anything", async () => {
-    const noDate = await A.t.call({ method: "POST", url: "/api/import/positions/preview", payload: { csvText: POSITIONS, accountId: X } });
-    expect(noDate.statusCode).toBe(400);
-    expect(noDate.json().code).toBe("as_of_required");
     const empty = await A.t.call({ method: "POST", url: "/api/import/positions/preview", payload: { csvText: " ", accountId: X, asOfDate: "2026-10-13" } });
     expect(empty.statusCode).toBe(400);
     expect(empty.json().code).toBe("empty_csv");
@@ -144,6 +141,61 @@ describe.skipIf(!TEST_DATABASE_URL)("positions and trades CSV import routes", ()
     const checking = await A.t.call({ method: "POST", url: "/api/import/positions/preview", payload: { csvText: POSITIONS, accountId: A.S.accounts.checking, asOfDate: "2026-10-13" } });
     expect(checking.statusCode).toBe(400);
     expect(checking.json().code).toBe("not_investment_account");
+  });
+
+  it("asks for the statement date instead of refusing a file that has none", async () => {
+    const securities = await securityCount();
+    // The Fidelity-style file has no date column: the preview answers with what it read and the mapping it guessed.
+    const noDate = await previewPositions({ csvText: POSITIONS, accountId: X });
+    expect(noDate).toMatchObject({
+      headers: ["Symbol", "Description", "Quantity", "Last Price", "Current Value", "Cost Basis Total"],
+      asOf: null,
+      asOfRequired: true,
+      positions: [],
+      totalValueCents: "0",
+      knownBalanceCents: null,
+      differenceCents: null,
+      matchesToDollar: null,
+      setBalanceDefault: true,
+      filterValues: [],
+      snapshotExists: false,
+      existingSource: null,
+      willReplace: false,
+      rowsRead: 5,
+      errors: [],
+    });
+    expect(noDate.mapping).toMatchObject({ hasHeader: true, asOf: { mode: "request" }, symbol: { column: "Symbol" }, quantity: { column: "Quantity" }, price: { column: "Last Price" }, value: { column: "Current Value" } });
+    expect(noDate.sampleRows[1]).toEqual(["VTI", "VANGUARD TOTAL STOCK MKT ETF", "10.5", "250.00", "$2,625.00", "$2,100.00"]);
+    // The same request with the date, and with the mapping the first answer carried, is the dated preview.
+    const dated = await previewPositions({ csvText: POSITIONS, accountId: X, mapping: noDate.mapping, asOfDate: "2026-10-13" });
+    expect(dated).toMatchObject({ asOf: "2026-10-13", asOfRequired: false, totalValueCents: "333775" });
+    expect(dated.positions).toHaveLength(2);
+
+    // A multi-account export: the account values are listed before there is a date, so the rows can be narrowed first.
+    const multi = ["Account Number,Symbol,Description,Quantity,Last Price,Current Value", 'X123,VTI,Vanguard,1,250.00,"$250.00"', 'Z999,BND,Bond fund,2,70.00,"$140.00"'].join("\n");
+    expect(await previewPositions({ csvText: multi, accountId: X })).toMatchObject({ asOf: null, asOfRequired: true, filterValues: ["X123", "Z999"], rowsRead: 2 });
+
+    // A date column that no row fills: the rows say why, and the editor can still be shown.
+    const blankDates = ["As of,Symbol,Quantity,Price", ",VTI,1,250.00", "n/a,BND,2,70.00"].join("\n");
+    const unreadable = await previewPositions({ csvText: blankDates, accountId: X });
+    expect(unreadable).toMatchObject({ asOf: null, asOfRequired: true, positions: [], rowsRead: 2 });
+    expect(unreadable.mapping).toMatchObject({ asOf: { mode: "column", column: "As of" } });
+    expect(unreadable.errors).toEqual([
+      { rowIndex: 1, message: 'Unreadable date ""' },
+      { rowIndex: 2, message: 'Unreadable date "n/a"' },
+    ]);
+    expect(await securityCount()).toBe(securities);
+
+    // Nothing is ever stored without a date: the commit refuses both files.
+    for (const [csvText, mapping] of [
+      [POSITIONS, noDate.mapping],
+      [blankDates, unreadable.mapping],
+    ] as const) {
+      const refused = await commitPositions({ csvText, accountId: X, mapping });
+      expect(refused.statusCode).toBe(400);
+      expect(refused.json().code).toBe("as_of_required");
+    }
+    expect((await A.t.db.db.select({ n: count() }).from(holdingSnapshot).where(eq(holdingSnapshot.accountId, X)))[0]!.n).toBe(0);
   });
 
   it("commits positions once, idempotently, with the balance, the log row and a saved profile", async () => {

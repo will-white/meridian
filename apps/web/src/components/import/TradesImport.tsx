@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { isInvestmentAccountType } from "@meridian/shared";
@@ -20,6 +20,7 @@ import {
   tradeRowMarker,
   tradesCommitLabel,
   tradesMappingIssues,
+  tradesPreviewBody,
   tradesResultText,
   unknownActionsText,
 } from "../../lib/importMapping.js";
@@ -27,9 +28,10 @@ import { localToday } from "../../lib/plan.js";
 import { Badge, Card, Empty, ErrorText } from "../ui.js";
 import { invalidateInvestments, useIsViewer } from "../investments/queries.js";
 import { ImportsAreOwnerOnly } from "./PositionsImport.js";
-import { previewQueryOptions } from "./previewQuery.js";
+import { nextFileKey, PREVIEW_KEY } from "./previewQuery.js";
 import { SecurityChoiceCell } from "./SecurityChoiceCell.js";
 import { TradesMappingEditor } from "./TradesMappingEditor.js";
+import { useCsvPreview } from "./useCsvPreview.js";
 
 /**
  * Trade-history import (imports design §3.8–§3.9, §5): file, investment
@@ -63,7 +65,7 @@ function TradesImportEditor({ accounts, connections }: { accounts: readonly Acco
   const [save, setSave] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [showAll, setShowAll] = useState(false);
-  /** Bumped per chosen file: keys the preview and remounts the cards for a new file. */
+  /** One per chosen file: keys the preview and remounts the cards for a new file. */
   const [fileKey, setFileKey] = useState(0);
 
   const commit = useMutation({
@@ -74,38 +76,36 @@ function TradesImportEditor({ accounts, connections }: { accounts: readonly Acco
       void qc.invalidateQueries({ queryKey: ["investment-transactions"] });
       void qc.invalidateQueries({ queryKey: ["transactions"] });
       void qc.invalidateQueries({ queryKey: ["prices"] });
+      // The rows just imported are stored now: the preview runs again and marks them.
+      void qc.invalidateQueries({ queryKey: PREVIEW_KEY });
     },
   });
 
   const issues = mapping ? tradesMappingIssues(mapping) : [];
   const choiceList = useMemo(() => [...choices.values()], [choices]);
-  const previewBody: TradesPreviewBody | null = useMemo(() => {
-    if (!csvText || !accountId) return null;
-    if (mapping && issues.length > 0) return null;
-    const body: TradesPreviewBody = { csvText, accountId, choices: choiceList };
-    if (mapping) body.mapping = mapping;
-    else if (profileId) body.profileId = profileId;
-    if (accountFilterValue) body.accountFilterValue = accountFilterValue;
-    return body;
-  }, [csvText, accountId, mapping, profileId, accountFilterValue, choiceList, issues.length]);
+  const requestFor = (m: TradesCsvMapping | null) => tradesPreviewBody({ csvText, accountId, profileId, mapping: m, accountFilterValue, choices: choiceList });
+  const previewBody = requestFor(mapping);
 
-  // The preview re-runs whenever the file, account, profile, mapping, filter or choices change;
-  // the last response stays on screen meanwhile (a mutation would unmount the cards per keystroke).
-  const preview = useQuery(previewQueryOptions<TradesPreviewBody, TradesPreviewResponse>("/import/trades/preview", previewBody, fileKey));
-  // Adopt the server's guessed or saved mapping when none is set locally; a placeholder (the previous body's response) never counts.
-  const serverMapping = preview.isPlaceholderData ? null : (preview.data?.mapping ?? null);
-  useEffect(() => {
-    if (mapping === null && serverMapping !== null) setMapping(serverMapping);
-  }, [mapping, serverMapping]);
+  // One preview per change of the file, account, profile, mapping, filter or choices; the server's guess (or the
+  // profile's mapping) becomes the page's, and the last response stays on screen meanwhile and when a change is refused.
+  const preview = useCsvPreview<TradesPreviewBody, TradesCsvMapping, TradesPreviewResponse>({
+    path: "/import/trades/preview",
+    fileKey,
+    mapping,
+    onMapping: setMapping,
+    bodyFor: requestFor,
+  });
 
   const onFile = async (file: File | undefined) => {
     if (!file) return;
+    // Read first, then change everything in one render: the old file is never previewed under the new file's key.
+    const text = await file.text();
     setFileName(file.name);
     setMapping(null);
     setChoices(new Map());
-    setFileKey((k) => k + 1);
+    setFileKey(nextFileKey());
     commit.reset();
-    setCsvText(await file.text());
+    setCsvText(text);
   };
   const patchChoice = (rowIndex: number, patch: Partial<Omit<RowChoice, "rowIndex">>) =>
     setChoices((prev) => {
@@ -125,7 +125,7 @@ function TradesImportEditor({ accounts, connections }: { accounts: readonly Acco
       return next;
     });
 
-  const p = preview.data;
+  const p = preview.shown;
   const headers = p?.headers ?? [];
   const actions = p ? sortActions(p.actionsFound) : [];
   const unknownText = p ? unknownActionsText(p.unknownActions) : null;
@@ -133,7 +133,8 @@ function TradesImportEditor({ accounts, connections }: { accounts: readonly Acco
   const splitRowsNeedingRatio = p?.trades.filter((t) => t.type === "split" && (t.splitNum === null || t.splitDen === null)) ?? [];
   const visibleTrades = p ? (showAll ? p.trades : p.trades.slice(0, 100)) : [];
   const groups = groupTradesByDate(visibleTrades);
-  const canCommit = Boolean(p && !preview.isPlaceholderData && mapping && accountId && issues.length === 0 && p.unknownActions === 0 && p.totalRows > 0 && !commit.isPending);
+  // Only a preview that answers what is on screen is committed.
+  const canCommit = Boolean(p && preview.current && mapping && accountId && issues.length === 0 && p.unknownActions === 0 && p.totalRows > 0 && !commit.isPending);
 
   const onCommit = () => {
     if (!p || !mapping || !previewBody) return;
@@ -185,7 +186,7 @@ function TradesImportEditor({ accounts, connections }: { accounts: readonly Acco
         </p>
       </Card>
 
-      {!p && preview.isLoading && <p className="muted">Reading file…</p>}
+      {preview.reading && <p className="muted">Reading file…</p>}
       <ErrorText error={preview.error} />
 
       {p && (
@@ -206,12 +207,16 @@ function TradesImportEditor({ accounts, connections }: { accounts: readonly Acco
             </div>
           )}
           {!mapping ? (
-            <>
-              <p className="error">Could not guess the date, action and symbol columns. Pick them below.</p>
-              <button type="button" className="secondary" onClick={() => setMapping(handBuiltTradesMapping(headers))}>
-                Build a mapping by hand
-              </button>
-            </>
+            // Only when the server answered this request without a mapping; while one is on its way there is nothing to say yet.
+            preview.current &&
+            p.mapping === null && (
+              <>
+                <p className="error">Could not guess the date, action and symbol columns. Pick them below.</p>
+                <button type="button" className="secondary" onClick={() => setMapping(handBuiltTradesMapping(headers))}>
+                  Build a mapping by hand
+                </button>
+              </>
+            )
           ) : (
             <>
               <TradesMappingEditor
@@ -288,7 +293,7 @@ function TradesImportEditor({ accounts, connections }: { accounts: readonly Acco
             actions={
               <span className="muted small">
                 {p.totalRows} row{p.totalRows === 1 ? "" : "s"} · {p.duplicateCount} already imported · {p.changedCount} changed · {p.userEditedCount} edited by hand · {p.errors.length} unreadable
-                {preview.isFetching ? " · updating…" : ""}
+                {preview.updating ? " · updating…" : ""}
               </span>
             }
           >

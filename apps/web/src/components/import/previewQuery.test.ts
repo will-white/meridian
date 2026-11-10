@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MutationObserver, QueryClient, QueryObserver } from "@tanstack/react-query";
-import { api } from "../../lib/api.js";
-import { previewQueryOptions } from "./previewQuery.js";
+import type { CsvMappingInput, CsvPreviewResponse, PositionsCsvMapping, PositionsPreviewBody, PositionsPreviewResponse } from "@meridian/shared";
+import { api, ApiError } from "../../lib/api.js";
+import { bankPreviewBody, positionsPreviewBody, type BankPreviewBody } from "../../lib/importMapping.js";
+import { adoptPreviewMapping, nextFileKey, PREVIEW_KEY, previewQueryOptions, previewView } from "./previewQuery.js";
 
 interface Body {
   csvText: string;
@@ -84,5 +86,309 @@ describe("previewQueryOptions", () => {
     release(2);
     await second;
     qc.clear();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The page's preview flow, without React. The hook (`useCsvPreview`) is
+// `useQuery(previewQueryOptions(path, bodyFor(mapping), fileKey))` plus one
+// effect that calls `adoptPreviewMapping`; `Page` is that loop.
+// ---------------------------------------------------------------------------
+
+class Page<TBody extends { csvText: string }, M, TResponse extends { mapping: M | null }> {
+  mapping: M | null = null;
+  fileKey = nextFileKey();
+  readonly observer;
+  private readonly unsubscribe: () => void;
+
+  constructor(
+    readonly qc: QueryClient,
+    private readonly path: string,
+    private readonly bodyFor: (mapping: M | null) => TBody | null,
+  ) {
+    this.observer = new QueryObserver(qc, this.options());
+    this.unsubscribe = this.observer.subscribe(() => undefined);
+  }
+
+  private options() {
+    return previewQueryOptions<TBody, TResponse>(this.path, this.bodyFor(this.mapping), this.fileKey);
+  }
+
+  /** Render, wait for the request (if any), run the effect; again while the effect changed the state. */
+  async settle() {
+    for (let pass = 0; pass < 10; pass++) {
+      this.observer.setOptions(this.options());
+      await vi.waitFor(() => expect(this.observer.getCurrentResult().isFetching).toBe(false));
+      const adopted = adoptPreviewMapping(this.qc, this.path, this.fileKey, this.observer.getCurrentResult(), this.mapping, this.bodyFor);
+      if (adopted === null) return this.observer.getCurrentResult();
+      this.mapping = adopted;
+    }
+    throw new Error("the preview never settled");
+  }
+
+  close() {
+    this.unsubscribe();
+    this.qc.clear();
+  }
+}
+
+const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const sentBodies = (fetch: ReturnType<typeof vi.fn>) => fetch.mock.calls.map((call) => JSON.parse(String((call[1] as RequestInit).body)) as Record<string, unknown>);
+
+const BANK_CSV = "Date,Description,Amount\n11/01/2026,OAKWOOD APTS RENT,-1800.00\n11/02/2026,ACME PAYROLL,2500.00\n";
+const BANK_GUESS: CsvMappingInput = { hasHeader: true, skipRows: 0, date: { column: "Date", format: "MM/DD/YYYY" }, description: { column: "Description" }, amount: { mode: "single", column: "Amount", invert: false } };
+const BANK_PROFILE: CsvMappingInput = { ...BANK_GUESS, amount: { mode: "single", column: "Amount", invert: true } };
+const ACCT = "7f0e1c7e-3a53-4b0e-9a4c-0d6a4f3a1b11";
+const PROFILE = "5b0c2f4e-9d1a-4a8e-8c57-2e1f6f0a9c22";
+
+/** The bank preview route as the page sees it: the mapping it used comes back as a new object on every response. */
+function bankServer() {
+  const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as BankPreviewBody;
+    const used = body.mapping ?? (body.profileId ? BANK_PROFILE : BANK_GUESS);
+    if (used.hasHeader === false) return json(400, { error: 'Column "Date" referenced by name, but the file has no header row', code: "bad_mapping" });
+    const response: CsvPreviewResponse = {
+      headers: ["Date", "Description", "Amount"],
+      sampleRows: [["Date", "Description", "Amount"]],
+      mapping: structuredClone(used) as CsvPreviewResponse["mapping"],
+      rows: [],
+      totalRows: 2,
+      duplicateCount: body.accountId ? 1 : 0,
+      errors: [],
+    };
+    return json(200, response);
+  });
+  vi.stubGlobal("fetch", fetch);
+  return fetch;
+}
+
+function bankPage() {
+  const state = { csvText: BANK_CSV, accountId: "", profileId: "" };
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const page = new Page<BankPreviewBody, CsvMappingInput, CsvPreviewResponse>(qc, "/import/csv/preview", (mapping) => bankPreviewBody({ ...state, mapping }));
+  return { state, page };
+}
+
+describe("the bank preview flow", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("documents the loop it had: a mutation re-run whenever the mapping object changes never settles", async () => {
+    const fetch = bankServer();
+    const qc = new QueryClient();
+    const mutation = new MutationObserver(qc, { mutationFn: (body: BankPreviewBody) => api<CsvPreviewResponse>("/import/csv/preview", { method: "POST", body }) });
+    // The old page: `useEffect(() => preview.mutate(body), [csvText, accountId, profileId, mapping])` and `onSuccess: (res) => setMapping(res.mapping)`.
+    let mapping: CsvMappingInput | null = null;
+    let seenByEffect: unknown = undefined;
+    for (let render = 0; render < 6; render++) {
+      if (mapping === seenByEffect) break;
+      seenByEffect = mapping;
+      const res: CsvPreviewResponse = await mutation.mutate({ csvText: BANK_CSV, ...(mapping ? { mapping } : {}) });
+      mapping = res.mapping;
+    }
+    // Six renders, six requests, and the seventh render would ask again: the mapping is equal every time and never the same object.
+    expect(fetch).toHaveBeenCalledTimes(6);
+    expect(mapping).not.toBe(seenByEffect);
+    expect(mapping).toEqual(seenByEffect);
+    qc.clear();
+  });
+
+  it("previews a chosen file once: the guessed mapping becomes the page's without a second request", async () => {
+    const fetch = bankServer();
+    const { state, page } = bankPage();
+    const result = await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(sentBodies(fetch)).toEqual([{ csvText: BANK_CSV }]);
+    expect(page.mapping).toEqual(BANK_GUESS);
+    // The page's request now names the mapping, and the first response is its answer: nothing is pending, nothing is a placeholder.
+    expect(bankPreviewBody({ ...state, mapping: page.mapping })).toEqual({ csvText: BANK_CSV, mapping: BANK_GUESS });
+    expect(result).toMatchObject({ isFetching: false, isPlaceholderData: false, data: { totalRows: 2, duplicateCount: 0 } });
+    expect(previewView(result, undefined)).toMatchObject({ current: true, reading: false, updating: false, error: null });
+    // Rendering again asks nothing.
+    await page.settle();
+    await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    page.close();
+  });
+
+  it("previews once per change, and a response's mapping never replaces the page's", async () => {
+    const fetch = bankServer();
+    const { state, page } = bankPage();
+    await page.settle();
+
+    state.accountId = ACCT;
+    const withAccount = await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(sentBodies(fetch)[1]).toEqual({ csvText: BANK_CSV, accountId: ACCT, mapping: BANK_GUESS });
+    expect(withAccount.data?.duplicateCount).toBe(1);
+
+    // The owner flips "outflows are positive": one request, and the object in state is still the owner's.
+    const edited: CsvMappingInput = { ...BANK_GUESS, amount: { mode: "single", column: "Amount", invert: true } };
+    page.mapping = edited;
+    const afterEdit = await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(sentBodies(fetch)[2]).toEqual({ csvText: BANK_CSV, accountId: ACCT, mapping: edited });
+    expect(afterEdit.data?.mapping).toEqual(edited);
+    expect(afterEdit.data?.mapping).not.toBe(edited);
+    expect(page.mapping).toBe(edited);
+    await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(3);
+
+    // Back to the first mapping within the stale time: answered from the cache.
+    page.mapping = BANK_GUESS;
+    await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(3);
+    page.close();
+  });
+
+  it("asks for a saved profile once and takes its mapping", async () => {
+    const fetch = bankServer();
+    const { state, page } = bankPage();
+    await page.settle();
+    // The profile select: `setProfileId(id); setMapping(null)`.
+    state.profileId = PROFILE;
+    page.mapping = null;
+    const result = await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(sentBodies(fetch)[1]).toEqual({ csvText: BANK_CSV, profileId: PROFILE });
+    expect(page.mapping).toEqual(BANK_PROFILE);
+    expect(previewView(result, undefined).current).toBe(true);
+    await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    page.close();
+  });
+
+  it("keeps the last preview of the file on screen when the server refuses a change, so the change can be undone", async () => {
+    const fetch = bankServer();
+    const { page } = bankPage();
+    const good = await page.settle();
+    const kept = good.data;
+    // "first row is a header" unchecked: the columns are named by header, so the server answers 400.
+    page.mapping = { ...BANK_GUESS, hasHeader: false };
+    const refused = await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(refused.data).toBeUndefined();
+    expect(refused.error).toBeInstanceOf(ApiError);
+    const view = previewView(refused, kept);
+    expect(view.shown).toBe(kept);
+    expect(view).toMatchObject({ current: false, reading: false, updating: false });
+    expect(view.error?.message).toBe('Column "Date" referenced by name, but the file has no header row');
+    // Without a remembered response there would be nothing to show (what the page did before).
+    expect(previewView(refused, undefined).shown).toBeUndefined();
+    // Checking the box again is the earlier request: its answer is still there.
+    page.mapping = BANK_GUESS;
+    const undone = await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(previewView(undone, kept)).toMatchObject({ current: true, error: null });
+    page.close();
+  });
+
+  it("starts a new file from nothing: another file's preview is never shown for it", async () => {
+    const fetch = vi.fn(async () => new Promise<Response>(() => undefined));
+    vi.stubGlobal("fetch", fetch);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const first = nextFileKey();
+    const second = nextFileKey();
+    expect(second).not.toBe(first);
+    const earlier: CsvPreviewResponse = { headers: ["a"], sampleRows: [], mapping: null, rows: [], totalRows: 9, duplicateCount: 0, errors: [] };
+    qc.setQueryData(previewQueryOptions<BankPreviewBody, CsvPreviewResponse>("/import/csv/preview", { csvText: "a\n1\n" }, first).queryKey, earlier);
+    const observer = new QueryObserver(qc, previewQueryOptions<BankPreviewBody, CsvPreviewResponse>("/import/csv/preview", { csvText: "a\n1\n" }, first));
+    const unsubscribe = observer.subscribe(() => undefined);
+    expect(observer.getCurrentResult().data).toBe(earlier);
+    // A file of the same length is chosen: a new key, no placeholder, "Reading file…".
+    observer.setOptions(previewQueryOptions<BankPreviewBody, CsvPreviewResponse>("/import/csv/preview", { csvText: "b\n2\n" }, second));
+    const result = observer.getCurrentResult();
+    expect(result.data).toBeUndefined();
+    expect(previewView(result, undefined)).toMatchObject({ shown: undefined, current: false, reading: true, updating: false });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    unsubscribe();
+    qc.clear();
+  });
+
+  it("files every preview under one key, so a commit can make them all ask again", () => {
+    expect(previewQueryOptions<BankPreviewBody, CsvPreviewResponse>("/import/csv/preview", { csvText: "a" }, 7).queryKey.slice(0, 2)).toEqual([...PREVIEW_KEY]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Positions: a file without a date column (the Fidelity-style export)
+// ---------------------------------------------------------------------------
+
+const POSITIONS_CSV = "Symbol,Description,Quantity,Last Price,Current Value\nVTI,VANGUARD TOTAL STOCK MARKET ETF,22,$318.40,\"$7,004.80\"\n";
+const POSITIONS_GUESS: PositionsCsvMapping = { hasHeader: true, skipRows: 0, asOf: { mode: "request" }, symbol: { column: "Symbol" }, name: { column: "Description" }, quantity: { column: "Quantity" }, price: { column: "Last Price" }, value: { column: "Current Value" } };
+
+/** The positions preview route: without a date it answers with the mapping and `asOfRequired`, never a refusal. */
+function positionsServer() {
+  const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as PositionsPreviewBody;
+    const dated = body.asOfDate !== undefined;
+    const response: PositionsPreviewResponse = {
+      headers: ["Symbol", "Description", "Quantity", "Last Price", "Current Value"],
+      sampleRows: [],
+      mapping: structuredClone(body.mapping ?? POSITIONS_GUESS),
+      asOf: body.asOfDate ?? null,
+      asOfRequired: !dated,
+      positions: [],
+      totalValueCents: dated ? "700480" : "0",
+      knownBalanceCents: null,
+      differenceCents: null,
+      matchesToDollar: null,
+      setBalanceDefault: true,
+      filterValues: [],
+      pendingActivityCents: "0",
+      snapshotExists: false,
+      existingSource: null,
+      willReplace: dated,
+      rowsRead: 1,
+      errors: [],
+      skipped: [],
+    };
+    return json(200, response);
+  });
+  vi.stubGlobal("fetch", fetch);
+  return fetch;
+}
+
+describe("the positions preview flow for a file without a date column", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("previews once, shows the guessed mapping, then waits for the statement date and previews once more", async () => {
+    const fetch = positionsServer();
+    const state = { csvText: POSITIONS_CSV, accountId: ACCT, profileId: "", asOfDate: "", accountFilterValue: "", choices: [] };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const page = new Page<PositionsPreviewBody, PositionsCsvMapping, PositionsPreviewResponse>(qc, "/import/positions/preview", (mapping) => positionsPreviewBody({ ...state, mapping }));
+
+    const asked = await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(sentBodies(fetch)[0]).toEqual({ csvText: POSITIONS_CSV, accountId: ACCT, choices: [] });
+    // The mapping is on the page (the editor with its date field can render) and the response stays on screen.
+    expect(page.mapping).toEqual(POSITIONS_GUESS);
+    const waiting = previewView(asked, undefined);
+    expect(waiting.shown).toMatchObject({ asOfRequired: true, asOf: null, mapping: POSITIONS_GUESS });
+    expect(waiting).toMatchObject({ current: false, reading: false, updating: false, error: null });
+    // Nothing is sent while the date is missing.
+    expect(positionsPreviewBody({ ...state, mapping: page.mapping })).toBeNull();
+    await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    state.asOfDate = "2026-10-30";
+    const dated = await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(sentBodies(fetch)[1]).toEqual({ csvText: POSITIONS_CSV, accountId: ACCT, choices: [], mapping: POSITIONS_GUESS, asOfDate: "2026-10-30" });
+    expect(previewView(dated, undefined)).toMatchObject({ current: true, shown: { asOf: "2026-10-30", asOfRequired: false, totalValueCents: "700480" } });
+    await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    page.close();
+  });
+
+  it("needs one request when the date was typed before the file was chosen", async () => {
+    const fetch = positionsServer();
+    const state = { csvText: POSITIONS_CSV, accountId: ACCT, profileId: "", asOfDate: "2026-10-30", accountFilterValue: "", choices: [] };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const page = new Page<PositionsPreviewBody, PositionsCsvMapping, PositionsPreviewResponse>(qc, "/import/positions/preview", (mapping) => positionsPreviewBody({ ...state, mapping }));
+    const result = await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(page.mapping).toEqual(POSITIONS_GUESS);
+    expect(previewView(result, undefined)).toMatchObject({ current: true, shown: { asOf: "2026-10-30" } });
+    page.close();
   });
 });

@@ -359,6 +359,7 @@ describe("Positions and trades imports", () => {
       sampleRows: [["VTI", "12.75"]],
       mapping: positionsMapping,
       asOf: "2026-10-13",
+      asOfRequired: false,
       positions: [{ rowIndex: 1, security: previewRef, quantity: "12.75", price: "250", valueCents: "318750", costBasisCents: "260000", warnings: [], existing: null }],
       totalValueCents: "333775",
       knownBalanceCents: "335009",
@@ -376,6 +377,10 @@ describe("Positions and trades imports", () => {
     };
     ok(PositionsPreviewResponse, response);
     bad(PositionsPreviewResponse, { ...response, matchesToDollar: "yes" });
+    // A file that gives no date: the mapping comes back, nothing is listed, and the response says a date is needed.
+    ok(PositionsPreviewResponse, { ...response, asOf: null, asOfRequired: true, positions: [], totalValueCents: "0", knownBalanceCents: null, differenceCents: null, matchesToDollar: null, willReplace: false });
+    const { asOfRequired: _dropped, ...withoutFlag } = response;
+    bad(PositionsPreviewResponse, withoutFlag);
   });
   it("MappedTradeView links to the ledger by ledgerTransactionId", () => {
     const trade = {

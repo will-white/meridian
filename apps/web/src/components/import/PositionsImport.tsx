@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { isInvestmentAccountType } from "@meridian/shared";
@@ -7,21 +7,37 @@ import { api } from "../../lib/api.js";
 import { money } from "../../lib/format.js";
 import { formatQuantity } from "../../lib/investments.js";
 import { dollarsToCentsSigned } from "../../lib/investmentForms.js";
-import { handBuiltPositionsMapping, positionsCommitLabel, positionsMappingIssues, positionsResultText, previewWarningText, reconciliationLine, snapshotBar } from "../../lib/importMapping.js";
+import {
+  handBuiltPositionsMapping,
+  positionsCommitLabel,
+  positionsMappingIssues,
+  positionsPreviewBody,
+  positionsResultText,
+  previewWarningText,
+  reconciliationLine,
+  snapshotBar,
+  unreadableDateText,
+} from "../../lib/importMapping.js";
 import { localToday } from "../../lib/plan.js";
 import { Badge, Card, Empty, ErrorText } from "../ui.js";
 import { invalidateInvestments, useIsViewer } from "../investments/queries.js";
 import { PositionsMappingEditor } from "./PositionsMappingEditor.js";
-import { previewQueryOptions } from "./previewQuery.js";
+import { nextFileKey, PREVIEW_KEY } from "./previewQuery.js";
 import { SecurityChoiceCell } from "./SecurityChoiceCell.js";
+import { useCsvPreview } from "./useCsvPreview.js";
 
 /**
  * Brokerage positions import (imports design §3.6–§3.7, §5): file, investment
  * account and saved positions profile → the mapping editor (the server's
- * guess, a hand-built start when it has none) → the preview with security
- * badges and choices, the reconciliation line against the Bridge balance,
- * the snapshot bar and the skipped rows → commit (`POST /import/positions/commit`
- * with the optional statement total, seams C40) → the result line.
+ * guess, a hand-built start when it has none) with the statement date field
+ * when the file has no date column → the preview with security badges and
+ * choices, the reconciliation line against the Bridge balance, the snapshot
+ * bar and the skipped rows → commit (`POST /import/positions/commit` with the
+ * optional statement total, seams C40) → the result line.
+ *
+ * A file without a date is not refused by the preview: the server answers with
+ * the mapping and `asOfRequired` (audit decision A9), the editor appears, and
+ * the rows are previewed once the date is entered.
  */
 export function PositionsImport({ accounts, connections }: { accounts: readonly AccountView[]; connections: readonly ConnectionView[] }) {
   const viewer = useIsViewer();
@@ -59,7 +75,7 @@ function PositionsImportEditor({ accounts, connections }: { accounts: readonly A
   const [statementTotal, setStatementTotal] = useState("");
   const [save, setSave] = useState(false);
   const [saveName, setSaveName] = useState("");
-  /** Bumped per chosen file: keys the preview and remounts the cards for a new file. */
+  /** One per chosen file: keys the preview and remounts the cards for a new file. */
   const [fileKey, setFileKey] = useState(0);
 
   const commit = useMutation({
@@ -69,42 +85,39 @@ function PositionsImportEditor({ accounts, connections }: { accounts: readonly A
       void qc.invalidateQueries({ queryKey: ["connections"] });
       void qc.invalidateQueries({ queryKey: ["snapshots"] });
       void qc.invalidateQueries({ queryKey: ["prices"] });
+      // The snapshot just stored is what the preview compares with from now on.
+      void qc.invalidateQueries({ queryKey: PREVIEW_KEY });
     },
   });
 
   // The statement date is a `type="date"` input (a complete date or ""), so the issues and the body read the same value: no debounce.
   const issues = mapping ? positionsMappingIssues(mapping, asOfDate) : [];
   const choiceList = useMemo(() => [...choices.values()], [choices]);
-  const previewBody: PositionsPreviewBody | null = useMemo(() => {
-    if (!csvText || !accountId) return null;
-    if (mapping && issues.length > 0) return null;
-    const body: PositionsPreviewBody = { csvText, accountId, choices: choiceList };
-    if (mapping) body.mapping = mapping;
-    else if (profileId) body.profileId = profileId;
-    if (asOfDate) body.asOfDate = asOfDate;
-    if (accountFilterValue) body.accountFilterValue = accountFilterValue;
-    return body;
-  }, [csvText, accountId, mapping, profileId, asOfDate, accountFilterValue, choiceList, issues.length]);
+  const requestFor = (m: PositionsCsvMapping | null) => positionsPreviewBody({ csvText, accountId, profileId, mapping: m, asOfDate, accountFilterValue, choices: choiceList });
+  const previewBody = requestFor(mapping);
 
-  // The preview re-runs whenever the file, account, profile, mapping, date, filter or choices change;
-  // the last response stays on screen meanwhile (a mutation would unmount the cards per keystroke).
-  const preview = useQuery(previewQueryOptions<PositionsPreviewBody, PositionsPreviewResponse>("/import/positions/preview", previewBody, fileKey));
-  // Adopt the server's guessed or saved mapping when none is set locally; a placeholder (the previous body's response) never counts.
-  const serverMapping = preview.isPlaceholderData ? null : (preview.data?.mapping ?? null);
-  useEffect(() => {
-    if (mapping === null && serverMapping !== null) setMapping(serverMapping);
-  }, [mapping, serverMapping]);
+  // One preview per change of the file, account, profile, mapping, date, filter or choices; the server's guess
+  // (or the profile's mapping) becomes the page's, and the last response stays on screen meanwhile and when a change is refused.
+  const preview = useCsvPreview<PositionsPreviewBody, PositionsCsvMapping, PositionsPreviewResponse>({
+    path: "/import/positions/preview",
+    fileKey,
+    mapping,
+    onMapping: setMapping,
+    bodyFor: requestFor,
+  });
 
   const onFile = async (file: File | undefined) => {
     if (!file) return;
+    // Read first, then change everything in one render: the old file is never previewed under the new file's key.
+    const text = await file.text();
     setFileName(file.name);
     setMapping(null);
     setChoices(new Map());
     setSetBalance(null);
     setStatementTotal("");
-    setFileKey((k) => k + 1);
+    setFileKey(nextFileKey());
     commit.reset();
-    setCsvText(await file.text());
+    setCsvText(text);
   };
   const setChoice = (rowIndex: number, security: SecurityChoice | undefined) =>
     setChoices((prev) => {
@@ -114,15 +127,17 @@ function PositionsImportEditor({ accounts, connections }: { accounts: readonly A
       return next;
     });
 
-  const p = preview.data;
+  const p = preview.shown;
   const headers = p?.headers ?? [];
   const line = p ? reconciliationLine(p) : null;
   const bar = p ? snapshotBar(p) : null;
+  const dateBar = p ? unreadableDateText(p, mapping) : null;
   const balanceDefault = p?.setBalanceDefault ?? true;
   const willSetBalance = setBalance ?? balanceDefault;
   const statementTotalCents = statementTotal.trim() === "" ? null : dollarsToCentsSigned(statementTotal);
   const totalValid = statementTotal.trim() === "" || (statementTotalCents !== null && statementTotalCents >= 0n);
-  const canCommit = Boolean(p && !preview.isPlaceholderData && mapping && accountId && issues.length === 0 && p.positions.length > 0 && !(bar?.blocks) && totalValid && !commit.isPending);
+  // Only a preview that answers what is on screen is committed.
+  const canCommit = Boolean(p && preview.current && mapping && accountId && issues.length === 0 && p.positions.length > 0 && !(bar?.blocks) && totalValid && !commit.isPending);
 
   const onCommit = () => {
     if (!p || !mapping || !previewBody) return;
@@ -172,7 +187,7 @@ function PositionsImportEditor({ accounts, connections }: { accounts: readonly A
         <p className="muted small">A statement's positions on one date: symbol or name, quantity, price or value, and the cost basis when the file has it. The snapshot is dated by the file or by the date you enter, never by the clock.</p>
       </Card>
 
-      {!p && preview.isLoading && <p className="muted">Reading file…</p>}
+      {preview.reading && <p className="muted">Reading file…</p>}
       <ErrorText error={preview.error} />
 
       {p && (
@@ -193,12 +208,16 @@ function PositionsImportEditor({ accounts, connections }: { accounts: readonly A
             </div>
           )}
           {!mapping ? (
-            <>
-              <p className="error">Could not guess the symbol and value columns. Pick them below.</p>
-              <button type="button" className="secondary" onClick={() => setMapping(handBuiltPositionsMapping(headers))}>
-                Build a mapping by hand
-              </button>
-            </>
+            // Only when the server answered this request without a mapping; while one is on its way there is nothing to say yet.
+            preview.current &&
+            p.mapping === null && (
+              <>
+                <p className="error">Could not guess the symbol and value columns. Pick them below.</p>
+                <button type="button" className="secondary" onClick={() => setMapping(handBuiltPositionsMapping(headers))}>
+                  Build a mapping by hand
+                </button>
+              </>
+            )
           ) : (
             <>
               <PositionsMappingEditor
@@ -232,11 +251,12 @@ function PositionsImportEditor({ accounts, connections }: { accounts: readonly A
           title={`3. Preview${p.asOf ? ` · positions as of ${p.asOf}` : ""}`}
           actions={
             <span className="muted small">
-              {p.positions.length} position{p.positions.length === 1 ? "" : "s"} · {p.skipped.length} skipped · {p.errors.length} unreadable{preview.isFetching ? " · updating…" : ""}
+              {p.positions.length} position{p.positions.length === 1 ? "" : "s"} · {p.skipped.length} skipped · {p.errors.length} unreadable{preview.updating ? " · updating…" : ""}
             </span>
           }
         >
           {bar && <p className={`imp-bar imp-bar-${bar.tone}`}>{bar.text}</p>}
+          {dateBar && <p className="imp-bar imp-bar-bad">{dateBar}</p>}
           {p.errors.length > 0 && (
             <ul className="errors">
               {p.errors.slice(0, 50).map((e) => (

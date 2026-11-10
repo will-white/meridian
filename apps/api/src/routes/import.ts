@@ -54,6 +54,7 @@ import {
   PositionsImportResult,
   PositionsPreviewBody,
   PositionsPreviewResponse,
+  readPositionsCsvRows,
   sanitizeText,
   TradesCommitBody,
   TradesCsvMapping,
@@ -70,6 +71,7 @@ import {
   type MappedTrades,
   type PositionsCsvMappingInput,
   type PreviewSecurityRef,
+  type ReadPositions,
   type RowChoice,
   type SecurityChoice,
   type SecurityKey,
@@ -84,7 +86,9 @@ import { priceProviderConfigured, resolveWithoutCreating } from "./securities.js
 /**
  * Phase 3 additions (imports design §3.7, §3.9; plan decision 17): the positions and trades
  * CSV previews and commits under /api/import/positions and /api/import/trades. A preview
- * resolves securities without creating any; a commit writes the `import_log` row first,
+ * resolves securities without creating any, and a positions file without a date is answered
+ * with its mapping and `asOfRequired` instead of a refusal (audit decision A9; only the commit
+ * is 400 `as_of_required`); a commit writes the `import_log` row first,
  * runs everything else in one transaction (securities, snapshot or trades, ledger rows,
  * implied prices, balance, lots) and marks the log row `error` with the message on failure,
  * as the Phase 1 bank-CSV commit does. Mapping profiles are `csv` connections typed by
@@ -228,15 +232,30 @@ function toSnapshotPosition(a: PositionAggregate): SnapshotPosition {
   };
 }
 
+type PositionsMapOptions = { asOfDate?: IsoDate | undefined; accountFilterValue?: string | undefined };
+
+function positionsMapOptions(opts: PositionsMapOptions): { asOfDate?: IsoDate; accountFilterValue?: string } {
+  return {
+    ...(opts.asOfDate !== undefined ? { asOfDate: opts.asOfDate } : {}),
+    ...(opts.accountFilterValue !== undefined ? { accountFilterValue: opts.accountFilterValue } : {}),
+  };
+}
+
 /** `mapPositionsCsvRows` with the file-level refusals mapped: `CsvImportError` keeps its code (`as_of_required`), anything else is `bad_mapping`. */
-function mapPositions(rows: readonly string[][], mapping: PositionsCsvMappingInput, opts: { asOfDate?: IsoDate | undefined; accountFilterValue?: string | undefined }): MappedPositions {
+function mapPositions(rows: readonly string[][], mapping: PositionsCsvMappingInput, opts: PositionsMapOptions): MappedPositions {
   try {
-    return mapPositionsCsvRows(rows, mapping, {
-      ...(opts.asOfDate !== undefined ? { asOfDate: opts.asOfDate } : {}),
-      ...(opts.accountFilterValue !== undefined ? { accountFilterValue: opts.accountFilterValue } : {}),
-    });
+    return mapPositionsCsvRows(rows, mapping, positionsMapOptions(opts));
   } catch (err) {
     if (err instanceof CsvImportError) throw badRequest(err.message, err.code);
+    throw badRequest((err as Error).message, "bad_mapping");
+  }
+}
+
+/** The preview's read: a file without a date is not refused (`asOf` null); a mapping the file does not fit is `bad_mapping`. */
+function readPositions(rows: readonly string[][], mapping: PositionsCsvMappingInput, opts: PositionsMapOptions): ReadPositions {
+  try {
+    return readPositionsCsvRows(rows, mapping, positionsMapOptions(opts));
+  } catch (err) {
     throw badRequest((err as Error).message, "bad_mapping");
   }
 }
@@ -496,30 +515,40 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
     const headers = rows[0]!;
     if (!mapping) mapping = guessPositionsMapping(headers, rows.slice(1, 6));
     const sampleRows = rows.slice(0, 6);
+    /** What can be said before there is anything to list: no mapping could be guessed, or the file gives no date. */
+    const nothingListed = {
+      sampleRows,
+      asOf: null,
+      positions: [],
+      totalValueCents: "0",
+      knownBalanceCents: null,
+      differenceCents: null,
+      matchesToDollar: null,
+      setBalanceDefault: !acct.simplefinFed,
+      snapshotExists: false,
+      existingSource: null,
+      willReplace: false,
+    };
     if (!mapping) {
-      return {
-        headers,
-        sampleRows,
-        mapping: null,
-        asOf: null,
-        positions: [],
-        totalValueCents: "0",
-        knownBalanceCents: null,
-        differenceCents: null,
-        matchesToDollar: null,
-        setBalanceDefault: !acct.simplefinFed,
-        filterValues: [],
-        pendingActivityCents: "0",
-        snapshotExists: false,
-        existingSource: null,
-        willReplace: false,
-        rowsRead: Math.max(rows.length - 1, 0),
-        errors: [],
-        skipped: [],
-      };
+      return { ...nothingListed, headers, mapping: null, asOfRequired: false, filterValues: [], pendingActivityCents: "0", rowsRead: Math.max(rows.length - 1, 0), errors: [], skipped: [] };
     }
     const parsedMapping = PositionsCsvMapping.parse(mapping);
-    const mapped = mapPositions(rows, parsedMapping, b);
+    const read = readPositions(rows, parsedMapping, b);
+    if (read.asOf === null) {
+      // No date column (or no row with a readable date) and no date in the request: the owner is asked for one, the file is not refused.
+      return {
+        ...nothingListed,
+        headers: headerNames(headers, parsedMapping.hasHeader),
+        mapping: parsedMapping,
+        asOfRequired: true,
+        filterValues: read.filterValues,
+        pendingActivityCents: read.pendingActivityCents.toString(),
+        rowsRead: dataRowCount(rows, parsedMapping),
+        errors: toRowErrors(read.errors).slice(0, 50),
+        skipped: read.skipped.map((s) => ({ rowIndex: s.rowIndex, reason: s.reason })),
+      };
+    }
+    const mapped: MappedPositions = { ...read, asOf: read.asOf };
     const choices = choiceMap(b.choices);
     const snapshot = await getSnapshot(app.db, acct.id, mapped.asOf);
     const existingRows = new Map(snapshot?.rows.map((row) => [row.securityId, row]) ?? []);
@@ -539,6 +568,7 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
       sampleRows,
       mapping: parsedMapping,
       asOf: mapped.asOf,
+      asOfRequired: false,
       positions,
       totalValueCents: totalValueCents.toString(),
       knownBalanceCents: knownBalanceCents === null ? null : knownBalanceCents.toString(),

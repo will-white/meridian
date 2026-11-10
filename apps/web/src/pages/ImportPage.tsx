@@ -1,17 +1,20 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
 import { CsvDateFormat, type AccountView, type ConnectionView, type CsvKind, type CsvMappingInput, type CsvPreviewResponse, type ImportResult } from "@meridian/shared";
 import { api } from "../lib/api.js";
 import { money, shortDate } from "../lib/format.js";
-import { CSV_KINDS, csvKindFromParam } from "../lib/importMapping.js";
+import { bankPreviewBody, bankResultText, CSV_KINDS, csvKindFromParam, type BankPreviewBody } from "../lib/importMapping.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
 import { PositionsImport } from "../components/import/PositionsImport.js";
 import { TradesImport } from "../components/import/TradesImport.js";
+import { nextFileKey, PREVIEW_KEY } from "../components/import/previewQuery.js";
+import { useCsvPreview } from "../components/import/useCsvPreview.js";
 import "./investments/investments.css";
 import "../components/import/import.css";
 
 type Mapping = CsvMappingInput;
+type BankCommitBody = { accountId: string; csvText: string; mapping: Mapping; saveProfile?: { id?: string; name: string } };
 
 /**
  * Import a CSV: a kind switch (`?kind=bank|positions|trades`) over three
@@ -57,7 +60,13 @@ export function ImportPage() {
   );
 }
 
-/** The Phase 1 bank-transactions flow, unchanged apart from reading its accounts and profiles from the page. */
+/**
+ * The Phase 1 bank-transactions flow: file, account and saved profile → the
+ * mapping editor (the server's guess, the profile's mapping, or a hand-built
+ * start) → the preview with the rows already imported marked → commit. The
+ * preview is a query keyed by its request (`useCsvPreview`), so it runs once
+ * per change and the cards stay on screen while it does.
+ */
 function BankImport({ accounts: accountList, connections: connectionList }: { accounts: readonly AccountView[]; connections: readonly ConnectionView[] }) {
   const qc = useQueryClient();
   const profiles = connectionList.filter((c) => c.type === "csv" && c.csvKind === "bank" && c.csvMapping);
@@ -69,49 +78,49 @@ function BankImport({ accounts: accountList, connections: connectionList }: { ac
   const [mapping, setMapping] = useState<Mapping | null>(null);
   const [saveName, setSaveName] = useState("");
   const [save, setSave] = useState(false);
+  /** One per chosen file: keys the preview. */
+  const [fileKey, setFileKey] = useState(0);
 
-  const preview = useMutation({
-    mutationFn: (body: { csvText: string; accountId?: string; mapping?: Mapping; profileId?: string }) =>
-      api<CsvPreviewResponse>("/import/csv/preview", { method: "POST", body }),
-    onSuccess: (res) => {
-      if (res.mapping) setMapping(res.mapping);
-    },
+  const preview = useCsvPreview<BankPreviewBody, Mapping, CsvPreviewResponse>({
+    path: "/import/csv/preview",
+    fileKey,
+    mapping,
+    onMapping: setMapping,
+    bodyFor: (m) => bankPreviewBody({ csvText, accountId, profileId, mapping: m }),
   });
   const commit = useMutation({
-    mutationFn: (body: { accountId: string; csvText: string; mapping: Mapping; saveProfile?: { id?: string; name: string } }) =>
-      api<ImportResult>("/import/csv/commit", { method: "POST", body }),
+    // `alreadyImported` is the preview's count at this moment; the result line needs it after the preview has run again.
+    mutationFn: (v: { body: BankCommitBody; alreadyImported: number }) => api<ImportResult>("/import/csv/commit", { method: "POST", body: v.body }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["transactions"] });
       void qc.invalidateQueries({ queryKey: ["accounts"] });
       void qc.invalidateQueries({ queryKey: ["connections"] });
+      // The rows just imported are in the ledger now: the preview runs again and marks them.
+      void qc.invalidateQueries({ queryKey: PREVIEW_KEY });
     },
   });
 
-  // Re-run the preview whenever the file, profile, or mapping changes.
-  useEffect(() => {
-    if (!csvText) return;
-    const body: Parameters<typeof preview.mutate>[0] = { csvText };
-    if (accountId) body.accountId = accountId;
-    if (mapping) body.mapping = mapping;
-    else if (profileId) body.profileId = profileId;
-    preview.mutate(body);
-  }, [csvText, accountId, profileId, mapping]);
-
   const onFile = async (file: File | undefined) => {
     if (!file) return;
+    // Read first, then change everything in one render: the old file is never previewed under the new file's key.
+    const text = await file.text();
     setFileName(file.name);
     setMapping(null);
+    setFileKey(nextFileKey());
     commit.reset();
-    setCsvText(await file.text());
+    setCsvText(text);
   };
 
-  const headers = preview.data?.headers ?? [];
+  const p = preview.shown;
+  const headers = p?.headers ?? [];
   const columnOptions = headers.map((h, i) => (
-    <option key={i} value={preview.data?.mapping?.hasHeader === false ? i : h}>
+    <option key={i} value={p?.mapping?.hasHeader === false ? i : h}>
       {h}
     </option>
   ));
   const setM = (patch: Partial<Mapping>) => mapping && setMapping({ ...mapping, ...patch });
+  /** The server answered the current request and found no mapping: the owner builds one. */
+  const noGuess = preview.current && p?.mapping === null;
 
   return (
     <>
@@ -121,7 +130,7 @@ function BankImport({ accounts: accountList, connections: connectionList }: { ac
             <input type="file" accept=".csv,text/csv" onChange={(e) => void onFile(e.target.files?.[0])} />
             {fileName || "Choose CSV…"}
           </label>
-          <select value={accountId} onChange={(e) => setAccountId(e.target.value)} required>
+          <select value={accountId} onChange={(e) => setAccountId(e.target.value)} required aria-label="Account">
             <option value="">Into account…</option>
             {accountList
               .filter((a) => !a.closed)
@@ -137,11 +146,12 @@ function BankImport({ accounts: accountList, connections: connectionList }: { ac
               setProfileId(e.target.value);
               setMapping(null);
             }}
+            aria-label="Saved mapping"
           >
             <option value="">Guess the columns</option>
-            {profiles.map((p) => (
-              <option key={p.id} value={p.id}>
-                Saved mapping: {p.name}
+            {profiles.map((pr) => (
+              <option key={pr.id} value={pr.id}>
+                Saved mapping: {pr.name}
               </option>
             ))}
           </select>
@@ -149,17 +159,17 @@ function BankImport({ accounts: accountList, connections: connectionList }: { ac
         {accountList.length === 0 && <Empty>Create an account first (Accounts page).</Empty>}
       </Card>
 
-      {preview.isPending && <p className="muted">Reading file…</p>}
+      {preview.reading && <p className="muted">Reading file…</p>}
       <ErrorText error={preview.error} />
 
-      {preview.data && (
+      {p && (
         <Card title="2. Column mapping">
-          {!mapping && <p className="error">Could not guess the date and description columns. Pick them below.</p>}
-          {preview.data.sampleRows.length > 0 && (
+          {!mapping && noGuess && <p className="error">Could not guess the date and description columns. Pick them below.</p>}
+          {p.sampleRows.length > 0 && (
             <div className="scroll">
               <table className="table small">
                 <tbody>
-                  {preview.data.sampleRows.slice(0, 4).map((r, i) => (
+                  {p.sampleRows.slice(0, 4).map((r, i) => (
                     <tr key={i}>
                       {r.map((c, j) => (
                         <td key={j}>{c}</td>
@@ -170,22 +180,22 @@ function BankImport({ accounts: accountList, connections: connectionList }: { ac
               </table>
             </div>
           )}
-          <MappingEditor mapping={mapping} headers={headers} onChange={setMapping} columnOptions={columnOptions} setM={setM} />
+          {(mapping || noGuess) && <MappingEditor mapping={mapping} headers={headers} onChange={setMapping} columnOptions={columnOptions} setM={setM} />}
         </Card>
       )}
 
-      {preview.data && mapping && (
+      {p && mapping && (
         <Card
           title="3. Preview"
           actions={
             <span className="muted">
-              {preview.data.totalRows} rows · {preview.data.duplicateCount} already imported · {preview.data.errors.length} unreadable
+              {p.totalRows} rows · {p.duplicateCount} already imported · {p.errors.length} unreadable{preview.updating ? " · updating…" : ""}
             </span>
           }
         >
-          {preview.data.errors.length > 0 && (
+          {p.errors.length > 0 && (
             <ul className="errors">
-              {preview.data.errors.slice(0, 5).map((e) => (
+              {p.errors.slice(0, 5).map((e) => (
                 <li key={e.rowIndex}>
                   row {e.rowIndex + 1}: {e.message}
                 </li>
@@ -202,7 +212,7 @@ function BankImport({ accounts: accountList, connections: connectionList }: { ac
               </tr>
             </thead>
             <tbody>
-              {preview.data.rows.slice(0, 25).map((r) => (
+              {p.rows.slice(0, 25).map((r) => (
                 <tr key={r.rowIndex} className={r.duplicate ? "muted" : ""}>
                   <td>{shortDate(r.date)}</td>
                   <td>
@@ -221,26 +231,26 @@ function BankImport({ accounts: accountList, connections: connectionList }: { ac
             </label>
             <input placeholder="Institution name" value={saveName} onChange={(e) => setSaveName(e.target.value)} disabled={!save} />
             <button
+              type="button"
               onClick={() =>
                 commit.mutate({
-                  accountId,
-                  csvText,
-                  mapping,
-                  ...(save && saveName.trim() ? { saveProfile: { ...(profileId ? { id: profileId } : {}), name: saveName.trim() } } : {}),
+                  body: {
+                    accountId,
+                    csvText,
+                    mapping,
+                    ...(save && saveName.trim() ? { saveProfile: { ...(profileId ? { id: profileId } : {}), name: saveName.trim() } } : {}),
+                  },
+                  alreadyImported: p.duplicateCount,
                 })
               }
-              disabled={!accountId || commit.isPending || preview.data.totalRows === 0}
+              // Only a preview that answers what is on screen is committed.
+              disabled={!accountId || !preview.current || commit.isPending || p.totalRows === 0}
             >
-              Import {preview.data.totalRows - preview.data.duplicateCount} new transaction{preview.data.totalRows - preview.data.duplicateCount === 1 ? "" : "s"}
+              {commit.isPending ? "Importing…" : `Import ${p.totalRows - p.duplicateCount} new transaction${p.totalRows - p.duplicateCount === 1 ? "" : "s"}`}
             </button>
           </div>
           <ErrorText error={commit.error} />
-          {commit.data && (
-            <p className="notice">
-              Imported {commit.data.created} new, skipped {commit.data.skipped + (preview.data.duplicateCount || 0)} duplicates, paired {commit.data.transfersPaired} transfer
-              {commit.data.transfersPaired === 1 ? "" : "s"}.{commit.data.errors.length > 0 ? ` ${commit.data.errors.length} rows could not be read.` : ""}
-            </p>
-          )}
+          {commit.data && <p className="notice">{bankResultText(commit.data, commit.variables?.alreadyImported ?? 0)}</p>}
         </Card>
       )}
     </>

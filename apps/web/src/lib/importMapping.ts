@@ -4,27 +4,33 @@ import type {
   ColumnRef,
   CsvDateFormat,
   CsvKind,
+  CsvMappingInput,
+  ImportResult,
   MappedTradeView,
   PositionsCsvMapping,
   PositionsImportResult,
+  PositionsPreviewBody,
   PositionsPreviewResponse,
   PreviewSecurityRef,
+  RowChoice,
   TradeKind,
   TradesCsvMapping,
   TradesImportResult,
+  TradesPreviewBody,
   TradesPreviewResponse,
 } from "@meridian/shared";
 import { money, shortDate } from "./format.js";
 import type { BadgeTone } from "./investments.js";
 
 /**
- * Pure helpers for the Import page's positions and trades flows (imports
- * design §3.6–§3.9, §5): the hand-built starting mappings, the optional-column
- * edits the mapping editors make, the client-side validation that mirrors the
- * Zod refinements, the action map edits, and the sentences the previews and
- * results show. The server guesses the mapping (`guessPositionsMapping`,
- * `guessTradesMapping` in packages/shared); these helpers only edit and check
- * what it returned. No React, no DOM.
+ * Pure helpers for the Import page's three flows (imports design §3.6–§3.9,
+ * §5): the hand-built starting mappings, the optional-column edits the mapping
+ * editors make, the client-side validation that mirrors the Zod refinements,
+ * the action map edits, the preview request each flow sends, and the sentences
+ * the previews and results show. The server guesses the mapping
+ * (`guessCsvMapping`, `guessPositionsMapping`, `guessTradesMapping` in
+ * packages/shared); these helpers only edit and check what it returned. No
+ * React, no DOM.
  */
 
 // ---- Kinds ----
@@ -168,6 +174,91 @@ export function tradesMappingIssues(mapping: TradesCsvMapping): string[] {
   if (String(mapping.date.column) === String(mapping.action.column)) issues.push("The date and action columns must differ.");
   if (!mapping.amount && !(mapping.quantity && mapping.price)) issues.push("Without an amount column, quantity and price are needed to derive it.");
   return issues;
+}
+
+// ---- Preview requests ----
+//
+// One builder per flow, taking the page's state. Each returns null while there is nothing to
+// ask, and otherwise the same body for the same state, so the preview query (keyed by its
+// body) runs once per change. With no mapping on the page the body names the saved profile
+// (or nothing: the server guesses); with one it names the mapping, and nothing else differs
+// (`adoptPreviewMapping` relies on that).
+
+/** `POST /import/csv/preview` as the page sends it. */
+export interface BankPreviewBody {
+  csvText: string;
+  accountId?: string;
+  mapping?: CsvMappingInput;
+  profileId?: string;
+}
+
+/** The bank preview runs as soon as there is a file; the account only adds the "already imported" marks. */
+export function bankPreviewBody(s: { csvText: string; accountId: string; profileId: string; mapping: CsvMappingInput | null }): BankPreviewBody | null {
+  if (!s.csvText) return null;
+  const body: BankPreviewBody = { csvText: s.csvText };
+  if (s.accountId) body.accountId = s.accountId;
+  if (s.mapping) body.mapping = s.mapping;
+  else if (s.profileId) body.profileId = s.profileId;
+  return body;
+}
+
+export interface PositionsPreviewState {
+  csvText: string;
+  accountId: string;
+  profileId: string;
+  mapping: PositionsCsvMapping | null;
+  /** The statement date typed on the page ("" when none). */
+  asOfDate: string;
+  accountFilterValue: string;
+  choices: readonly RowChoice[];
+}
+
+/**
+ * The positions preview needs the file and its account. Before the page has a mapping the
+ * request goes without one, and without a date if none was typed: the server answers with its
+ * guess (or the profile's mapping) and `asOfRequired`, which is how the editor and its date
+ * field get on screen. Once the page has a mapping, nothing is sent while it is incomplete or
+ * still needs the statement date.
+ */
+export function positionsPreviewBody(s: PositionsPreviewState): PositionsPreviewBody | null {
+  if (!s.csvText || !s.accountId) return null;
+  if (s.mapping && positionsMappingIssues(s.mapping, s.asOfDate).length > 0) return null;
+  const body: PositionsPreviewBody = { csvText: s.csvText, accountId: s.accountId, choices: [...s.choices] };
+  if (s.mapping) body.mapping = s.mapping;
+  else if (s.profileId) body.profileId = s.profileId;
+  if (s.asOfDate) body.asOfDate = s.asOfDate;
+  if (s.accountFilterValue) body.accountFilterValue = s.accountFilterValue;
+  return body;
+}
+
+export interface TradesPreviewState {
+  csvText: string;
+  accountId: string;
+  profileId: string;
+  mapping: TradesCsvMapping | null;
+  accountFilterValue: string;
+  choices: readonly RowChoice[];
+}
+
+export function tradesPreviewBody(s: TradesPreviewState): TradesPreviewBody | null {
+  if (!s.csvText || !s.accountId) return null;
+  if (s.mapping && tradesMappingIssues(s.mapping).length > 0) return null;
+  const body: TradesPreviewBody = { csvText: s.csvText, accountId: s.accountId, choices: [...s.choices] };
+  if (s.mapping) body.mapping = s.mapping;
+  else if (s.profileId) body.profileId = s.profileId;
+  if (s.accountFilterValue) body.accountFilterValue = s.accountFilterValue;
+  return body;
+}
+
+/**
+ * The bar over a positions preview whose date column gave no date (`asOfRequired` with a
+ * column-mode mapping; the unreadable rows are listed under it). Null when the preview is
+ * dated, and when the mapping takes the date from the page: the editor's own date field and
+ * `positionsMappingIssues` ask for it there.
+ */
+export function unreadableDateText(p: Pick<PositionsPreviewResponse, "asOfRequired">, mapping: PositionsCsvMapping | null): string | null {
+  if (!p.asOfRequired || mapping === null || mapping.asOf.mode !== "column") return null;
+  return 'No row has a readable date in the statement date column. Pick another column or date format, or set the column to "none" and enter the statement date.';
 }
 
 // ---- Trade kinds and actions ----
@@ -315,6 +406,21 @@ export function tradesCommitLabel(totalRows: number, duplicateCount: number): st
   const fresh = Math.max(totalRows - duplicateCount, 0);
   const dup = duplicateCount > 0 ? ` (${duplicateCount} already imported)` : "";
   return `Import ${fresh} trade${fresh === 1 ? "" : "s"}${dup}`;
+}
+
+/**
+ * "Imported 11 new, skipped 0 duplicates, paired 1 transfer." `alreadyImported` is the
+ * preview's count when the import was committed (rows the ledger already had); the commit's
+ * own `skipped` adds the rows the file repeats. The preview runs again after the commit and
+ * then counts every row as imported, so the count must be the one taken before.
+ */
+export function bankResultText(r: ImportResult, alreadyImported: number): string {
+  const duplicates = r.skipped + alreadyImported;
+  const unread = r.errors.length;
+  return (
+    `Imported ${r.created} new, skipped ${duplicates} duplicate${duplicates === 1 ? "" : "s"}, paired ${r.transfersPaired} transfer${r.transfersPaired === 1 ? "" : "s"}.` +
+    (unread > 0 ? ` ${unread} row${unread === 1 ? "" : "s"} could not be read.` : "")
+  );
 }
 
 /** "Snapshot 2026-10-13: 3 positions (2 new, 1 updated), $3,337.75; 2 securities created; 3 implied prices; balance set." */

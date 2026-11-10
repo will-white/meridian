@@ -1253,6 +1253,14 @@ export const PositionsPreviewResponse = z.object({
   sampleRows: z.array(z.array(z.string())),
   mapping: PositionsCsvMapping.nullable(),
   asOf: IsoDateString.nullable(),
+  /**
+   * The mapping reads no date and the request carried none (`asOfDate`): the file has no date
+   * column, or no row has a readable one. The preview is not refused: it carries the headers,
+   * the sample rows, the mapping, the account-filter values and the unreadable rows, so the
+   * page can show the editor and ask for the date; `positions` stays empty until there is one
+   * (a snapshot is never dated by the clock). The commit still answers 400 `as_of_required`.
+   */
+  asOfRequired: z.boolean(),
   positions: z.array(MappedPositionView),
   totalValueCents: CentsString,
   knownBalanceCents: CentsString.nullable(),
