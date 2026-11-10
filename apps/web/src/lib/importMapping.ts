@@ -226,6 +226,7 @@ export function securityBadge(ref: PreviewSecurityRef): { text: string; tone: Ba
 
 const WARNING_TEXTS: Record<string, string> = {
   amount_mismatch: "the amount differs from quantity × price (± fee) by more than 5 cents",
+  value_mismatch: "the value differs from quantity × price by more than 0.5 %: the value was kept and the unit price derived from it",
   value_rounded: "the value was rounded to cents",
   cost_unreadable: "the cost basis could not be read and was dropped",
   reinvest_without_dividend: "a reinvest row without a matching dividend; set reinvest rows to 'dividend + purchase' if this file combines them",

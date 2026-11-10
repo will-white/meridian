@@ -196,6 +196,7 @@ function toSubPeriodView(s: SubPeriod): SubPeriodView {
     to: s.to,
     beginValueCents: cents(s.beginValueCents),
     flowCents: cents(s.flowCents),
+    outflowCents: cents(s.outflowCents),
     weightedFlowDollars: s.weightedFlowDollars,
     endValueCents: cents(s.endValueCents),
     rate: s.rate,
@@ -235,7 +236,7 @@ function toStatementCheckView(s: StatementCheck): StatementCheckView {
   };
 }
 
-/** The lots of a `detail: full` response carry the valued columns of the stored lot with the same id (the ids are stable by (opening txn, ordinal)). */
+/** The lots of a `detail: full` response carry the valued columns of the lots list as of the same date, by id (the ids are stable by (opening txn, ordinal)). */
 export type LotDetails = ReadonlyMap<string, LotRecord>;
 
 export function toPerformanceResponse(r: PerformanceRecord, lotDetails: LotDetails = new Map()): PerformanceResponse {

@@ -24,6 +24,7 @@ import {
   periodFromParams,
   periodQuery,
   signedMoney,
+  unlistedCashText,
   valuationDescription,
   type SeriesStep,
 } from "../../lib/investments.js";
@@ -327,9 +328,9 @@ function AccountsTable({
                     ) : (
                       <>
                         {money(a.cashCents ?? "0")}
-                        {a.residualCents !== null && BigInt(a.residualCents) !== 0n && (
-                          <div className="muted small" title="Cash (from balance): the account's balance minus its priced positions, carried forward">
-                            + {money(a.residualCents)} unlisted
+                        {unlistedCashText(a.residualCents) !== null && (
+                          <div className="muted small" title="Cash (from balance): the account's balance minus its priced positions, carried forward; negative when the balance is below the holdings (a margin loan, or holdings that changed since the statement)">
+                            {unlistedCashText(a.residualCents)}
                           </div>
                         )}
                       </>

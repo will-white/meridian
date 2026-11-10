@@ -44,8 +44,10 @@ import { INCEPTION_DATE, listInvestmentAccounts, loadValuationInput, type Loaded
  *
  * - `loadFlowRows` / `loadExternalFlows`: the one external-flow loader of decision 11. Cash flows
  *   are the accounts' posted ledger `is_transfer` rows ∪ their `investment_txn` cash transfers,
- *   a cash row dropped when it is linked to a ledger row or an equal-amount ledger transfer of
- *   the same account lies within 3 days (the ledger row wins); securities transfers are valued at
+ *   a cash row dropped when the ledger row it is linked to is itself such a flow, or (unlinked)
+ *   when an equal-amount ledger transfer of the same account lies within 3 days (the ledger row
+ *   wins); a cash row linked to a bank row that is not a posted transfer is the flow itself
+ *   (audit decision A5: the money never vanishes); securities transfers are valued at
  *   market on their date (the row's price, else the latest close on or before it, else the
  *   latest transaction price, else 0); `loadExternalFlows` adds the opening value of every
  *   investment account the chain cannot value at `from` but can by `to` (the engines recompute
@@ -107,7 +109,7 @@ export async function loadFlowRows(db: DbOrTx, accountIds: readonly string[], fr
 
   // (a) Posted ledger transfers, read a little wider than the window for the dedupe of (c). A row
   // an investment row is linked to is a flow like any other but never a dedupe twin (its own
-  // investment row is already dropped by the link).
+  // investment row is dropped by the link in (c)).
   const other = alias(transaction, "other_leg");
   const ledgerRows = await db
     .select({
@@ -145,7 +147,9 @@ export async function loadFlowRows(db: DbOrTx, accountIds: readonly string[], fr
     });
   }
 
-  // (b) Investment transfers in the window: cash rows (security null) and securities rows.
+  // (b) Investment transfers in the window: cash rows (security null) and securities rows, each
+  // with whether the ledger row it is linked to is a flow of (a): a posted transfer of the account.
+  const linkedLedger = alias(transaction, "linked_ledger");
   const invRows = await db
     .select({
       id: investmentTxn.id,
@@ -159,17 +163,35 @@ export async function loadFlowRows(db: DbOrTx, accountIds: readonly string[], fr
       counterpartyAccountId: investmentTxn.counterpartyAccountId,
       pairId: investmentTxn.transferGroupId,
       ledgerTransactionId: investmentTxn.ledgerTransactionId,
+      ledgerIsFlow: sql<boolean>`coalesce(${linkedLedger.isTransfer} and not ${linkedLedger.pending} and ${linkedLedger.accountId} = ${investmentTxn.accountId}, false)`,
     })
     .from(investmentTxn)
+    .leftJoin(linkedLedger, eq(linkedLedger.id, investmentTxn.ledgerTransactionId))
     .where(and(inArray(investmentTxn.accountId, ids), eq(investmentTxn.type, "transfer"), gt(investmentTxn.date, from), lte(investmentTxn.date, to)))
     .orderBy(asc(investmentTxn.date), asc(investmentTxn.sequence), asc(investmentTxn.id));
 
-  // (c) A cash row linked to a ledger row, or twinned by an equal-amount ledger transfer of the
-  // same account within 3 days (nearest, then earliest, each ledger row used once), is dropped.
+  // (c) A cash row whose linked ledger row is a flow of (a), or (unlinked) twinned by an
+  // equal-amount ledger transfer of the same account within 3 days (nearest, then earliest, each
+  // ledger row used once), is dropped: the ledger row is the flow. A cash row linked to a bank
+  // row that is not a posted transfer (the owner said "not a transfer", or it is still pending)
+  // has its bank row already, so it is the flow itself and no other ledger row is its twin.
   const usedLedger = new Set<string>();
+  const cashFlowOf = (r: (typeof invRows)[number]): ExternalFlowInput => ({
+    date: r.date,
+    amountCents: r.amountCents,
+    kind: "cash",
+    source: "investment_txn",
+    accountId: r.accountId,
+    counterpartyAccountId: r.counterpartyAccountId,
+    pairId: r.pairId,
+    sourceId: r.id,
+  });
   for (const r of invRows) {
     if (r.securityId !== null) continue;
-    if (r.ledgerTransactionId !== null) continue;
+    if (r.ledgerTransactionId !== null) {
+      if (!r.ledgerIsFlow) flows.push(cashFlowOf(r));
+      continue;
+    }
     let twin: (typeof ledgerRows)[number] | null = null;
     let twinDistance = Number.POSITIVE_INFINITY;
     for (const l of ledgerRows) {
@@ -185,16 +207,7 @@ export async function loadFlowRows(db: DbOrTx, accountIds: readonly string[], fr
       usedLedger.add(twin.id);
       continue;
     }
-    flows.push({
-      date: r.date,
-      amountCents: r.amountCents,
-      kind: "cash",
-      source: "investment_txn",
-      accountId: r.accountId,
-      counterpartyAccountId: r.counterpartyAccountId,
-      pairId: r.pairId,
-      sourceId: r.id,
-    });
+    flows.push(cashFlowOf(r));
   }
 
   // Securities transfers at market on their date; unpriced → 0 (the position is valued 0 by the same rule).
@@ -376,6 +389,9 @@ export async function loadPerformanceInput(db: DbOrTx, q: LoadPerformanceInputQu
     const fidelity = fidelities.get(a.id)?.fidelity ?? "balance_only";
     const base = { accountId: a.id, name: a.name, type: a.type, taxTreatment: a.taxTreatment, fidelity, lotMethod: a.lotMethod, cashFlows: flowsByAccount.get(a.id) ?? [] };
     if (fidelity === "full_history") {
+      // Every row goes to the engine, also those after the window (the position check reads the
+      // latest statement, which may be newer); the engine itself takes the lots' state at the end
+      // of `asOf` for the holdings, the lots and the gain summary.
       const build = await buildAccountLots(db, a.id);
       const lotIds = new Map(build.result.lots.map((l) => [`${l.openedByTxnId}:${l.ordinal}`, l.id]));
       const transferSources = new Map<string, TransferredLot[]>();
@@ -439,7 +455,7 @@ export interface GetPerformanceQuery {
   from?: IsoDate;
   /** Default: today; `from < to ≤ today`. */
   to?: IsoDate;
-  /** Holdings valuation date; default `to`. */
+  /** The date the holdings, lots and gain summary describe; default `to`. */
   asOf?: IsoDate;
   /** Default: every open investment account. */
   accountIds?: readonly string[];

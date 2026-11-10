@@ -823,7 +823,9 @@ export interface LotsAccountRecord {
 export interface ListLotsQuery {
   accountId?: string;
   securityId?: string;
+  /** The lots as they stood at the end of this date, priced with the latest close on or before it. */
   asOf: IsoDate;
+  /** Also the lots closed on or before `asOf`. */
   includeClosed?: boolean;
 }
 
@@ -834,79 +836,35 @@ export interface ListLotsResult {
 }
 
 /**
- * `GET /api/investments/lots`: the stored lots joined with their account and security, valued
+ * `GET /api/investments/lots`: the lots as they stood at the end of `asOf` (the engine run over
+ * the rows dated on or before it, so a later sale has not consumed them and a later buy has not
+ * opened one; each lot keeps its stored id), joined with their account and security and valued
  * as of `asOf` (latest close on or before it; term as if sold that day), plus each account's
- * fidelity and position check against its latest snapshot.
+ * fidelity and position check against its latest snapshot. Ordered by account name, ticker,
+ * acquisition date, opening row and ordinal.
  */
 export async function listLots(db: DbOrTx, q: ListLotsQuery): Promise<ListLotsResult> {
-  const rows = await db
-    .select({
-      lot,
-      accountName: account.name,
-      accountType: account.type,
-      lotMethod: account.lotMethod,
-      ticker: security.ticker,
-      securityName: security.name,
-    })
-    .from(lot)
-    .innerJoin(account, eq(account.id, lot.accountId))
-    .innerJoin(security, eq(security.id, lot.securityId))
-    .where(
-      and(
-        q.accountId ? eq(lot.accountId, q.accountId) : undefined,
-        q.securityId ? eq(lot.securityId, q.securityId) : undefined,
-        q.includeClosed ? undefined : gt(lot.quantity, "0"),
-      ),
-    )
-    .orderBy(asc(account.name), asc(security.ticker), asc(lot.acquiredDate), asc(lot.openedByTxnId), asc(lot.ordinal));
-
-  const engineLots = rows.map((r) => ({
-    id: r.lot.id,
-    openedByTxnId: r.lot.openedByTxnId,
-    ordinal: r.lot.ordinal,
-    originLotId: r.lot.originLotId,
-    accountId: r.lot.accountId,
-    securityId: r.lot.securityId,
-    openedBy: r.lot.openedBy,
-    acquiredDate: r.lot.acquiredDate,
-    originalQuantity: fixed8FromDb(r.lot.originalQuantity),
-    quantity: fixed8FromDb(r.lot.quantity),
-    originalCostBasisCents: r.lot.originalCostBasisCents,
-    costBasisCents: r.lot.costBasisCents,
-    basisKnown: r.lot.basisKnown,
-    closedDate: r.lot.closedDate,
-  }));
-  const priceAt = await priceLookupAsOf(db, engineLots.map((l) => l.securityId), q.asOf);
-  const valuations = valueLots(engineLots, q.asOf, priceAt);
-  const lots: LotRecord[] = engineLots.map((l, i) => {
-    const r = rows[i]!;
-    const v = valuations[i]!;
-    return {
-      ...l,
-      accountName: r.accountName,
-      ticker: r.ticker,
-      securityName: r.securityName,
-      originalCostBasisCents: l.basisKnown ? l.originalCostBasisCents : null,
-      costBasisCents: l.basisKnown ? l.costBasisCents : null,
-      basisPerShare: v.basisPerShare,
-      priceDate: v.priceDate,
-      valueCents: v.valueCents,
-      unrealizedCents: v.unrealizedCents,
-      term: v.term,
-    };
-  });
-
   let accountIds: string[];
   if (q.accountId) accountIds = [q.accountId];
   else {
     const withLots = await db.selectDistinct({ accountId: lot.accountId }).from(lot);
     accountIds = withLots.map((r) => r.accountId).sort();
   }
+  const accountRows = accountIds.length === 0 ? [] : await db.select({ id: account.id, name: account.name, type: account.type, lotMethod: account.lotMethod }).from(account).where(inArray(account.id, accountIds));
+  const accountById = new Map(accountRows.map((r) => [r.id, r]));
+
+  const engineLots: LotBuildResult["lots"] = [];
   const accounts: LotsAccountRecord[] = [];
   for (const accountId of accountIds) {
-    const [acct] = await db.select({ type: account.type, lotMethod: account.lotMethod }).from(account).where(eq(account.id, accountId));
+    const acct = accountById.get(accountId);
     if (!acct) throw new PlanError(404, "not_found", "Account not found");
     if (!isInvestmentAccountType(acct.type)) throw new PlanError(400, "not_investment_account", "Not an investment account");
+    const build = await buildAccountLots(db, accountId, { through: q.asOf });
+    for (const l of build.result.lots) {
+      if (q.securityId && l.securityId !== q.securityId) continue;
+      if (!q.includeClosed && l.quantity <= 0n) continue;
+      engineLots.push(l);
+    }
     const check = await accountPositionCheck(db, accountId);
     accounts.push({
       accountId,
@@ -916,6 +874,39 @@ export async function listLots(db: DbOrTx, q: ListLotsQuery): Promise<ListLotsRe
       warnings: check.warnings,
     });
   }
+
+  const meta = await securityMeta(db, engineLots.map((l) => l.securityId));
+  const nameOf = (accountId: string) => accountById.get(accountId)?.name ?? "";
+  const tickerOf = (securityId: string) => meta.get(securityId)?.ticker ?? null;
+  const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  engineLots.sort((a, b) => {
+    const byAccount = compare(nameOf(a.accountId), nameOf(b.accountId)) || compare(a.accountId, b.accountId);
+    if (byAccount !== 0) return byAccount;
+    const ta = tickerOf(a.securityId);
+    const tb = tickerOf(b.securityId);
+    // A security without a ticker sorts after the ones with one.
+    const byTicker = ta === tb ? 0 : ta === null ? 1 : tb === null ? -1 : compare(ta, tb);
+    return byTicker || compare(a.securityId, b.securityId) || compare(a.acquiredDate, b.acquiredDate) || compare(a.openedByTxnId, b.openedByTxnId) || a.ordinal - b.ordinal;
+  });
+
+  const priceAt = await priceLookupAsOf(db, engineLots.map((l) => l.securityId), q.asOf);
+  const valuations = valueLots(engineLots, q.asOf, priceAt);
+  const lots: LotRecord[] = engineLots.map((l, i) => {
+    const v = valuations[i]!;
+    return {
+      ...l,
+      accountName: nameOf(l.accountId),
+      ticker: tickerOf(l.securityId),
+      securityName: meta.get(l.securityId)?.name ?? "",
+      originalCostBasisCents: l.basisKnown ? l.originalCostBasisCents : null,
+      costBasisCents: l.basisKnown ? l.costBasisCents : null,
+      basisPerShare: v.basisPerShare,
+      priceDate: v.priceDate,
+      valueCents: v.valueCents,
+      unrealizedCents: v.unrealizedCents,
+      term: v.term,
+    };
+  });
   return { asOf: q.asOf, lots, accounts };
 }
 

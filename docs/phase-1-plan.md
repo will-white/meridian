@@ -33,7 +33,7 @@ Additions beyond the list, each with a reason:
 - `category` (minimal: name, bucket, hidden): the Phase 1 UI must categorize and the rules engine must set a category, so a target table is needed. `category_group` and `month_plan` stay in Phase 2.
 - `connection.claim_token_enc` and `connection.last_errors` (jsonb): the pasted token waits encrypted for the worker to claim it; `errlist` entries surface per connection.
 - `connection.synced_through`: the high-water mark that the next sync overlaps by 7 days. It is the day through which every account is complete, so it moves only after a complete response (audit decision 24).
-- `connection.last_attempt_at` and `connection.sync_paused` (migration 0005): when a sync last ran to its end, whether it worked or not, and whether the Bridge refused the connection outright. The scheduler spaces syncs from the first and skips connections with the second (audit decision 27).
+- `connection.last_attempt_at` and `connection.sync_paused` (migration 0006): when a sync last ran to its end, whether it worked or not, and whether the Bridge refused the connection outright. The scheduler spaces syncs from the first and skips connections with the second (audit decision 27).
 - `account.balance_cents`, `available_cents`, `balance_date`: current balance for the accounts list, with history in `balance_snapshot`.
 - `transaction.is_transfer`, `source`, `import_log_id`, `posted_at`, `memo`: rule action "mark transfer", provenance, and the SimpleFIN fields.
 - `transaction.category_locked`: set when the user categorizes by hand, so re-running rules never overwrites a manual choice.
@@ -93,7 +93,7 @@ The guard runs in Fastify's `onRequest` hook, before a body is read: every route
 | SimpleFIN client | claim 200 and 403, accounts 200/402/403, `errlist` surfaced, HTTPS enforced, the cause of a network failure (certificate, DNS, refused, timeout) without the URL | worker |
 | Sync high-water mark | three weeks of `con.auth` lose nothing; a stale copy without an error entry; an account that appears later; the 93-day cap and its notice; full resync; balances-only | shared + worker |
 | Incomplete responses | pending rows and their edits kept for `act.failed`, `act.missingdata` and `con.auth` (named connection, or all accounts when it is not named) | shared + db |
-| Scheduler after failures | 403 and 402: one request, then paused until a sync by hand succeeds; a Bridge that is down: three attempts, then one per interval; the 0005 migration on existing connections | worker + db |
+| Scheduler after failures | 403 and 402: one request, then paused until a sync by hand succeeds; a Bridge that is down: three attempts, then one per interval; the 0006 migration on existing connections | worker + db |
 | Connection routes | last attempt and pause in the view; a waiting sync turned into a full resync, 409 while one runs; switching a connection on lifts the pause | api + web (wording and button rules) |
 | Auth | setup, login, TOTP, guard | api |
 | Sign-in hardening | a code is accepted once (enrollment code included); the fifth wrong code ends the password session; ten-minute password sessions; a new id at the second factor; hashed ids; idle and absolute expiry; expired rows purged; one owner from concurrent setups; the 0004 migration on existing sessions | api + db + worker |

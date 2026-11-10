@@ -60,6 +60,32 @@ export async function pairTransfersInDb(tx: DbOrTx, options: PairTransfersInDbOp
   return pairs.length;
 }
 
+/**
+ * Mark ledger rows as transfers the way pairing marks its legs, without a pair: `is_transfer`,
+ * and the category goes unless the owner locked it. Rows that are transfers already are left
+ * alone. Used when an investment cash transfer is linked to the bank's row of the same money
+ * (docs/phase-3-plan.md, audit decision A5): a deposit or a withdrawal the trade history names
+ * is a transfer whatever the bank's description says. Returns how many rows changed.
+ */
+export async function markAsTransfers(tx: DbOrTx, transactionIds: readonly string[]): Promise<number> {
+  const ids = [...new Set(transactionIds)];
+  let changed = 0;
+  for (let i = 0; i < ids.length; i += 500) {
+    const rows = await tx
+      .update(transaction)
+      .set({ isTransfer: true, updatedAt: new Date() })
+      .where(and(inArray(transaction.id, ids.slice(i, i + 500)), eq(transaction.isTransfer, false)))
+      .returning({ id: transaction.id });
+    if (rows.length === 0) continue;
+    changed += rows.length;
+    await tx
+      .update(transaction)
+      .set({ categoryId: null })
+      .where(and(inArray(transaction.id, rows.map((r) => r.id)), eq(transaction.categoryLocked, false)));
+  }
+  return changed;
+}
+
 /** Undo a pair (user says "this is not a transfer"). Clears both legs. */
 export async function unpairTransfer(tx: DbOrTx, transactionId: string): Promise<void> {
   const [row] = await tx.select({ pairId: transaction.transferPairId }).from(transaction).where(eq(transaction.id, transactionId));

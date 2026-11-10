@@ -17,6 +17,7 @@ import {
   formatQuantity,
   priceSourceLabel,
   signedMoney,
+  unlistedCashText,
   splitLabel,
 } from "../../lib/investments.js";
 import { Badge, Card, Empty, ErrorText } from "../../components/ui.js";
@@ -135,7 +136,7 @@ export function HoldingsPage() {
               <div className="inv-stat">
                 <span className="k">Cash</span>
                 <span className="v">{money(h.cashCents)}</span>
-                {BigInt(h.residualCents) !== 0n && <span className="sub">+ {money(h.residualCents)} from balance (not in the positions list)</span>}
+                {unlistedCashText(h.residualCents) !== null && <span className="sub">{unlistedCashText(h.residualCents, "from balance (not in the positions list)")}</span>}
               </div>
               <div className="inv-stat">
                 <span className="k">Weighted expense ratio</span>

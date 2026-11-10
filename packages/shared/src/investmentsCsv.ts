@@ -11,6 +11,8 @@ import {
   impliedPrice,
   mulToCents,
   parseLooseDecimal,
+  statementPrice,
+  valueMismatch,
   type Fixed8,
 } from "./decimal.js";
 import type { InvestmentTxnType, TransferDirection } from "./enums.js";
@@ -324,12 +326,10 @@ export function mapPositionsCsvRows(rows: readonly string[][], mappingInput: Pos
       valueCents = mulToCents(quantity, price);
     } else if (value !== undefined && quantity !== undefined) {
       valueCents = value.cents;
-      if (price === undefined) {
-        price = quantity !== 0n ? impliedPrice(valueCents, quantity) : undefined;
-      } else {
-        const tolerance = abs(valueCents) / 200n;
-        if (abs(valueCents - mulToCents(quantity, price)) > (tolerance > 1n ? tolerance : 1n)) warnings.push("value_mismatch");
-      }
+      // The file's value is what the statement shows; a price that does not produce it (0.00, a
+      // stale or mis-mapped column) is flagged and replaced by the one the value implies.
+      if (price !== undefined && valueMismatch(quantity, price, valueCents)) warnings.push("value_mismatch");
+      price = statementPrice(quantity, price ?? null, valueCents) ?? undefined;
     } else {
       errors.push({ rowIndex, code: "missing_value", message: "A value, or a quantity and a price, is required" });
       continue;

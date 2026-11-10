@@ -1,5 +1,5 @@
 {
-  "id": "faa16ab5-6b79-42e8-ae5e-bb8f681d0dd6",
+  "id": "cf697c34-6641-4dc3-8711-ce5c47b21652",
   "prevId": "e90150ff-0fc7-4d02-b2f3-4122b11270ae",
   "version": "7",
   "dialect": "postgresql",
@@ -85,9 +85,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "session_expires_idx": {
           "name": "session_expires_idx",
@@ -100,24 +100,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "session_user_id_user_id_fk": {
           "name": "session_user_id_user_id_fk",
           "tableFrom": "session",
-          "tableTo": "user",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -187,9 +187,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "sign_in_event_user_idx": {
           "name": "sign_in_event_user_idx",
@@ -208,24 +208,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "sign_in_event_user_id_user_id_fk": {
           "name": "sign_in_event_user_id_user_id_fk",
           "tableFrom": "sign_in_event",
-          "tableTo": "user",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         }
       },
       "compositePrimaryKeys": {},
@@ -309,10 +309,10 @@
       "uniqueConstraints": {
         "user_username_unique": {
           "name": "user_username_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "username"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {},
@@ -379,19 +379,6 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
-        },
-        "last_attempt_at": {
-          "name": "last_attempt_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "sync_paused": {
-          "name": "sync_paused",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         },
         "synced_through": {
           "name": "synced_through",
@@ -522,24 +509,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "import_log_connection_id_connection_id_fk": {
           "name": "import_log_connection_id_connection_id_fk",
           "tableFrom": "import_log",
-          "tableTo": "connection",
           "columnsFrom": [
             "connection_id"
           ],
+          "tableTo": "connection",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -650,9 +637,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {},
@@ -826,24 +813,24 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "account_connection_id_connection_id_fk": {
           "name": "account_connection_id_connection_id_fk",
           "tableFrom": "account",
-          "tableTo": "connection",
           "columnsFrom": [
             "connection_id"
           ],
+          "tableTo": "connection",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         }
       },
       "compositePrimaryKeys": {},
@@ -925,9 +912,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "balance_snapshot_date_idx": {
           "name": "balance_snapshot_date_idx",
@@ -940,24 +927,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "balance_snapshot_account_id_account_id_fk": {
           "name": "balance_snapshot_account_id_account_id_fk",
           "tableFrom": "balance_snapshot",
-          "tableTo": "account",
           "columnsFrom": [
             "account_id"
           ],
+          "tableTo": "account",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -1049,9 +1036,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "category_bucket_position_idx": {
           "name": "category_bucket_position_idx",
@@ -1070,9 +1057,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {},
@@ -1080,10 +1067,10 @@
       "uniqueConstraints": {
         "category_name_unique": {
           "name": "category_name_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "name"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {},
@@ -1133,25 +1120,25 @@
         "payee_default_category_id_category_id_fk": {
           "name": "payee_default_category_id_category_id_fk",
           "tableFrom": "payee",
-          "tableTo": "category",
           "columnsFrom": [
             "default_category_id"
           ],
+          "tableTo": "category",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "payee_name_unique": {
           "name": "payee_name_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "name"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {},
@@ -1265,28 +1252,28 @@
         "split_transaction_id_transaction_id_fk": {
           "name": "split_transaction_id_transaction_id_fk",
           "tableFrom": "split",
-          "tableTo": "transaction",
           "columnsFrom": [
             "transaction_id"
           ],
+          "tableTo": "transaction",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "split_category_id_category_id_fk": {
           "name": "split_category_id_category_id_fk",
           "tableFrom": "split",
-          "tableTo": "category",
           "columnsFrom": [
             "category_id"
           ],
+          "tableTo": "category",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         }
       },
       "compositePrimaryKeys": {},
@@ -1319,10 +1306,10 @@
       "uniqueConstraints": {
         "tag_name_unique": {
           "name": "tag_name_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "name"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {},
@@ -1491,9 +1478,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "transaction_account_date_idx": {
           "name": "transaction_account_date_idx",
@@ -1512,9 +1499,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "transaction_date_idx": {
           "name": "transaction_date_idx",
@@ -1527,9 +1514,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "transaction_payee_idx": {
           "name": "transaction_payee_idx",
@@ -1542,9 +1529,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "transaction_category_idx": {
           "name": "transaction_category_idx",
@@ -1557,9 +1544,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "transaction_transfer_pair_idx": {
           "name": "transaction_transfer_pair_idx",
@@ -1572,9 +1559,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "transaction_recurring_idx": {
           "name": "transaction_recurring_idx",
@@ -1587,9 +1574,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "transaction_payee_date_idx": {
           "name": "transaction_payee_date_idx",
@@ -1608,63 +1595,63 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "transaction_account_id_account_id_fk": {
           "name": "transaction_account_id_account_id_fk",
           "tableFrom": "transaction",
-          "tableTo": "account",
           "columnsFrom": [
             "account_id"
           ],
+          "tableTo": "account",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "transaction_import_log_id_import_log_id_fk": {
           "name": "transaction_import_log_id_import_log_id_fk",
           "tableFrom": "transaction",
-          "tableTo": "import_log",
           "columnsFrom": [
             "import_log_id"
           ],
+          "tableTo": "import_log",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         },
         "transaction_payee_id_payee_id_fk": {
           "name": "transaction_payee_id_payee_id_fk",
           "tableFrom": "transaction",
-          "tableTo": "payee",
           "columnsFrom": [
             "payee_id"
           ],
+          "tableTo": "payee",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         },
         "transaction_category_id_category_id_fk": {
           "name": "transaction_category_id_category_id_fk",
           "tableFrom": "transaction",
-          "tableTo": "category",
           "columnsFrom": [
             "category_id"
           ],
+          "tableTo": "category",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         }
       },
       "compositePrimaryKeys": {},
@@ -1695,28 +1682,28 @@
         "transaction_tag_transaction_id_transaction_id_fk": {
           "name": "transaction_tag_transaction_id_transaction_id_fk",
           "tableFrom": "transaction_tag",
-          "tableTo": "transaction",
           "columnsFrom": [
             "transaction_id"
           ],
+          "tableTo": "transaction",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "transaction_tag_tag_id_tag_id_fk": {
           "name": "transaction_tag_tag_id_tag_id_fk",
           "tableFrom": "transaction_tag",
-          "tableTo": "tag",
           "columnsFrom": [
             "tag_id"
           ],
+          "tableTo": "tag",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {
@@ -1818,9 +1805,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "audit_log_batch_idx": {
           "name": "audit_log_batch_idx",
@@ -1833,9 +1820,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "audit_log_at_idx": {
           "name": "audit_log_at_idx",
@@ -1848,24 +1835,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "audit_log_user_id_user_id_fk": {
           "name": "audit_log_user_id_user_id_fk",
           "tableFrom": "audit_log",
-          "tableTo": "user",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         }
       },
       "compositePrimaryKeys": {},
@@ -1944,9 +1931,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "category_group_bucket_position_idx": {
           "name": "category_group_bucket_position_idx",
@@ -1965,9 +1952,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {},
@@ -2067,41 +2054,41 @@
         "household_setting_primary_account_id_account_id_fk": {
           "name": "household_setting_primary_account_id_account_id_fk",
           "tableFrom": "household_setting",
-          "tableTo": "account",
           "columnsFrom": [
             "primary_account_id"
           ],
+          "tableTo": "account",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         },
         "household_setting_benchmark_security_id_security_id_fk": {
           "name": "household_setting_benchmark_security_id_security_id_fk",
           "tableFrom": "household_setting",
-          "tableTo": "security",
           "columnsFrom": [
             "benchmark_security_id"
           ],
+          "tableTo": "security",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         },
         "household_setting_investment_income_category_id_category_id_fk": {
           "name": "household_setting_investment_income_category_id_category_id_fk",
           "tableFrom": "household_setting",
-          "tableTo": "category",
           "columnsFrom": [
             "investment_income_category_id"
           ],
+          "tableTo": "category",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         }
       },
       "compositePrimaryKeys": {},
@@ -2198,9 +2185,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "month_plan_month_idx": {
           "name": "month_plan_month_idx",
@@ -2213,24 +2200,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "month_plan_category_id_category_id_fk": {
           "name": "month_plan_category_id_category_id_fk",
           "tableFrom": "month_plan",
-          "tableTo": "category",
           "columnsFrom": [
             "category_id"
           ],
+          "tableTo": "category",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -2334,47 +2321,47 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "savings_goal_category_id_category_id_fk": {
           "name": "savings_goal_category_id_category_id_fk",
           "tableFrom": "savings_goal",
-          "tableTo": "category",
           "columnsFrom": [
             "category_id"
           ],
+          "tableTo": "category",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "savings_goal_linked_account_id_account_id_fk": {
           "name": "savings_goal_linked_account_id_account_id_fk",
           "tableFrom": "savings_goal",
-          "tableTo": "account",
           "columnsFrom": [
             "linked_account_id"
           ],
+          "tableTo": "account",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "savings_goal_category_id_unique": {
           "name": "savings_goal_category_id_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "category_id"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {},
@@ -2472,9 +2459,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "alert_created_idx": {
           "name": "alert_created_idx",
@@ -2487,50 +2474,50 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "alert_recurring_id_recurring_id_fk": {
           "name": "alert_recurring_id_recurring_id_fk",
           "tableFrom": "alert",
-          "tableTo": "recurring",
           "columnsFrom": [
             "recurring_id"
           ],
+          "tableTo": "recurring",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "alert_payee_id_payee_id_fk": {
           "name": "alert_payee_id_payee_id_fk",
           "tableFrom": "alert",
-          "tableTo": "payee",
           "columnsFrom": [
             "payee_id"
           ],
+          "tableTo": "payee",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "alert_transaction_id_transaction_id_fk": {
           "name": "alert_transaction_id_transaction_id_fk",
           "tableFrom": "alert",
-          "tableTo": "transaction",
           "columnsFrom": [
             "transaction_id"
           ],
+          "tableTo": "transaction",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         }
       },
       "compositePrimaryKeys": {},
@@ -2765,9 +2752,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "recurring_status_next_due_idx": {
           "name": "recurring_status_next_due_idx",
@@ -2786,9 +2773,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "recurring_account_status_idx": {
           "name": "recurring_account_status_idx",
@@ -2807,63 +2794,63 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "recurring_payee_id_payee_id_fk": {
           "name": "recurring_payee_id_payee_id_fk",
           "tableFrom": "recurring",
-          "tableTo": "payee",
           "columnsFrom": [
             "payee_id"
           ],
+          "tableTo": "payee",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "recurring_category_id_category_id_fk": {
           "name": "recurring_category_id_category_id_fk",
           "tableFrom": "recurring",
-          "tableTo": "category",
           "columnsFrom": [
             "category_id"
           ],
+          "tableTo": "category",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         },
         "recurring_account_id_account_id_fk": {
           "name": "recurring_account_id_account_id_fk",
           "tableFrom": "recurring",
-          "tableTo": "account",
           "columnsFrom": [
             "account_id"
           ],
+          "tableTo": "account",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         },
         "recurring_transfer_account_id_account_id_fk": {
           "name": "recurring_transfer_account_id_account_id_fk",
           "tableFrom": "recurring",
-          "tableTo": "account",
           "columnsFrom": [
             "transfer_account_id"
           ],
+          "tableTo": "account",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         }
       },
       "compositePrimaryKeys": {},
@@ -3019,37 +3006,37 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "account_reconciliation_account_id_account_id_fk": {
           "name": "account_reconciliation_account_id_account_id_fk",
           "tableFrom": "account_reconciliation",
-          "tableTo": "account",
           "columnsFrom": [
             "account_id"
           ],
+          "tableTo": "account",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "account_reconciliation_user_id_user_id_fk": {
           "name": "account_reconciliation_user_id_user_id_fk",
           "tableFrom": "account_reconciliation",
-          "tableTo": "user",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         }
       },
       "compositePrimaryKeys": {},
@@ -3204,9 +3191,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "holding_snapshot_account_date_idx": {
           "name": "holding_snapshot_account_date_idx",
@@ -3225,9 +3212,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "holding_snapshot_security_date_idx": {
           "name": "holding_snapshot_security_date_idx",
@@ -3246,9 +3233,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "holding_snapshot_date_idx": {
           "name": "holding_snapshot_date_idx",
@@ -3261,50 +3248,50 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "holding_snapshot_account_id_account_id_fk": {
           "name": "holding_snapshot_account_id_account_id_fk",
           "tableFrom": "holding_snapshot",
-          "tableTo": "account",
           "columnsFrom": [
             "account_id"
           ],
+          "tableTo": "account",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "holding_snapshot_security_id_security_id_fk": {
           "name": "holding_snapshot_security_id_security_id_fk",
           "tableFrom": "holding_snapshot",
-          "tableTo": "security",
           "columnsFrom": [
             "security_id"
           ],
+          "tableTo": "security",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "restrict"
         },
         "holding_snapshot_import_log_id_import_log_id_fk": {
           "name": "holding_snapshot_import_log_id_import_log_id_fk",
           "tableFrom": "holding_snapshot",
-          "tableTo": "import_log",
           "columnsFrom": [
             "import_log_id"
           ],
+          "tableTo": "import_log",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         }
       },
       "compositePrimaryKeys": {},
@@ -3503,9 +3490,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "investment_txn_account_security_date_idx": {
           "name": "investment_txn_account_security_date_idx",
@@ -3536,9 +3523,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "investment_txn_security_date_idx": {
           "name": "investment_txn_security_date_idx",
@@ -3557,9 +3544,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "investment_txn_transfer_group_idx": {
           "name": "investment_txn_transfer_group_idx",
@@ -3572,9 +3559,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "investment_txn_ledger_idx": {
           "name": "investment_txn_ledger_idx",
@@ -3587,10 +3574,10 @@
             }
           ],
           "isUnique": true,
-          "where": "\"ledger_transaction_id\" IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "\"ledger_transaction_id\" IS NOT NULL",
+          "concurrently": false
         },
         "investment_txn_date_idx": {
           "name": "investment_txn_date_idx",
@@ -3603,9 +3590,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "investment_txn_account_type_date_idx": {
           "name": "investment_txn_account_type_date_idx",
@@ -3630,76 +3617,76 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "investment_txn_account_id_account_id_fk": {
           "name": "investment_txn_account_id_account_id_fk",
           "tableFrom": "investment_txn",
-          "tableTo": "account",
           "columnsFrom": [
             "account_id"
           ],
+          "tableTo": "account",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "investment_txn_security_id_security_id_fk": {
           "name": "investment_txn_security_id_security_id_fk",
           "tableFrom": "investment_txn",
-          "tableTo": "security",
           "columnsFrom": [
             "security_id"
           ],
+          "tableTo": "security",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "restrict"
         },
         "investment_txn_counterparty_account_id_account_id_fk": {
           "name": "investment_txn_counterparty_account_id_account_id_fk",
           "tableFrom": "investment_txn",
-          "tableTo": "account",
           "columnsFrom": [
             "counterparty_account_id"
           ],
+          "tableTo": "account",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         },
         "investment_txn_ledger_transaction_id_transaction_id_fk": {
           "name": "investment_txn_ledger_transaction_id_transaction_id_fk",
           "tableFrom": "investment_txn",
-          "tableTo": "transaction",
           "columnsFrom": [
             "ledger_transaction_id"
           ],
+          "tableTo": "transaction",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         },
         "investment_txn_import_log_id_import_log_id_fk": {
           "name": "investment_txn_import_log_id_import_log_id_fk",
           "tableFrom": "investment_txn",
-          "tableTo": "import_log",
           "columnsFrom": [
             "import_log_id"
           ],
+          "tableTo": "import_log",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         }
       },
       "compositePrimaryKeys": {},
@@ -3866,9 +3853,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "lot_account_security_idx": {
           "name": "lot_account_security_idx",
@@ -3893,9 +3880,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "lot_account_open_idx": {
           "name": "lot_account_open_idx",
@@ -3908,64 +3895,64 @@
             }
           ],
           "isUnique": false,
-          "where": "\"quantity\" > 0",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "\"quantity\" > 0",
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "lot_account_id_account_id_fk": {
           "name": "lot_account_id_account_id_fk",
           "tableFrom": "lot",
-          "tableTo": "account",
           "columnsFrom": [
             "account_id"
           ],
+          "tableTo": "account",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "lot_security_id_security_id_fk": {
           "name": "lot_security_id_security_id_fk",
           "tableFrom": "lot",
-          "tableTo": "security",
           "columnsFrom": [
             "security_id"
           ],
+          "tableTo": "security",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "lot_opened_by_txn_id_investment_txn_id_fk": {
           "name": "lot_opened_by_txn_id_investment_txn_id_fk",
           "tableFrom": "lot",
-          "tableTo": "investment_txn",
           "columnsFrom": [
             "opened_by_txn_id"
           ],
+          "tableTo": "investment_txn",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "lot_origin_lot_id_lot_id_fk": {
           "name": "lot_origin_lot_id_lot_id_fk",
           "tableFrom": "lot",
-          "tableTo": "lot",
           "columnsFrom": [
             "origin_lot_id"
           ],
+          "tableTo": "lot",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "set null"
         }
       },
       "compositePrimaryKeys": {},
@@ -4100,15 +4087,15 @@
             },
             {
               "expression": "COALESCE(\"lot_id\", '00000000-0000-0000-0000-000000000000'::uuid)",
-              "asc": true,
               "isExpression": true,
+              "asc": true,
               "nulls": "last"
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "lot_disposal_account_date_idx": {
           "name": "lot_disposal_account_date_idx",
@@ -4127,9 +4114,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "lot_disposal_lot_idx": {
           "name": "lot_disposal_lot_idx",
@@ -4142,63 +4129,63 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "lot_disposal_account_id_account_id_fk": {
           "name": "lot_disposal_account_id_account_id_fk",
           "tableFrom": "lot_disposal",
-          "tableTo": "account",
           "columnsFrom": [
             "account_id"
           ],
+          "tableTo": "account",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "lot_disposal_security_id_security_id_fk": {
           "name": "lot_disposal_security_id_security_id_fk",
           "tableFrom": "lot_disposal",
-          "tableTo": "security",
           "columnsFrom": [
             "security_id"
           ],
+          "tableTo": "security",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "lot_disposal_close_txn_id_investment_txn_id_fk": {
           "name": "lot_disposal_close_txn_id_investment_txn_id_fk",
           "tableFrom": "lot_disposal",
-          "tableTo": "investment_txn",
           "columnsFrom": [
             "close_txn_id"
           ],
+          "tableTo": "investment_txn",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "lot_disposal_lot_id_lot_id_fk": {
           "name": "lot_disposal_lot_id_lot_id_fk",
           "tableFrom": "lot_disposal",
-          "tableTo": "lot",
           "columnsFrom": [
             "lot_id"
           ],
+          "tableTo": "lot",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -4274,9 +4261,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "lot_pick_lot_idx": {
           "name": "lot_pick_lot_idx",
@@ -4289,37 +4276,37 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "lot_pick_sell_txn_id_investment_txn_id_fk": {
           "name": "lot_pick_sell_txn_id_investment_txn_id_fk",
           "tableFrom": "lot_pick",
-          "tableTo": "investment_txn",
           "columnsFrom": [
             "sell_txn_id"
           ],
+          "tableTo": "investment_txn",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "lot_pick_lot_id_lot_id_fk": {
           "name": "lot_pick_lot_id_lot_id_fk",
           "tableFrom": "lot_pick",
-          "tableTo": "lot",
           "columnsFrom": [
             "lot_id"
           ],
+          "tableTo": "lot",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -4419,9 +4406,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "price_date_idx": {
           "name": "price_date_idx",
@@ -4434,24 +4421,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "price_security_id_security_id_fk": {
           "name": "price_security_id_security_id_fk",
           "tableFrom": "price",
-          "tableTo": "security",
           "columnsFrom": [
             "security_id"
           ],
+          "tableTo": "security",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -4641,10 +4628,10 @@
             }
           ],
           "isUnique": true,
-          "where": "\"ticker\" IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "\"ticker\" IS NOT NULL",
+          "concurrently": false
         },
         "security_cusip_idx": {
           "name": "security_cusip_idx",
@@ -4657,10 +4644,10 @@
             }
           ],
           "isUnique": true,
-          "where": "\"cusip\" IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "\"cusip\" IS NOT NULL",
+          "concurrently": false
         },
         "security_isin_idx": {
           "name": "security_isin_idx",
@@ -4673,10 +4660,10 @@
             }
           ],
           "isUnique": true,
-          "where": "\"isin\" IS NOT NULL",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "\"isin\" IS NOT NULL",
+          "concurrently": false
         },
         "security_cash_currency_idx": {
           "name": "security_cash_currency_idx",
@@ -4689,25 +4676,25 @@
             }
           ],
           "isUnique": true,
-          "where": "\"type\" = 'cash'",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "\"type\" = 'cash'",
+          "concurrently": false
         },
         "security_name_norm_idx": {
           "name": "security_name_norm_idx",
           "columns": [
             {
               "expression": "btrim(upper(regexp_replace(\"name\", '[^A-Za-z0-9]+', ' ', 'g')))",
-              "asc": true,
               "isExpression": true,
+              "asc": true,
               "nulls": "last"
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "security_needs_review_idx": {
           "name": "security_needs_review_idx",
@@ -4720,9 +4707,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {},
@@ -4804,9 +4791,9 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "security_alias_security_idx": {
           "name": "security_alias_security_idx",
@@ -4819,24 +4806,24 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "security_alias_security_id_security_id_fk": {
           "name": "security_alias_security_id_security_id_fk",
           "tableFrom": "security_alias",
-          "tableTo": "security",
           "columnsFrom": [
             "security_id"
           ],
+          "tableTo": "security",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -4873,15 +4860,15 @@
         "security_allocation_security_id_security_id_fk": {
           "name": "security_allocation_security_id_security_id_fk",
           "tableFrom": "security_allocation",
-          "tableTo": "security",
           "columnsFrom": [
             "security_id"
           ],
+          "tableTo": "security",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {
@@ -4910,10 +4897,10 @@
   },
   "enums": {},
   "schemas": {},
+  "views": {},
   "sequences": {},
   "roles": {},
   "policies": {},
-  "views": {},
   "_meta": {
     "columns": {},
     "schemas": {},

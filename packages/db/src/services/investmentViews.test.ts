@@ -456,13 +456,22 @@ describe.skipIf(!TEST_DATABASE_URL)("investment views on the INV seed (views tes
     await t.db.delete(holdingSnapshot).where(eq(holdingSnapshot.securityId, pool!.id));
     await t.db.delete(security).where(eq(security.id, pool!.id));
 
-    // (c) a reported balance below the positions: a negative residual is a warning, not a line (the chain's analogue of deleting the computed rows).
+    // (c) a reported balance 100.00 below the positions on its date (18,000.00 against 18,100.00): the gap is carried as
+    // negative cash, a line in class cash, and warned about; the account is worth its positions less the gap.
     await t.db.update(balanceSnapshot).set({ balanceCents: 1800000n }).where(and(eq(balanceSnapshot.accountId, R), eq(balanceSnapshot.date, "2026-10-09")));
     const negative = await getAllocation(t.db, q);
-    expect(negative.accountWarnings).toContainEqual({ accountId: R, accountName: "Fidelity Roth IRA", kind: "negative_residual", message: "Holdings exceed the account value by $100.00: the positions are newer than the balance, or the balance is stale" });
-    expect(negative).toMatchObject({ totalCents: 4525200n, classifiedCents: 4525200n });
-    expect(negative.classes[3]!.currentCents).toBe(170200n);
-    expect((await getPortfolio(t.db, { ...q, period: "1m" })).accounts.find((a) => a.accountId === R)!.valueCents).toBe(1820000n);
+    expect(negative.accountWarnings).toContainEqual({
+      accountId: R,
+      accountName: "Fidelity Roth IRA",
+      kind: "negative_residual",
+      message: "Holdings exceed the 2026-10-09 balance by $100.00: the difference is counted as negative cash (a margin loan, or holdings that changed or lost value since the last statement; turn the account's cash inference off if the balance is not its total value)",
+    });
+    // 45,252.00 − 100.00; the cash class is B's 1,432.00 + R's 270.00 − 100.00
+    expect(negative).toMatchObject({ totalCents: 4515200n, classifiedCents: 4515200n });
+    expect(negative.classes[3]!.currentCents).toBe(160200n);
+    expect(negative.classes[3]!.lines.find((l) => l.accountId === R && l.kind === "cash_plug")).toMatchObject({ cents: -10000n });
+    const negativePortfolio = (await getPortfolio(t.db, { ...q, period: "1m" })).accounts.find((a) => a.accountId === R)!;
+    expect(negativePortfolio).toMatchObject({ valueCents: 1810000n, cashCents: 27000n, residualCents: -10000n });
     await t.db.update(balanceSnapshot).set({ balanceCents: 1810000n }).where(and(eq(balanceSnapshot.accountId, R), eq(balanceSnapshot.date, "2026-10-09")));
 
     // (d) an old statement without newer closes: the price is stale (trading days behind the expected close); positions go stale after 35 days.

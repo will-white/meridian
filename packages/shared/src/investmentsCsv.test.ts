@@ -102,10 +102,32 @@ describe("mapPositionsCsvRows", () => {
     expect(result.positions.reduce((acc, p) => acc + p.valueCents, 0n)).toBe(333_775n);
   });
 
-  it("flags a value that disagrees with quantity × price beyond 0.5 % and keeps the file's value", () => {
+  it("flags a value that disagrees with quantity × price beyond 0.5 %, keeps the file's value and derives the price from it", () => {
     const rows = [FIDELITY_POSITIONS[0]!, ["VTI", "VANGUARD TOTAL STOCK MKT ETF", "12.5", "123.456", "$1,600.00", ""]];
     const result = mapPositionsCsvRows(rows, positionsMapping, { asOfDate: "2026-10-13" });
-    expect(result.positions[0]).toMatchObject({ valueCents: 160_000n, price: f("123.456"), warnings: ["value_mismatch"] });
+    // re-derived: 1,600.00 ÷ 12.5 = 128, not the file's 123.456 (which would price the security 3.5 % low everywhere else)
+    expect(result.positions[0]).toMatchObject({ valueCents: 160_000n, price: f("128"), warnings: ["value_mismatch"] });
+  });
+
+  it("never keeps a 0.00 price beside a real value: the unit price is the one the value implies", () => {
+    const rows = [
+      FIDELITY_POSITIONS[0]!,
+      ["XYZF", "XYZ Collective Fund", "10", "0.00", "$1,234.56", ""],
+      ["DEAD", "Worthless Co", "100", "0.00", "$0.00", ""],
+      ["NOVAL", "Unvalued Fund", "10", "123.45", "$0.00", ""],
+      ["FINE", "Agreeing Fund", "10", "123.45", "$1,234.50", ""],
+    ];
+    const result = mapPositionsCsvRows(rows, positionsMapping, { asOfDate: "2026-10-13" });
+    expect(result.errors).toEqual([]);
+    expect(result.positions.map((p) => [p.ticker, p.quantity, p.price, p.valueCents, p.warnings])).toEqual([
+      // 1,234.56 ÷ 10 = 123.456
+      ["XYZF", f("10"), f("123.456"), 123_456n, ["value_mismatch"]],
+      // worthless: 0 × 100 = 0.00 agrees, the 0 stands
+      ["DEAD", f("100"), 0n, 0n, []],
+      // a value of 0.00 implies nothing: the file's price stands, flagged
+      ["NOVAL", f("10"), f("123.45"), 0n, ["value_mismatch"]],
+      ["FINE", f("10"), f("123.45"), 123_450n, []],
+    ]);
   });
 
   it("reports an unreadable quantity as an error and keeps going", () => {

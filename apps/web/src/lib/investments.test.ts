@@ -38,6 +38,7 @@ import {
   priceStatusText,
   priceStatusTone,
   signedMoney,
+  unlistedCashText,
   splitLabel,
   splitRows,
   targetsForm,
@@ -116,6 +117,13 @@ describe("formatQuantity / signedMoney / changeTone / splitLabel", () => {
     expect(changeTone("0")).toBe("");
     expect(changeTone(-12)).toBe("neg");
     expect(changeTone(null)).toBe("");
+  });
+  it("words the inferred cash with its sign: a margin debit is subtracted, not added", () => {
+    expect(unlistedCashText("143200")).toBe("+ $1,432.00 unlisted");
+    expect(unlistedCashText("-500000")).toBe("− $5,000.00 unlisted");
+    expect(unlistedCashText("-190000", "from balance (not in the positions list)")).toBe("− $1,900.00 from balance (not in the positions list)");
+    expect(unlistedCashText("0")).toBeNull();
+    expect(unlistedCashText(null)).toBeNull();
   });
   it("labels a blended fund's splits (TR2050 54/36/10)", () => {
     expect(

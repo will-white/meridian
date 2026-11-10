@@ -57,9 +57,18 @@ describe("parseSimplefinHoldings: shape A, strings under extra.holdings (imports
     const within = parseSimplefinHoldings(account({ extra: { holdings: [{ ...exampleA[0], market_value: "3,100.00" }] } }));
     expect(within.positions[0]!.valueCents).toBe(310_000n);
     expect(within.positions[0]!.warnings).toEqual([]);
+    expect(within.positions[0]!.price).toBe(f("250.66"));
     const beyond = parseSimplefinHoldings(account({ extra: { holdings: [{ ...exampleA[0], market_value: "3,200.00" }] } }));
     expect(beyond.positions[0]!.valueCents).toBe(320_000n);
     expect(beyond.positions[0]!.warnings).toEqual(["value_mismatch"]);
+    // the price that produces the broker's value: 3,200.00 ÷ 12.345 = 259.21425678
+    expect(formatFixed8(beyond.positions[0]!.price!)).toBe("259.21425678");
+  });
+
+  it("derives the unit price from the value when the feed's price is 0", () => {
+    const result = parseSimplefinHoldings(account({ extra: { holdings: [{ symbol: "XYZF", description: "XYZ Collective Fund", quantity: "10", price: "0.00", market_value: "1234.56" }] } }));
+    // 1,234.56 ÷ 10 = 123.456
+    expect(result.positions[0]).toMatchObject({ ticker: "XYZF", quantity: f("10"), price: f("123.456"), valueCents: 123_456n, warnings: ["value_mismatch"] });
   });
 
   it("flags a value with sub-cent digits as rounded", () => {

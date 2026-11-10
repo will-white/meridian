@@ -35,13 +35,18 @@ import { addMonthsClamped, monthKey, type MonthKey } from "./months.js";
  *   `unmatched_sell` piece (basis 0, term `unknown`) with an `oversell` warning; the position
  *   floors at 0.
  * - A split scales every open lot with `scaleQty` (R5) and no residual fix; the 0.001-share
- *   position tolerance absorbs the 10⁻⁸ drift. Basis, acquisition date and original quantity
- *   are unchanged.
+ *   position tolerance (`POSITION_TOLERANCE`) absorbs the 10⁻⁸ drift, in the position check AND
+ *   in disposals: a sale or transfer out within the tolerance of the whole open position
+ *   disposes of exactly the position (a hair above it is not an oversell, a hair below it leaves
+ *   no dust lot), and a pick within the tolerance of its lot takes the lot. Basis, acquisition
+ *   date and original quantity are unchanged; a lot a reverse split would round to 0 shares
+ *   keeps one unit (10⁻⁸) so its basis stays on an open lot until a disposal realizes it.
  * - A transfer out disposes lots (picks, then FIFO) at basis with no gain (`term = none`) and
  *   reports the pieces in `transferredOut`. A transfer in opens one lot per source lot when the
  *   caller supplies the counterparty's pieces (`transferSources`, ordinals 0..n−1 with
- *   `originLotId`), else one lot carrying the row's own basis and acquisition date, or an
- *   unknown-basis lot (`basisKnown = false`, basis 0, `basis_unknown` warning).
+ *   `originLotId`; the pieces may differ from the row's quantity by the tolerance), else one
+ *   lot carrying the row's own basis and acquisition date, or an unknown-basis lot
+ *   (`basisKnown = false`, basis 0, `basis_unknown` warning).
  * - Lot ids are stable by `(openedByTxnId, ordinal)`: `lotKey` by default, or whatever the
  *   caller's `lotId` resolver returns (the DB service hands back the existing uuid).
  * - Holding period (IRS Pub 550): long iff `sold > addMonthsClamped(acquired, 12)`.
@@ -402,7 +407,10 @@ export function buildLots(input: LotBuildInput): LotBuildResult {
 
   const dispose = (txn: InvestmentTxnInput, securityId: string, q: Fixed8, kind: "sell" | "transfer_out", proceeds: bigint) => {
     const pieces: Piece[] = [];
-    let remaining = q;
+    // Within the tolerance of the whole open position the row disposes of exactly the position:
+    // split rounding and statement precision neither oversell it nor leave a dust lot behind.
+    const open = openLots(securityId).reduce((acc, l) => acc + l.quantity, 0n);
+    let remaining = open > 0n && absBig(q - open) <= POSITION_TOLERANCE ? open : q;
     const picks = picksBySell.get(txn.id) ?? [];
     if (kind === "sell" && input.lotMethod === "specific" && picks.length === 0) {
       warnings.push({ code: "needs_lot_pick", txnId: txn.id, securityId });
@@ -415,7 +423,7 @@ export function buildLots(input: LotBuildInput): LotBuildResult {
       }
       let take = pick.quantity;
       if (take > lot.quantity) {
-        warnings.push({ code: "pick_exceeds_lot", txnId: txn.id, securityId, quantity: pick.quantity, detail: lot.id });
+        if (take - lot.quantity > POSITION_TOLERANCE) warnings.push({ code: "pick_exceeds_lot", txnId: txn.id, securityId, quantity: pick.quantity, detail: lot.id });
         take = lot.quantity;
       }
       if (take > remaining) {
@@ -491,7 +499,9 @@ export function buildLots(input: LotBuildInput): LotBuildResult {
   const transferIn = (txn: InvestmentTxnInput, securityId: string, q: Fixed8) => {
     const sources = input.transferSources?.get(txn.id) ?? [];
     const carried = sources.reduce((acc, s) => acc + s.quantity, 0n);
-    if (sources.length > 0 && carried <= q) {
+    // The out leg disposes of what its lots hold, which may differ from the row by the tolerance.
+    const short = q - carried;
+    if (sources.length > 0 && short >= -POSITION_TOLERANCE) {
       let unknown = 0n;
       sources.forEach((s, ordinal) => {
         openLot({
@@ -507,7 +517,7 @@ export function buildLots(input: LotBuildInput): LotBuildResult {
         });
         if (!s.basisKnown) unknown += s.quantity;
       });
-      if (carried < q) {
+      if (short > POSITION_TOLERANCE) {
         openLot({
           openedByTxnId: txn.id,
           ordinal: sources.length,
@@ -515,11 +525,11 @@ export function buildLots(input: LotBuildInput): LotBuildResult {
           securityId,
           openedBy: "transfer_in",
           acquiredDate: txn.date,
-          quantity: q - carried,
+          quantity: short,
           basisCents: 0n,
           basisKnown: false,
         });
-        unknown += q - carried;
+        unknown += short;
       }
       if (unknown > 0n) warnings.push({ code: "basis_unknown", txnId: txn.id, securityId, quantity: unknown });
       return;
@@ -602,8 +612,9 @@ export function buildLots(input: LotBuildInput): LotBuildResult {
         let total = 0n;
         for (const lot of lotsBySecurity.get(txn.securityId) ?? []) {
           if (lot.quantity <= 0n) continue;
-          lot.quantity = scaleQty(lot.quantity, num, den);
-          if (lot.quantity === 0n) lot.closedDate = txn.date;
+          // An open lot never rounds to nothing: it keeps one unit, and with it its basis, until a disposal.
+          const scaled = scaleQty(lot.quantity, num, den);
+          lot.quantity = scaled === 0n ? 1n : scaled;
           total += lot.quantity;
         }
         position.set(txn.securityId, total);
@@ -645,7 +656,7 @@ export function quantityAt(positions: readonly PositionCheckpoint[], date: IsoDa
   return lo === 0 ? new Map() : positions[lo - 1]!.quantityBySecurity;
 }
 
-/** 0.001 shares: the position check's tolerance (absorbs R5 drift and statement rounding). */
+/** 0.001 shares: the tolerance of the position check and of disposals (absorbs R5 drift and statement rounding). */
 export const POSITION_TOLERANCE: Fixed8 = 100_000n;
 
 export interface PositionSnapshot {

@@ -142,6 +142,16 @@ export function subPeriodFlags(sp: Pick<SubPeriodView, "skipped" | "beginCarried
   return flags;
 }
 
+/**
+ * A sub-period's flows as the engine timed them: contributions join the begin value at the start
+ * of their day, withdrawals (reported ≤ 0) are added back to the end value of theirs, so
+ * `rate = (end − withdrawals) / (begin + contributions) − 1` under true TWR.
+ */
+export function subPeriodFlowParts(sp: Pick<SubPeriodView, "flowCents" | "outflowCents">): { contributionsCents: string; withdrawalsCents: string } {
+  const out = BigInt(sp.outflowCents);
+  return { contributionsCents: (BigInt(sp.flowCents) - out).toString(), withdrawalsCents: out.toString() };
+}
+
 /** The day count of a period view (0 without one). */
 export function periodDays(period: PeriodView | null): number {
   return period?.days ?? 0;

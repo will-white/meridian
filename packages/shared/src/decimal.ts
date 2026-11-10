@@ -100,6 +100,32 @@ export function impliedPrice(cents: bigint, qty: Fixed8): Fixed8 {
 }
 
 /**
+ * The positions check: does a reported value disagree with quantity × price (R1) by more than
+ * max(1 cent, 0.5 % of the value)?
+ */
+export function valueMismatch(qty: Fixed8, price: Fixed8, valueCents: bigint): boolean {
+  const abs = (n: bigint) => (n < 0n ? -n : n);
+  const tolerance = abs(valueCents) / 200n;
+  return abs(valueCents - mulToCents(qty, price)) > (tolerance > 1n ? tolerance : 1n);
+}
+
+/**
+ * The unit price a positions row is stored with, which is also what becomes the security's
+ * implied close (plan decision 10): null without a quantity; the reported price when it
+ * produces the reported value within `valueMismatch`; otherwise the price the value implies
+ * (R3), because the statement's value is the truth and the price table values the same security
+ * in every other account. A reported 0.00, a negative, a stale or a mis-mapped price column
+ * therefore never stands beside a real value. A value of exactly 0 implies nothing: the reported
+ * price stands (a worthless position keeps its 0).
+ */
+export function statementPrice(qty: Fixed8 | null, price: Fixed8 | null, valueCents: bigint): Fixed8 | null {
+  if (qty === null || qty === 0n) return null;
+  if (price === null) return impliedPrice(valueCents, qty);
+  if (valueCents !== 0n && valueMismatch(qty, price, valueCents)) return impliedPrice(valueCents, qty);
+  return price;
+}
+
+/**
  * R4: split `total` across `weights` by largest remainder; the parts sum to `total` exactly.
  * Works on |total| and negates for a negative total; ties go to the lower index.
  * Throws when the weights sum to 0n or less.

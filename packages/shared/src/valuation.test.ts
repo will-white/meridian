@@ -315,18 +315,48 @@ describe("cash plug", () => {
     expect(v.lines.some((l) => l.kind === "cash_plug")).toBe(false);
   });
 
-  it("reports a negative residual as a warning and never as negative cash", () => {
+  it("carries a balance below the holdings as negative cash, with a warning, so the value is the reported balance", () => {
     const input = s1();
     input.balances[0] = bal(A, "2026-09-30", 5_500_000n);
     const v = valueAccountOn(input, A, "2026-09-30");
     // 55,000.00 − 56,296.06 = −1,296.06
-    expect(v.valueCents).toBe(5_629_606n);
-    expect(kindLine(v, "cash_plug")).toBeUndefined();
+    expect(v.valueCents).toBe(5_500_000n);
+    expect(kindLine(v, "cash_plug")).toMatchObject({ securityId: null, name: CASH_PLUG_NAME, priceDate: "2026-09-30", valueCents: -129_606n, valueSource: "carried" });
     expect(v.warnings).toEqual([
-      { code: "negative_residual", message: "Holdings exceed the account value by $1296.06: the positions are newer than the balance, or the balance is stale", cents: -129_606n },
+      {
+        code: "negative_residual",
+        message: "Holdings exceed the 2026-09-30 balance by $1296.06: the difference is counted as negative cash (a margin loan, or holdings that changed or lost value since the last statement; turn the account's cash inference off if the balance is not its total value)",
+        cents: -129_606n,
+      },
     ]);
-    expect(v.balanceDiffCents).toBe(129_606n);
+    expect(v.balanceDiffCents).toBe(0n);
     expect(v.cashAnchor).toBe("2026-09-30");
+    // carried forward like a positive plug: 10-13 holdings 58,076.69 − 1,296.06 + the 10-05 transfer 1,000.00
+    const later = valueAccountOn(input, A, "2026-10-13");
+    expect(later.valueCents).toBe(3_052_500n + 2_531_713n + 123_456n - 129_606n + 100_000n);
+    expect(later.lines.map((l) => l.kind)).toEqual(["cash", "position", "position", "cash_plug", "carried_flows"]);
+  });
+
+  it("a statement total below its positions and no cash line (margin) values the account at the statement total", () => {
+    // 09-30 statement: VTI 50 @ 300 = 15,000.00, no cash line, total 10,000.00 (a 5,000.00 margin debit)
+    const input: Fixture = {
+      ...s1(),
+      prices: [price(VTI, "2026-09-30", "300", "implied"), price(VTI, "2026-10-06", "310", "manual")],
+      snapshots: [snap(A, VTI, "2026-09-30", "50", "300", 1_500_000n)],
+      balances: [bal(A, "2026-09-30", 1_000_000n)],
+      flows: [],
+    };
+    const on = valueAccountOn(input, A, "2026-09-30");
+    expect(on).toMatchObject({ basis: "snapshot", valueCents: 1_000_000n, balanceDiffCents: 0n, cashAnchor: "2026-09-30" });
+    expect(on.lines.map((l) => [l.kind, l.valueCents])).toEqual([
+      ["position", 1_500_000n],
+      ["cash_plug", -500_000n],
+    ]);
+    // 10-06: 50 × 310 = 15,500.00 less the same debit
+    const later = valueAccountOn(input, A, "2026-10-06");
+    expect(later).toMatchObject({ basis: "positions", valueCents: 1_050_000n });
+    // the series follows it
+    expect(valueSeries(input, [A], "2026-09-30", "2026-10-06", "month").accounts[0]!.values).toEqual([1_000_000n, 1_050_000n]);
   });
 
   it("anchors on the latest reported balance, repricing the positions on the anchor date", () => {
@@ -496,6 +526,59 @@ describe("lots basis", () => {
     expect(lots.valueCents).toBe(5_819_925n);
   });
 
+  /**
+   * A margin account with its whole history: +10,000.00 on 09-01, buy 50 VTI @ 300 on 09-02
+   * (cash −5,000.00), statement 09-30 VTI 50 @ 300 and cash −5,000.00 = 10,000.00, sell 10 @ 310
+   * on 10-06 (+3,100.00). By hand on 10-06: 40 × 310 − 1,900.00 = 10,500.00.
+   */
+  function margin(): Fixture {
+    const input = s1();
+    input.accounts[0]!.fidelity = "full_history";
+    return {
+      ...input,
+      prices: [price(VTI, "2026-09-02", "300", "txn"), price(VTI, "2026-09-30", "300", "implied"), price(VTI, "2026-10-06", "310", "manual")],
+      snapshots: [snap(A, VTI, "2026-09-30", "50", "300", 1_500_000n), snap(A, CASH, "2026-09-30", "-5000", "1", -500_000n)],
+      balances: [bal(A, "2026-09-30", 1_000_000n)],
+      flows: [flow(A, "2026-09-01", 1_000_000n)],
+      tradePositions: [
+        { accountId: A, date: "2026-09-02", quantityBySecurity: new Map([[VTI, f("50")]]) },
+        { accountId: A, date: "2026-10-06", quantityBySecurity: new Map([[VTI, f("40")]]) },
+      ],
+      cashEffects: [
+        { accountId: A, date: "2026-09-02", cents: -1_500_000n },
+        { accountId: A, date: "2026-10-06", cents: 310_000n },
+      ],
+    };
+  }
+
+  it("keeps a margin debit after a trade newer than the statement: the lots are priced and the anchored cash stays negative", () => {
+    const input = margin();
+    // the statement itself: 15,000.00 − 5,000.00, no plug
+    const statement = valueAccountOn(input, A, "2026-09-30");
+    expect(statement).toMatchObject({ basis: "snapshot", valueCents: 1_000_000n, balanceDiffCents: 0n, warnings: [] });
+    const v = valueAccountOn(input, A, "2026-10-06");
+    expect(v).toMatchObject({ basis: "lots", asOf: "2026-10-06", cashAnchor: "2026-09-30", valueCents: 1_050_000n });
+    // anchor 09-30: 10,000.00 − 50 × 300 = −5,000.00; the sale's cash leg after it +3,100.00
+    expect(v.lines.map((l) => [l.kind, l.name, l.valueCents])).toEqual([
+      ["position", "Vanguard Total Stock Market ETF", 1_240_000n],
+      ["cash_plug", CASH_PLUG_NAME, -500_000n],
+      ["cash", TRADE_CASH_NAME, 310_000n],
+    ]);
+    expect(v.warnings).toEqual([
+      {
+        code: "negative_residual",
+        message: "Holdings exceed the 2026-09-30 balance by $5000.00: the difference is counted as negative cash (a margin loan, or holdings that changed or lost value since the last statement; turn the account's cash inference off if the balance is not its total value)",
+        cents: -500_000n,
+      },
+    ]);
+    // before any balance the cash is tracked from inception and may be negative too: 15,000.00 + 10,000.00 − 15,000.00
+    const early = valueAccountOn(input, A, "2026-09-02");
+    expect(early).toMatchObject({ basis: "lots", valueCents: 1_000_000n, cashAnchor: null, warnings: [] });
+    // the period's change is the 500.00 the 40 shares and the sale earned
+    const change = periodChange(input, [A], { period: "custom", from: "2026-09-30", end: "2026-10-06" })!;
+    expect(change).toMatchObject({ startCents: 1_000_000n, endCents: 1_050_000n, changeCents: 50_000n, netFlowsCents: 0n, growthCents: 50_000n });
+  });
+
   it("values the positions alone when cash inference is off", () => {
     const input = fullHistory();
     input.accounts[0]!.cashInference = "off";
@@ -650,16 +733,21 @@ describe("views test 9 through the chain", () => {
     expect(v.warnings).toEqual([]);
   });
 
-  it("(c) holdings above a reported balance are a negative residual, never negative cash", () => {
+  it("(c) holdings above a newer reported balance: the account is worth the balance, the gap is negative cash with a warning", () => {
     const input = views();
     input.balances.push(bal(VR, "2026-10-13", 1_810_000n, "simplefin"));
     const v = valueAccountOn(input, VR, "2026-10-13");
-    expect(v.valueCents).toBe(1_820_000n);
+    // the 10-09 positions repriced on 10-13 are 18,200.00; the feed says 18,100.00 that day
+    expect(v.valueCents).toBe(1_810_000n);
     expect(v.warnings).toEqual([
-      { code: "negative_residual", message: "Holdings exceed the account value by $100.00: the positions are newer than the balance, or the balance is stale", cents: -10_000n },
+      {
+        code: "negative_residual",
+        message: "Holdings exceed the 2026-10-13 balance by $100.00: the difference is counted as negative cash (a margin loan, or holdings that changed or lost value since the last statement; turn the account's cash inference off if the balance is not its total value)",
+        cents: -10_000n,
+      },
     ]);
-    expect(v.balanceDiffCents).toBe(10_000n);
-    expect(kindLine(v, "cash_plug")).toBeUndefined();
+    expect(v.balanceDiffCents).toBe(0n);
+    expect(kindLine(v, "cash_plug")).toMatchObject({ valueCents: -10_000n, priceDate: "2026-10-13" });
   });
 
   it("(d) a statement price with no newer close is stale by trading days, not calendar days", () => {

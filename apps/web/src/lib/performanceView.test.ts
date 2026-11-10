@@ -21,6 +21,7 @@ import {
   mwrCell,
   openingValueText,
   subPeriodFlags,
+  subPeriodFlowParts,
   twrCell,
   yieldText,
 } from "./performanceView.js";
@@ -80,6 +81,12 @@ describe("return figures", () => {
       "begin carried to 01/01/26",
       "end carried to 03/31/26",
     ]);
+  });
+  it("splits a sub-period's flows into the contributions and the withdrawals", () => {
+    // +1,000.00 in and −200.00 out net to 800.00
+    expect(subPeriodFlowParts({ flowCents: "80000", outflowCents: "-20000" })).toEqual({ contributionsCents: "100000", withdrawalsCents: "-20000" });
+    expect(subPeriodFlowParts({ flowCents: "-990000", outflowCents: "-990000" })).toEqual({ contributionsCents: "0", withdrawalsCents: "-990000" });
+    expect(subPeriodFlowParts({ flowCents: "5000", outflowCents: "0" })).toEqual({ contributionsCents: "5000", withdrawalsCents: "0" });
   });
 });
 

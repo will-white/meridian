@@ -3,7 +3,7 @@ import type { AccountPerformanceView, BenchmarkPerformanceView, PerformanceReque
 import { api } from "../../lib/api.js";
 import { money, shortDate } from "../../lib/format.js";
 import { changeTone, formatQuantity, formatRate, signedMoney } from "../../lib/investments.js";
-import { methodLabel, subPeriodFlags } from "../../lib/performanceView.js";
+import { methodLabel, subPeriodFlags, subPeriodFlowParts } from "../../lib/performanceView.js";
 import { Badge, ErrorText } from "../ui.js";
 import { ExternalFlowsTable } from "./ExternalFlowsTable.js";
 import { INVESTMENTS_STALE_MS } from "./queries.js";
@@ -46,6 +46,7 @@ export function PerformanceDetail({ body, accountId, accountNames }: { body: Per
       {account?.statementCheck && <StatementCheck check={account.statementCheck} />}
 
       <h4>Time-weighted sub-periods</h4>
+      <p className="muted small">Money in joins the begin value at the start of its day; money out leaves at the end of its day and is added back to the end value.</p>
       {block.subPeriods.length === 0 ? (
         <p className="muted small">No sub-periods: the return was computed from the start and end values and the dated flows (Modified Dietz).</p>
       ) : (
@@ -56,24 +57,29 @@ export function PerformanceDetail({ body, accountId, accountNames }: { body: Per
                 <th>From</th>
                 <th>To</th>
                 <th className="num">Begin</th>
-                <th className="num">Flow</th>
+                <th className="num">In</th>
+                <th className="num">Out</th>
                 <th className="num">End</th>
                 <th className="num">Rate</th>
                 <th>Flags</th>
               </tr>
             </thead>
             <tbody>
-              {block.subPeriods.map((sp, i) => (
-                <tr key={`${sp.from}-${i}`} className={sp.skipped ? "perf-skipped" : ""}>
-                  <td>{shortDate(sp.from)}</td>
-                  <td>{shortDate(sp.to)}</td>
-                  <td className="num">{money(sp.beginValueCents)}</td>
-                  <td className={`num ${changeTone(sp.flowCents)}`}>{signedMoney(sp.flowCents)}</td>
-                  <td className="num">{money(sp.endValueCents)}</td>
-                  <td className={`num ${changeTone(sp.rate ?? null)}`}>{sp.rate === null ? "—" : formatRate(sp.rate, true)}</td>
-                  <td className="muted small">{subPeriodFlags(sp).join("; ")}</td>
-                </tr>
-              ))}
+              {block.subPeriods.map((sp, i) => {
+                const parts = subPeriodFlowParts(sp);
+                return (
+                  <tr key={`${sp.from}-${i}`} className={sp.skipped ? "perf-skipped" : ""}>
+                    <td>{shortDate(sp.from)}</td>
+                    <td>{shortDate(sp.to)}</td>
+                    <td className="num">{money(sp.beginValueCents)}</td>
+                    <td className={`num ${changeTone(parts.contributionsCents)}`}>{signedMoney(parts.contributionsCents)}</td>
+                    <td className={`num ${changeTone(parts.withdrawalsCents)}`}>{signedMoney(parts.withdrawalsCents)}</td>
+                    <td className="num">{money(sp.endValueCents)}</td>
+                    <td className={`num ${changeTone(sp.rate ?? null)}`}>{sp.rate === null ? "—" : formatRate(sp.rate, true)}</td>
+                    <td className="muted small">{subPeriodFlags(sp).join("; ")}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

@@ -4,11 +4,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parseFixed8 } from "@meridian/shared";
 import { account, balanceSnapshot, holdingSnapshot, job, price } from "../schema/index.js";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "../test/db.js";
-import { INV_SEED_TODAY, seedInvestmentFixture, type InvestmentSeed } from "../test/investmentSeed.js";
+import { INV_SEED_NOW, INV_SEED_TODAY, seedInvestmentFixture, type InvestmentSeed } from "../test/investmentSeed.js";
 import { listAudit } from "./audit.js";
 import { deleteSnapshot, getSnapshot, latestSnapshot, listPositions, listSnapshots, rebuildImpliedPrices, replaceHoldingSnapshot, setManualPositions } from "./holdings.js";
 import { getPrice, upsertPrices } from "./prices.js";
 import { createSecurity, setManualPrice } from "./securities.js";
+import { valueAccountsOn } from "./valuation.js";
 
 const TODAY = INV_SEED_TODAY;
 const ctx = (batchId = randomUUID()) => ({ userId: null, batchId, today: TODAY });
@@ -301,5 +302,63 @@ describe.skipIf(!TEST_DATABASE_URL)("holding snapshots", () => {
     expect(await balanceRow(B, "2026-10-14")).toMatchObject({ balanceCents: 2600000n, source: "manual" });
     const ordered = await t.db.select({ securityId: holdingSnapshot.securityId }).from(holdingSnapshot).where(and(eq(holdingSnapshot.accountId, B), eq(holdingSnapshot.date, "2026-10-14"))).orderBy(asc(holdingSnapshot.securityId));
     expect(ordered.map((r) => r.securityId)).toEqual([S.securities.vti, S.securities.vxus, S.securities.aapl].sort());
+  });
+
+  it("a 0.00 price beside a real value is never stored nor written as an implied close: the unit price is value ÷ quantity for every account holding the fund", async () => {
+    const xyzf = (await createSecurity(t.db, { name: "XYZ Collective Fund", type: "fund", assetClass: "us_stock" }, ctx())).id;
+    const dead = (await createSecurity(t.db, { name: "Worthless Holdings Trust", type: "fund", assetClass: "other" }, ctx())).id;
+    const [p1, p2] = await t.db
+      .insert(account)
+      .values([
+        { name: "Zero Price 401k", type: "401k", taxTreatment: "pre_tax", onBudget: false },
+        { name: "Older Statement IRA", type: "ira", taxTreatment: "pre_tax", onBudget: false },
+      ])
+      .returning({ id: account.id });
+    const P1 = p1!.id;
+    const P2 = p2!.id;
+
+    // P2's 09-15 statement: 4 units at 123.00 = 492.00.
+    await replaceHoldingSnapshot(t.db, { accountId: P2, date: "2026-09-15", source: "csv", positions: [{ securityId: xyzf, quantity: f8("4"), price: f8("123"), valueCents: 49200n, reportedCostBasisCents: null }], today: TODAY });
+    await rebuildImpliedPrices(t.db, { securityIds: [xyzf], dates: ["2026-09-15"] });
+
+    // P1's 09-30 export leaves the price column at 0.00: 10 units worth 1,234.56, and a worthless 100 units worth 0.00.
+    const written = await replaceHoldingSnapshot(t.db, {
+      accountId: P1,
+      date: "2026-09-30",
+      source: "csv",
+      positions: [
+        { securityId: xyzf, quantity: f8("10"), price: 0n, valueCents: 123456n, reportedCostBasisCents: null },
+        { securityId: dead, quantity: f8("100"), price: 0n, valueCents: 0n, reportedCostBasisCents: null },
+      ],
+      today: TODAY,
+    });
+    expect(written).toMatchObject({ inserted: 2, totalValueCents: 123456n });
+    expect(await rebuildImpliedPrices(t.db, { securityIds: [xyzf, dead], dates: ["2026-09-30"] })).toEqual({ written: 2, removed: 0 });
+    // 1,234.56 ÷ 10 = 123.456 on the row and in the price table; the worthless position keeps its 0.
+    const rows = (await getSnapshot(t.db, P1, "2026-09-30"))!.rows;
+    expect(rows.find((r) => r.securityId === xyzf)).toMatchObject({ quantity: f8("10"), price: f8("123.456"), valueCents: 123456n });
+    expect(rows.find((r) => r.securityId === dead)).toMatchObject({ quantity: f8("100"), price: 0n, valueCents: 0n });
+    expect((await getPrice(t.db, xyzf, "2026-09-30"))!).toMatchObject({ source: "implied", close: f8("123.456") });
+    expect((await getPrice(t.db, dead, "2026-09-30"))!).toMatchObject({ source: "implied", close: 0n });
+
+    // The other account's older statement is repriced by the newer close: 4 × 123.456 = 493.824 → 493.82, not 0.00.
+    const [older] = await valueAccountsOn(t.db, { accountIds: [P2], date: "2026-10-05", now: INV_SEED_NOW });
+    expect(older).toMatchObject({ basis: "positions", asOf: "2026-09-15", valueCents: 49382n });
+    expect(older!.lines.find((l) => l.securityId === xyzf)).toMatchObject({ price: f8("123.456"), priceDate: "2026-09-30", valueCents: 49382n, valueSource: "priced" });
+
+    // A price that does not produce the value is replaced the same way: 10 units, 150.00 reported, 1,234.56 of value.
+    await replaceHoldingSnapshot(t.db, { accountId: P1, date: "2026-10-01", source: "csv", positions: [{ securityId: xyzf, quantity: f8("10"), price: f8("150"), valueCents: 123456n, reportedCostBasisCents: null }], today: TODAY });
+    expect((await getSnapshot(t.db, P1, "2026-10-01"))!.rows[0]).toMatchObject({ price: f8("123.456") });
+
+    // The positions editor obeys the same rule (a typed 0 price with a value).
+    const manual = await setManualPositions(t.db, { accountId: P1, asOfDate: "2026-10-02", positions: [{ security: { kind: "existing", securityId: xyzf }, quantity: f8("10"), price: 0n, valueCents: 123456n }] }, ctx());
+    expect(manual.snapshot.rows[0]).toMatchObject({ price: f8("123.456"), valueCents: 123456n });
+    expect((await getPrice(t.db, xyzf, "2026-10-02"))!).toMatchObject({ source: "implied", close: f8("123.456") });
+
+    // A row stored before this rule (price 0 beside a value) heals on the next rebuild instead of writing a 0 close.
+    await t.db.update(holdingSnapshot).set({ price: "0" }).where(and(eq(holdingSnapshot.accountId, P1), eq(holdingSnapshot.securityId, xyzf), eq(holdingSnapshot.date, "2026-09-30")));
+    await t.db.update(price).set({ close: "0" }).where(and(eq(price.securityId, xyzf), eq(price.date, "2026-09-30")));
+    expect(await rebuildImpliedPrices(t.db, { securityIds: [xyzf], dates: ["2026-09-30"] })).toEqual({ written: 1, removed: 0 });
+    expect((await getPrice(t.db, xyzf, "2026-09-30"))!).toMatchObject({ source: "implied", close: f8("123.456") });
   });
 });

@@ -5,9 +5,10 @@ import {
   fixed8ToCents,
   FIXED8_PER_CENT,
   FIXED8_SCALE,
-  impliedPrice,
   mulToCents,
   parseLooseDecimal,
+  statementPrice,
+  valueMismatch,
   type Fixed8,
 } from "./decimal.js";
 import { isCashKey, normalizeCusip, normalizeIsin, normalizeTicker } from "./investments.js";
@@ -249,10 +250,6 @@ function keysOf(element: Record<string, unknown>): string[] {
     .filter((k) => k.length > 0);
 }
 
-function abs(n: bigint): bigint {
-  return n < 0n ? -n : n;
-}
-
 type ElementOutcome = { kind: "position"; position: ParsedPosition } | { kind: "rejected"; rejected: RejectedPosition } | { kind: "skipped"; skipped: SkippedPosition };
 
 function parseElement(index: number, raw: unknown): ElementOutcome {
@@ -301,13 +298,10 @@ function parseElement(index: number, raw: unknown): ElementOutcome {
       valueCents = mulToCents(quantity, price);
     } else if (value !== undefined && quantity !== null) {
       valueCents = value.cents;
-      if (price === null) {
-        price = quantity !== 0n ? impliedPrice(valueCents, quantity) : null;
-      } else {
-        // The broker's number is what the statement shows; a disagreement beyond 0.5 % (or 1 cent) is flagged.
-        const tolerance = abs(valueCents) / 200n;
-        if (abs(valueCents - mulToCents(quantity, price)) > (tolerance > 1n ? tolerance : 1n)) warnings.push("value_mismatch");
-      }
+      // The broker's number is what the statement shows; a price that disagrees with it beyond
+      // 0.5 % (or 1 cent), a 0 included, is flagged and replaced by the one the value implies.
+      if (price !== null && valueMismatch(quantity, price, valueCents)) warnings.push("value_mismatch");
+      price = statementPrice(quantity, price, valueCents);
     } else {
       return { kind: "rejected", rejected: { index, reason: "missing_value", keys } };
     }

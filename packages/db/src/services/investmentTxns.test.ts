@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { csvExternalId, mapTradesCsvRows, parseFixed8, type TradesCsvMappingInput } from "@meridian/shared";
 import { account, importLog, investmentTxn, job, lot, lotDisposal, lotPick, transaction } from "../schema/index.js";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "../test/db.js";
-import { INV_SEED_TODAY, seedInvestmentFixture, type InvestmentSeed } from "../test/investmentSeed.js";
+import { INV_SEED_NOW, INV_SEED_TODAY, seedInvestmentFixture, type InvestmentSeed } from "../test/investmentSeed.js";
 import { listAudit } from "./audit.js";
 import { createGoal, listGoals } from "./goals.js";
 import { runInvestmentIncomeFeed } from "./investmentIncome.js";
@@ -19,7 +19,9 @@ import {
   updateInvestmentTxn,
 } from "./investmentTxns.js";
 import { computeHoldings, rebuildLots, setLotPicks } from "./lots.js";
+import { getPerformance, loadExternalFlows } from "./performance.js";
 import { createSecurity } from "./securities.js";
+import { updateTransaction } from "./transactions.js";
 
 const TODAY = INV_SEED_TODAY;
 const f8 = parseFixed8;
@@ -319,6 +321,70 @@ describe.skipIf(!TEST_DATABASE_URL)("investment transactions (imports tests 13�
     expect(await getInvestmentTxn(t.db, inLeg!.id)).toBeUndefined();
   });
 
+  /**
+   * One move, one date. 10 VTI bought in the source on 09-01 at 300.00; 4 of them moved to the
+   * target on 09-10 (entered once, both legs written). Changing the date on either leg moves the
+   * whole transfer: by hand, on 09-15 after the out leg is moved to 09-20 the source still holds
+   * all 10 and the target none; on 09-20 they hold 6 and 4 (the 4 carry 4 × 300.00 = 1,200.00 of
+   * basis and the 09-01 acquisition date).
+   */
+  it("a date change on one leg of a paired share transfer moves the other leg too: the shares are never in both accounts or in neither", async () => {
+    const src = await newAccount("Move Source", "brokerage");
+    const dst = await newAccount("Move Target", "ira");
+    await createInvestmentTxn(t.db, { accountId: src, date: "2026-09-01", type: "buy", securityId: VTI, quantity: f8("10"), price: f8("300") }, ctx());
+    const moved = await createInvestmentTxn(t.db, { accountId: src, date: "2026-09-10", type: "transfer", direction: "out", securityId: VTI, quantity: f8("4"), counterpartyAccountId: dst }, ctx());
+    const [out, inLeg] = moved.items;
+    expect([out!.date, inLeg!.date]).toEqual(["2026-09-10", "2026-09-10"]);
+    const held = async (asOf: string) => {
+      const rows = (await computeHoldings(t.db, { accountIds: [src, dst], asOf })).rows;
+      return [src, dst].map((id) => rows.find((r) => r.accountId === id)?.quantity ?? 0n);
+    };
+    expect(await held("2026-09-15")).toEqual([f8("6"), f8("4")]);
+
+    const batch = randomUUID();
+    const later = await updateInvestmentTxn(t.db, out!.id, { date: "2026-09-20" }, ctx(batch));
+    expect(later.item).toMatchObject({ date: "2026-09-20", transferDirection: "out", transferGroupId: out!.transferGroupId, quantity: f8("4") });
+    expect(await getInvestmentTxn(t.db, inLeg!.id)).toMatchObject({ date: "2026-09-20", transferDirection: "in", transferGroupId: out!.transferGroupId, counterpartyAccountId: src, quantity: f8("4"), userEdited: false });
+    expect(await held("2026-09-15")).toEqual([f8("10"), 0n]);
+    expect(await held("2026-09-20")).toEqual([f8("6"), f8("4")]);
+    expect((await lotsOf(dst)).map((l) => [l.openedBy, l.acquiredDate, f8(l.quantity), l.costBasisCents, l.basisKnown])).toEqual([["transfer_in", "2026-09-01", f8("4"), 120000n, true]]);
+    // Both legs are audited under the request's batch, the other leg with its old and new date.
+    const audit = await listAudit(t.db, { batchId: batch, limit: 10 });
+    expect(audit.items.map((e) => [e.entity, e.action, e.entityId]).sort()).toEqual(
+      [
+        ["investment_txn", "update", out!.id],
+        ["investment_txn", "update", inLeg!.id],
+      ].sort(),
+    );
+    const mirrored = audit.items.find((e) => e.entityId === inLeg!.id)!;
+    expect(mirrored.before).toMatchObject({ date: "2026-09-10", quantity: "4" });
+    expect(mirrored.after).toMatchObject({ date: "2026-09-20", quantity: "4" });
+
+    // The receiving leg moves the sending leg the same way.
+    await updateInvestmentTxn(t.db, inLeg!.id, { date: "2026-09-12" }, ctx());
+    expect((await getInvestmentTxn(t.db, out!.id))!.date).toBe("2026-09-12");
+    expect(await held("2026-09-11")).toEqual([f8("10"), 0n]);
+    expect(await held("2026-09-12")).toEqual([f8("6"), f8("4")]);
+    // A change that leaves the date alone touches only the patched leg.
+    const memoBatch = randomUUID();
+    await updateInvestmentTxn(t.db, out!.id, { memo: "ACATS" }, ctx(memoBatch));
+    expect((await listAudit(t.db, { batchId: memoBatch, limit: 10 })).items.map((e) => e.entityId)).toEqual([out!.id]);
+    // The pair still refuses a change of what moved.
+    await expect(updateInvestmentTxn(t.db, out!.id, { quantity: f8("5"), date: "2026-09-13" }, ctx())).rejects.toMatchObject({ status: 409, code: "transfer_leg_linked" });
+    expect((await getInvestmentTxn(t.db, inLeg!.id))!.date).toBe("2026-09-12");
+
+    // Two imported legs the files date two days apart keep their own dates until the owner edits one; then both rows are the owner's.
+    const from = await newAccount("File Source", "brokerage");
+    const to = await newAccount("File Target", "ira");
+    await commit(from, [["2026-09-06", "JOURNAL DELIVERED", "VTI", "10", "", "", "", "K1"]]);
+    expect(await commit(to, [["2026-09-08", "TRANSFER OF SHARES RECEIVED", "VTI", "10", "", "", "", "K2"]])).toMatchObject({ transfersPaired: 1 });
+    const k1 = await rowByExt(from, "csvid:K1");
+    expect([(await rowByExt(from, "csvid:K1")).date, (await rowByExt(to, "csvid:K2")).date]).toEqual(["2026-09-06", "2026-09-08"]);
+    await updateInvestmentTxn(t.db, k1.id, { date: "2026-09-07" }, ctx());
+    expect(await rowByExt(from, "csvid:K1")).toMatchObject({ date: "2026-09-07", userEdited: true });
+    expect(await rowByExt(to, "csvid:K2")).toMatchObject({ date: "2026-09-07", userEdited: true, transferGroupId: k1.transferGroupId });
+  });
+
   it("refuses unknown actions; mapping them to skip lets the commit through (test 14)", async () => {
     const mapped = await mapFile(FILE38);
     expect(mapped.unknownActions).toBe(1);
@@ -523,6 +589,115 @@ describe.skipIf(!TEST_DATABASE_URL)("investment transactions (imports tests 13�
     expect(await ledgerRow(bank2!.id)).toMatchObject({ amountCents: 100000n, isTransfer: true });
     await deleteInvestmentTxn(t.db, e2.id, {}, ctx());
     expect(await ledgerRow(e2.ledgerTransactionId!)).toBeUndefined();
+  });
+
+  /**
+   * The bank's wording decides nothing once the trade history says the money was a deposit or
+   * a withdrawal. A brokerage whose bank rows are +5,000.00 "MONEYLINK TXN FROM CHK 1234" on
+   * 09-14 (no contribution word: not a transfer, and a payee default gave it a category),
+   * +1,000.00 "ELECTRONIC FUNDS TRANSFER RECEIVED" on 09-20 (a transfer at ingest) and −200.00
+   * "ACH WITHDRAWAL" on 09-25 (outflows are never classified). The trade history has both
+   * deposits and a buy of 20 VTI @ 290.00 (−5,800.00); the withdrawal is entered by hand.
+   * By hand on 10-13 (VTI 312.50): 20 × 312.50 = 6,250.00 and no cash; contributions 6,000.00,
+   * withdrawals 200.00, growth 6,250.00 − 5,800.00 = 450.00; the goal's September is 5,800.00.
+   */
+  it("a deposit or withdrawal linked to a bank row that was not a transfer makes it one: it stays a flow and counts toward the goal", async () => {
+    const dep = await newAccount("Moneylink Brokerage", "brokerage");
+    await createGoal(t.db, { name: "Moneylink goal", newCategory: { name: "Moneylink savings" }, targetCents: 10000000n, linkedAccountId: dep, startMonth: "2026-09" }, ctx());
+    const bank = await t.db
+      .insert(transaction)
+      .values([
+        { accountId: dep, source: "csv", externalId: "ML-1", date: "2026-09-14", amountCents: 500000n, rawDescription: "MONEYLINK TXN FROM CHK 1234", categoryId: S.categories.dividends },
+        { accountId: dep, source: "csv", externalId: "ML-2", date: "2026-09-20", amountCents: 100000n, rawDescription: "ELECTRONIC FUNDS TRANSFER RECEIVED", isTransfer: true },
+        { accountId: dep, source: "csv", externalId: "ML-3", date: "2026-09-25", amountCents: -20000n, rawDescription: "ACH WITHDRAWAL" },
+      ])
+      .returning({ id: transaction.id, externalId: transaction.externalId });
+    const bankId = (ext: string) => bank.find((r) => r.externalId === ext)!.id;
+    const ledgerRow = async (ext: string) => (await t.db.select().from(transaction).where(eq(transaction.id, bankId(ext))))[0]!;
+
+    const imported = await commit(dep, [
+      ["2026-09-14", "ELECTRONIC FUNDS TRANSFER RECEIVED", "", "", "", "", "5000.00", "M1"],
+      ["2026-09-20", "ELECTRONIC FUNDS TRANSFER RECEIVED", "", "", "", "", "1000.00", "M2"],
+      ["2026-09-21", "YOU BOUGHT", "VTI", "20", "290.00", "", "-5800.00", "M3"],
+    ]);
+    expect(imported).toMatchObject({ created: 3, linked: 2, ledgerCreated: 0 });
+    const m1 = await rowByExt(dep, "csvid:M1");
+    expect(m1.ledgerTransactionId).toBe(bankId("ML-1"));
+    // The linked bank row is a transfer now, and the category a payee default gave it is gone (as pairing does).
+    expect(await ledgerRow("ML-1")).toMatchObject({ isTransfer: true, categoryId: null, amountCents: 500000n, date: "2026-09-14", rawDescription: "MONEYLINK TXN FROM CHK 1234" });
+    expect(await ledgerRow("ML-2")).toMatchObject({ isTransfer: true });
+
+    // A withdrawal entered by hand finds the bank's row and marks it the same way.
+    const out = await createInvestmentTxn(t.db, { accountId: dep, date: "2026-09-25", type: "transfer", direction: "out", amountCents: -20000n }, ctx());
+    expect(out.items[0]!.ledgerTransactionId).toBe(bankId("ML-3"));
+    expect(await ledgerRow("ML-3")).toMatchObject({ isTransfer: true, amountCents: -20000n });
+    expect(await t.db.select().from(transaction).where(eq(transaction.accountId, dep))).toHaveLength(3);
+
+    const flows = await loadExternalFlows(t.db, [dep], "2026-09-13", "2026-10-13", { openingValues: false });
+    expect(flows.map((f) => [f.date, f.amountCents, f.kind, f.source, f.sourceId])).toEqual([
+      ["2026-09-14", 500000n, "cash", "ledger", bankId("ML-1")],
+      ["2026-09-20", 100000n, "cash", "ledger", bankId("ML-2")],
+      ["2026-09-25", -20000n, "cash", "ledger", bankId("ML-3")],
+    ]);
+    const perf = async () => (await getPerformance(t.db, { from: "2026-09-13", to: "2026-10-13", today: TODAY, accountIds: [dep], benchmarkSecurityId: null, now: INV_SEED_NOW })).accounts[0]!;
+    expect(await perf()).toMatchObject({ method: "true_twr", startValueCents: 0n, endValueCents: 625000n, contributionsCents: 600000n, withdrawalsCents: 20000n, growthCents: 45000n });
+    const goalSeptember = async () => (await listGoals(t.db, { today: TODAY })).find((g) => g.linkedAccountId === dep)!.history.find((h) => h.month === "2026-09")?.actualCents;
+    expect(await goalSeptember()).toBe(580000n);
+
+    // "Not a transfer" on the bank row is the owner's call for the ledger and the goal; the deposit is still money put in.
+    await updateTransaction(t.db, bankId("ML-1"), { isTransfer: false });
+    expect(await ledgerRow("ML-1")).toMatchObject({ isTransfer: false });
+    const after = await loadExternalFlows(t.db, [dep], "2026-09-13", "2026-10-13", { openingValues: false });
+    expect(after.map((f) => [f.date, f.amountCents, f.source, f.sourceId])).toEqual([
+      ["2026-09-14", 500000n, "investment_txn", m1.id],
+      ["2026-09-20", 100000n, "ledger", bankId("ML-2")],
+      ["2026-09-25", -20000n, "ledger", bankId("ML-3")],
+    ]);
+    expect(await perf()).toMatchObject({ endValueCents: 625000n, contributionsCents: 600000n, withdrawalsCents: 20000n, growthCents: 45000n });
+    expect(await goalSeptember()).toBe(80000n);
+    // An edit that leaves the link and the kind alone does not overrule the owner.
+    await updateInvestmentTxn(t.db, m1.id, { memo: "from checking" }, ctx());
+    expect(await ledgerRow("ML-1")).toMatchObject({ isTransfer: false });
+
+    // A SimpleFIN-fed account: the withdrawal is entered first and waits; the pass after the sync that brings the bank's row links and marks it.
+    const fed = S.accounts.brokerage;
+    const waiting = await createInvestmentTxn(t.db, { accountId: fed, date: "2026-10-08", type: "transfer", direction: "out", amountCents: -12345n }, ctx());
+    expect(waiting.items[0]!.ledgerTransactionId).toBeNull();
+    const [synced] = await t.db
+      .insert(transaction)
+      .values({ accountId: fed, source: "simplefin", externalId: "BRIDGE-WD-1", date: "2026-10-09", amountCents: -12345n, rawDescription: "ACH WITHDRAWAL" })
+      .returning({ id: transaction.id });
+    expect(await t.db.transaction((tx) => linkUnlinkedInvestmentTxns(tx, { accountIds: [fed] }))).toBe(1);
+    expect((await getInvestmentTxn(t.db, waiting.items[0]!.id))!.ledgerTransactionId).toBe(synced!.id);
+    expect((await t.db.select().from(transaction).where(eq(transaction.id, synced!.id)))[0]).toMatchObject({ isTransfer: true, date: "2026-10-09", amountCents: -12345n });
+  });
+
+  it("linking by hand marks the bank row a transfer too; a category the owner locked stays on it", async () => {
+    const acct = await newAccount("Hand-linked Brokerage", "brokerage");
+    // Ten days after the transfer: outside the linker's three days, so the owner links it by hand.
+    const [late] = await t.db
+      .insert(transaction)
+      .values({ accountId: acct, source: "csv", externalId: "HL-1", date: "2026-09-12", amountCents: 30000n, rawDescription: "BRANCH CREDIT 0042", categoryId: S.categories.dividends, categoryLocked: true })
+      .returning({ id: transaction.id });
+    const entered = await createInvestmentTxn(t.db, { accountId: acct, date: "2026-09-02", type: "transfer", direction: "in", amountCents: 30000n }, ctx());
+    const derivedId = entered.items[0]!.ledgerTransactionId!;
+    expect(derivedId).not.toBe(late!.id);
+    const relinked = await updateInvestmentTxn(t.db, entered.items[0]!.id, { ledgerTransactionId: late!.id }, ctx());
+    expect(relinked.item.ledgerTransactionId).toBe(late!.id);
+    // The row this side wrote is gone (the bank's row replaces it); the bank's row is the one transfer.
+    expect(await t.db.select().from(transaction).where(eq(transaction.id, derivedId))).toEqual([]);
+    expect((await t.db.select().from(transaction).where(eq(transaction.id, late!.id)))[0]).toMatchObject({ isTransfer: true, categoryId: S.categories.dividends, categoryLocked: true, date: "2026-09-12", amountCents: 30000n });
+    const flows = await loadExternalFlows(t.db, [acct], "2026-09-01", "2026-09-30", { openingValues: false });
+    expect(flows.map((f) => [f.date, f.amountCents, f.source])).toEqual([["2026-09-12", 30000n, "ledger"]]);
+
+    // A dividend linked to its bank row leaves the row as it is: income is not a transfer.
+    const [divRow] = await t.db
+      .insert(transaction)
+      .values({ accountId: acct, source: "csv", externalId: "HL-2", date: "2026-09-18", amountCents: 1234n, rawDescription: "DIV VTI" })
+      .returning({ id: transaction.id });
+    const dividend = await createInvestmentTxn(t.db, { accountId: acct, date: "2026-09-18", type: "dividend", securityId: VTI, amountCents: 1234n }, ctx());
+    expect(dividend.items[0]!.ledgerTransactionId).toBe(divRow!.id);
+    expect((await t.db.select().from(transaction).where(eq(transaction.id, divRow!.id)))[0]).toMatchObject({ isTransfer: false });
   });
 
   it("a fed dividend's synthetic ledger row follows the row through re-imports, edits and deletion; the feed heals an orphan (plan decision 13)", async () => {
