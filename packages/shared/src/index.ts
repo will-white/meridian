@@ -14,6 +14,7 @@ export * from "./schedule.js";
 export * from "./plan.js";
 export * from "./recurringDetect.js";
 export * from "./cashflow.js";
+export * from "./wire.js";
 export * from "./api.js";
 export * from "./decimal.js";
 export * from "./investments.js";

@@ -43,3 +43,8 @@ Conventions: money is `bigint` cents; `transaction.amount_cents` is signed (+ in
 - Added tables: `household_setting`, `audit_log`, `alert`; added columns on `account` (threshold, card payment), `transaction.recurring_id`.
 - Added cadence `bimonthly` and recurring status `dismissed`.
 - Planned source gains `goal`.
+
+## Decisions made during the audit
+
+1. **A goal has no projected completion month past 2199-12.** `goalProgress` returns `projectedCompletionMonth: null` when the monthly contribution would not reach the target by December 2199 (the last month a caller may name), instead of a month with a five-digit year that no contract can carry: before, a goal of $100,000 at $1 a month answered 500 on the Goals and Plan pages. The Goals page says "not reached before 2200 at this pace".
+

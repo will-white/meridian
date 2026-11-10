@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { dayOfMonth, type IsoDate } from "./dates.js";
+import { CentsInput } from "./wire.js";
 
 /**
  * Ordered rules. Each rule is `conditions -> actions`. Rules run in `position`
@@ -16,15 +17,13 @@ export const StringMatch = z.object({
 });
 export type StringMatch = z.infer<typeof StringMatch>;
 
-/** Cents travel as decimal strings inside JSON so bigint survives. */
-const CentsString = z.string().regex(/^-?\d+$/);
-
 export const RuleConditions = z
   .object({
     payee: StringMatch.optional(),
     description: StringMatch.optional(),
     amount: z
-      .object({ minCents: CentsString.optional(), maxCents: CentsString.optional() })
+      // Cents travel as decimal strings inside JSON so bigint survives; bounded like every amount a caller sends.
+      .object({ minCents: CentsInput.optional(), maxCents: CentsInput.optional() })
       .optional(),
     accountId: z.string().uuid().optional(),
     dayOfMonth: z.object({ min: z.number().int().min(1).max(31), max: z.number().int().min(1).max(31) }).optional(),
@@ -36,7 +35,7 @@ export const RuleActions = z
   .object({
     setPayee: z.string().min(1).max(200).optional(),
     setCategoryId: z.string().uuid().nullable().optional(),
-    addTags: z.array(z.string().min(1).max(50)).optional(),
+    addTags: z.array(z.string().min(1).max(50)).max(50).optional(),
     markTransfer: z.boolean().optional(),
     stop: z.boolean().optional(),
   })

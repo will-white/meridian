@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import type { Db } from "@meridian/db";
+import { buildApp } from "./app.js";
 import { parsePriceProviderId } from "@meridian/shared";
-import { loadConfig, parseCatchupHour } from "./config.js";
+import { loadConfig, parseCatchupHour, parseTrustProxy } from "./config.js";
 
 /**
  * The API's environment (plan decision 10): `PRICE_PROVIDER` goes through the shared
@@ -44,5 +46,44 @@ describe("loadConfig: PRICE_PROVIDER", () => {
     expect(config).toMatchObject({ priceProvider: "tiingo", priceFetchHour: 17, priceCatchupHour: null });
     expect(parseCatchupHour("7")).toBe(7);
     expect(parseCatchupHour("25")).toBe(6);
+  });
+});
+
+describe("loadConfig: where the API listens and whose forwarded headers it believes", () => {
+  it("binds loopback unless API_HOST says otherwise (the Docker image sets 0.0.0.0)", () => {
+    expect(loadConfig(BASE).host).toBe("127.0.0.1");
+    expect(loadConfig({ ...BASE, API_HOST: "0.0.0.0" }).host).toBe("0.0.0.0");
+    expect(loadConfig({ ...BASE, API_HOST: " ::1 " }).host).toBe("::1");
+  });
+
+  it("trusts no proxy by default and otherwise only the listed addresses, ranges and presets", () => {
+    expect(loadConfig(BASE).trustProxy).toEqual([]);
+    expect(parseTrustProxy("")).toEqual([]);
+    expect(parseTrustProxy("false")).toEqual([]);
+    expect(parseTrustProxy(" Off ")).toEqual([]);
+    expect(loadConfig({ ...BASE, TRUST_PROXY: "uniquelocal" }).trustProxy).toEqual(["uniquelocal"]);
+    expect(parseTrustProxy("172.18.0.5, 10.0.0.0/8 ,Loopback,fd00::/8,::1")).toEqual(["172.18.0.5", "10.0.0.0/8", "loopback", "fd00::/8", "::1"]);
+  });
+
+  it("hands Fastify a list it accepts: every form boots, and only a listed peer's X-Forwarded-Host is believed", async () => {
+    const config = loadConfig({ ...BASE, NODE_ENV: "test", TRUST_PROXY: "172.18.0.5, 10.0.0.0/8, loopback, linklocal, uniquelocal, fd00::/8, ::1" });
+    const app = await buildApp({ db: {} as Db, config, logger: false });
+    app.get("/seen-host", { config: { auth: "static" } }, async (request) => ({ host: request.host, ip: request.ip }));
+    try {
+      const forwarded = { host: "web:3000", "x-forwarded-host": "meridian.local", "x-forwarded-for": "203.0.113.7" };
+      const viaProxy = await app.inject({ method: "GET", url: "/seen-host", remoteAddress: "172.18.0.5", headers: forwarded });
+      expect(viaProxy.json()).toEqual({ host: "meridian.local", ip: "203.0.113.7" });
+      const direct = await app.inject({ method: "GET", url: "/seen-host", remoteAddress: "203.0.113.50", headers: forwarded });
+      expect(direct.json()).toEqual({ host: "web:3000", ip: "203.0.113.50" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("refuses to trust every peer, a hop count, a hostname or a malformed range", () => {
+    for (const value of ["true", "1", "2", "*", "proxy", "caddy.local", "10.0.0.0/33", "10.0.0.0/8/8", "fd00::/129", "10.0.0", "uniquelocal,true"]) {
+      expect(() => parseTrustProxy(value), value).toThrow(/^TRUST_PROXY must list the reverse proxy's addresses/);
+    }
+    expect(() => loadConfig({ ...BASE, TRUST_PROXY: "true" })).toThrow('TRUST_PROXY must list the reverse proxy\'s addresses (an IP, a CIDR range, or loopback, linklocal, uniquelocal), not "true"');
   });
 });

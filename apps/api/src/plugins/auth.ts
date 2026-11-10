@@ -5,10 +5,17 @@ import { session, user } from "@meridian/db";
 import type { ApiConfig } from "../config.js";
 import { forbidden, unauthorized } from "../lib/errors.js";
 import type { Db } from "@meridian/db";
+import { isSafeMethod } from "./requestGuards.js";
 
 export const SESSION_COOKIE = "meridian_session";
 
-export type AuthLevel = "public" | "session" | "full";
+/**
+ * `static`: a file of the web app; no session is read at all (`request.auth` stays unset).
+ * `public`: no session needed, but the handler may look at `request.auth` (sign-in routes, health).
+ * `session`: a password session, two-factor not required yet (the two-factor routes).
+ * `full` (the default): a session with two-factor verified.
+ */
+export type AuthLevel = "static" | "public" | "session" | "full";
 
 export interface AuthUser {
   id: string;
@@ -93,16 +100,22 @@ export function clearSessionCookie(reply: FastifyReply, config: ApiConfig): void
   reply.clearCookie(SESSION_COOKIE, { path: "/", httpOnly: true, sameSite: "lax", secure: config.secureCookies });
 }
 
-/** Loads the session on every request and enforces the route's `config.auth` level (default: full). */
+/**
+ * Loads the session and enforces the route's `config.auth` level (default: full) in `onRequest`:
+ * before the body is read, parsed or validated. A caller who may not use a route learns nothing
+ * about its contract and cannot make the server parse anything; a viewer's change is refused
+ * the same way. A route that is not marked otherwise is guarded whatever its path, so a new
+ * route is closed until someone opens it.
+ */
 export const authPlugin = fp(async (app) => {
   // Fastify wants a getter/setter pair for reference types; the onRequest hook assigns the real value.
   app.decorateRequest("auth", null as never);
   app.addHook("onRequest", async (request) => {
+    // Unknown paths (the SPA fallback included) and the web app's files carry no data and never
+    // touch the database: the shell still loads while Postgres is restarting.
+    const level: AuthLevel = request.is404 ? "static" : (request.routeOptions.config.auth ?? "full");
+    if (level === "static") return;
     request.auth = await resolveAuthState(app.db, readSessionId(request));
-  });
-  app.addHook("preHandler", async (request) => {
-    if (request.is404) return; // unknown paths and the SPA fallback carry no data
-    const level: AuthLevel = request.routeOptions.config.auth ?? "full";
     if (level === "public") return;
     const state = request.auth;
     if (state.kind === "setup_required") throw forbidden("Create the owner account first", "setup_required");
@@ -110,7 +123,7 @@ export const authPlugin = fp(async (app) => {
     if (level === "session") return;
     if (state.kind === "totp_enrollment_required") throw forbidden("Finish setting up two-factor authentication", "totp_enrollment_required");
     if (state.kind === "totp_required") throw unauthorized("Enter your authenticator code", "totp_required");
-    const mutating = request.method !== "GET" && request.method !== "HEAD" && request.routeOptions.config.readOnly !== true;
+    const mutating = !isSafeMethod(request.method) && request.routeOptions.config.readOnly !== true;
     if (mutating && state.user.role !== "owner") throw forbidden("Viewers cannot make changes", "viewer");
   });
 });

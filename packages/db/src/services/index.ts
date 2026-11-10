@@ -8,6 +8,7 @@ export * from "./accounts.js";
 export * from "./sync.js";
 export * from "./jobs.js";
 export * from "./csvImport.js";
+export * from "./queryText.js";
 export * from "./transactions.js";
 export * from "./plan.js";
 export * from "./categoryGroups.js";

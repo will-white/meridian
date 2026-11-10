@@ -1,11 +1,13 @@
 import { eq } from "drizzle-orm";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import QRCode from "qrcode";
+import type { z } from "zod";
 import { seedDefaultCategories, session, user } from "@meridian/db";
 import { AuthStatus, decryptSecret, encryptSecret, LoginBody, OkResponse, SetupBody, TotpCodeBody, TotpSetupResponse } from "@meridian/shared";
 import { hashPassword, newSessionId, newTotpSecret, totpFor, verifyPassword, verifyTotp } from "../lib/auth.js";
-import { badRequest, forbidden, unauthorized } from "../lib/errors.js";
+import { badRequest, forbidden, HttpError, unauthorized } from "../lib/errors.js";
+import { BODY_LIMIT, SIGN_IN_LIMIT } from "../lib/limits.js";
 import { clearSessionCookie, setSessionCookie, type AuthState } from "../plugins/auth.js";
 
 /** A valid Argon2id hash of a random password, verified against on unknown usernames so timing does not reveal them. */
@@ -30,6 +32,20 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   const ttlMs = () => app.config.sessionTtlDays * 86_400_000;
 
+  // Limits keyed on the account rather than the address (see SIGN_IN_LIMIT). They run in the
+  // handler, after the per-address limit and validation, because the key is in the body or session.
+  const passwordLimit = app.createRateLimit({ ...SIGN_IN_LIMIT.passwordPerUsername, keyGenerator: (request) => `username:${(request.body as z.infer<typeof LoginBody>).username.trim().toLowerCase()}` });
+  const codeLimit = app.createRateLimit({
+    ...SIGN_IN_LIMIT.codePerUser,
+    keyGenerator: (request) => (request.auth.kind === "totp_required" ? `user:${request.auth.user.id}` : `address:${request.ip}`),
+  });
+  async function enforce(limit: typeof passwordLimit, request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    const result = await limit(request);
+    if (result.isAllowed || !result.isExceeded) return;
+    reply.header("retry-after", result.ttlInSeconds);
+    throw new HttpError(429, `Too many attempts. Try again in ${result.ttlInSeconds} seconds.`, "rate_limited");
+  }
+
   async function startSession(userId: string, totpVerified: boolean) {
     const id = newSessionId();
     const expiresAt = new Date(Date.now() + ttlMs());
@@ -41,7 +57,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
   r.post(
     "/auth/setup",
-    { config: { auth: "public", rateLimit: { max: 5, timeWindow: "1 minute" } }, schema: { body: SetupBody, response: { 200: AuthStatus } } },
+    { bodyLimit: BODY_LIMIT.signIn, config: { auth: "public", rateLimit: SIGN_IN_LIMIT.setupPerAddress }, schema: { body: SetupBody, response: { 200: AuthStatus } } },
     async (request, reply) => {
       if (request.auth.kind !== "setup_required") throw forbidden("The owner account already exists", "already_setup");
       const passwordHash = await hashPassword(request.body.password);
@@ -56,9 +72,10 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
   r.post(
     "/auth/login",
-    { config: { auth: "public", rateLimit: { max: 10, timeWindow: "1 minute" } }, schema: { body: LoginBody, response: { 200: AuthStatus } } },
+    { bodyLimit: BODY_LIMIT.signIn, config: { auth: "public", rateLimit: SIGN_IN_LIMIT.passwordPerAddress }, schema: { body: LoginBody, response: { 200: AuthStatus } } },
     async (request, reply) => {
       if (request.auth.kind === "setup_required") throw forbidden("Create the owner account first", "setup_required");
+      await enforce(passwordLimit, request, reply);
       const [row] = await app.db.select().from(user).where(eq(user.username, request.body.username.trim()));
       const ok = await verifyPassword(row?.passwordHash ?? (await DUMMY_HASH_PROMISE), request.body.password);
       if (!row || !ok) throw unauthorized("Wrong username or password", "bad_credentials");
@@ -91,7 +108,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /** Prove a code from the authenticator; TOTP is enforced from here on. */
-  r.post("/auth/totp/confirm", { config: { auth: "session" }, schema: { body: TotpCodeBody, response: { 200: AuthStatus } } }, async (request) => {
+  r.post("/auth/totp/confirm", { bodyLimit: BODY_LIMIT.signIn, config: { auth: "session" }, schema: { body: TotpCodeBody, response: { 200: AuthStatus } } }, async (request) => {
     const state = request.auth;
     if (state.kind === "anonymous" || state.kind === "setup_required") throw unauthorized();
     if (state.kind === "totp_required") throw unauthorized("Enter your authenticator code", "totp_required");
@@ -108,12 +125,13 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   /** Second factor after a password login. */
   r.post(
     "/auth/totp/verify",
-    { config: { auth: "session", rateLimit: { max: 10, timeWindow: "1 minute" } }, schema: { body: TotpCodeBody, response: { 200: AuthStatus } } },
-    async (request) => {
+    { bodyLimit: BODY_LIMIT.signIn, config: { auth: "session", rateLimit: SIGN_IN_LIMIT.codePerAddress }, schema: { body: TotpCodeBody, response: { 200: AuthStatus } } },
+    async (request, reply) => {
       const state = request.auth;
       if (state.kind === "anonymous" || state.kind === "setup_required") throw unauthorized();
       if (state.kind === "ok") return statusFor(state);
       if (state.kind === "totp_enrollment_required") throw badRequest("Two-factor authentication is not set up yet", "totp_not_enrolled");
+      await enforce(codeLimit, request, reply);
       const [row] = await app.db.select({ totpSecretEnc: user.totpSecretEnc }).from(user).where(eq(user.id, state.user.id));
       if (!row?.totpSecretEnc) throw badRequest("Two-factor authentication is not set up", "totp_not_enrolled");
       const secret = await decryptSecret(row.totpSecretEnc, app.config.secretsKey);

@@ -16,6 +16,7 @@ import {
 import type { InvestmentTxnType, TransferDirection } from "./enums.js";
 import { isCashKey, normalizeCusip, normalizeTicker, tradeExternalId, tradeSecurityKey } from "./investments.js";
 import { sanitizeText } from "./sanitize.js";
+import { MAX_SPLIT_TERM } from "./wire.js";
 
 /**
  * Positions and trade-history CSV mappers (imports design §3.6 and §3.8; plan decisions 5–7;
@@ -586,7 +587,7 @@ export function parseSplitRatio(text: string): { num: number; den: number } | un
   if (!m) return undefined;
   const num = Number(m[1]);
   const den = Number(m[2]);
-  if (!Number.isInteger(num) || !Number.isInteger(den) || num < 1 || den < 1) return undefined;
+  if (!Number.isInteger(num) || !Number.isInteger(den) || num < 1 || den < 1 || num > MAX_SPLIT_TERM || den > MAX_SPLIT_TERM) return undefined;
   return { num, den };
 }
 

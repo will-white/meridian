@@ -20,6 +20,8 @@ pnpm dev                        # api on :3000, worker, web on :5173 (proxies /a
 
 Open http://localhost:5173, create the owner account, enroll an authenticator app, then paste a SimpleFIN setup token on the Connections page.
 
+The API listens on loopback (`API_HOST`, default `127.0.0.1`) and believes no `X-Forwarded-*` header unless `TRUST_PROXY` names the proxy that sent it.
+
 ## Quick start (home server)
 
 ```bash
@@ -28,6 +30,8 @@ docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
 Caddy serves the app on the LAN at `https://$SITE_ADDRESS` with an internally issued certificate; trust its root CA on your devices. For access from outside, put the server on Tailscale. Do not port-forward.
+
+The `web` container serves the built UI and the API on port 3000, reachable only from the compose network. The UI's files load without a session; everything under `/api` needs one. Changes are accepted only from the app's own origin and only as JSON. If you put a different reverse proxy in front, it must pass the `Host` header through (or send `X-Forwarded-Host`), and `TRUST_PROXY` in `deploy/docker-compose.yml` must name its address so the sign-in rate limits count the real client.
 
 ## Commands
 

@@ -13,7 +13,7 @@ name: meridian
 # uncomment the `secrets:` blocks below and set TIINGO_API_KEY_FILE=/run/secrets/tiingo_api_key.
 x-app-env: &app-env
   env_file: ../.env
-  environment:
+  environment: &app-environment
     NODE_ENV: production
     MERIDIAN_DB_HOST: db
     MERIDIAN_MIGRATIONS_DIR: /app/packages/db/drizzle
@@ -40,6 +40,16 @@ services:
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
     <<: *app-env
+    environment:
+      <<: *app-environment
+      # Listen on the container's interfaces so the proxy can reach it (outside Docker the API
+      # binds loopback). The port is never published: only this compose network reaches it.
+      API_HOST: 0.0.0.0
+      # Whose X-Forwarded-For / X-Forwarded-Host the API believes: peers on a private network,
+      # which here means Caddy (it replaces whatever a client sent). The sign-in rate limits
+      # count the client address Caddy reports. If you publish this port or put the container
+      # on another network, name your proxy's address or range here instead.
+      TRUST_PROXY: uniquelocal
     depends_on:
       db:
         condition: service_healthy

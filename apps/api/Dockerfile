@@ -22,6 +22,8 @@ COPY --from=build /app/packages/shared/package.json ./packages/shared/package.js
 # Runtime dependencies only (native argon2, postgres driver, fastify).
 RUN pnpm install --frozen-lockfile --prod --filter @meridian/api
 ENV NODE_ENV=production
+# Inside a container the API has to listen on every interface (outside Docker it binds loopback).
+ENV API_HOST=0.0.0.0
 ENV WEB_DIST_DIR=/app/apps/web/dist
 ENV MERIDIAN_MIGRATIONS_DIR=/app/packages/db/drizzle
 EXPOSE 3000

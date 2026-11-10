@@ -2,7 +2,9 @@ import { and, desc, eq, gte, ilike, isNull, lte, or, sql } from "drizzle-orm";
 import type { IsoDate } from "@meridian/shared";
 import type { Db, DbOrTx } from "../index.js";
 import { account, category, householdSetting, payee, savingsGoal, transaction } from "../schema/index.js";
+import { PlanError } from "./audit.js";
 import { resolvePayee } from "./payees.js";
+import { containsPattern, decodeCursor, encodeCursor } from "./queryText.js";
 import { setTransactionTags, tagsForTransactions } from "./tags.js";
 import { unpairTransfer } from "./transfers.js";
 
@@ -44,25 +46,18 @@ export interface TransactionListRow {
   tags: string[];
 }
 
-function decodeCursor(cursor: string): { date: string; id: string } | undefined {
-  try {
-    const [date, id] = Buffer.from(cursor, "base64url").toString("utf8").split("|");
-    if (!date || !id) return undefined;
-    return { date, id };
-  } catch {
-    return undefined;
-  }
-}
-
-function encodeCursor(date: string, id: string): string {
-  return Buffer.from(`${date}|${id}`, "utf8").toString("base64url");
+/** The (date, id) a page ended on; a cursor this server did not issue is a 400, never a query. */
+function transactionCursor(cursor: string): { date: string; id: string } {
+  const fields = decodeCursor(cursor, ["date", "uuid"]);
+  if (!fields) throw new PlanError(400, "invalid_cursor", "That page marker is not valid; reload the list");
+  return { date: fields[0]!, id: fields[1]! };
 }
 
 /** Register query: newest first, keyset-paginated on (date, id). */
 export async function listTransactions(db: DbOrTx, query: ListTransactionsQuery): Promise<{ items: TransactionListRow[]; nextCursor: string | null }> {
-  const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
+  const cursor = query.cursor !== undefined ? transactionCursor(query.cursor) : undefined;
   const q = query.q?.trim();
-  const pattern = q ? `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%` : undefined;
+  const pattern = q ? containsPattern(q) : undefined;
 
   const rows = await db
     .select({
@@ -121,7 +116,7 @@ export async function listTransactions(db: DbOrTx, query: ListTransactionsQuery)
   const tags = await tagsForTransactions(db, page.map((r) => r.id));
   const items: TransactionListRow[] = page.map((r) => ({ ...r, tags: tags.get(r.id) ?? [] }));
   const last = page[page.length - 1];
-  const nextCursor = rows.length > query.limit && last ? encodeCursor(last.date, last.id) : null;
+  const nextCursor = rows.length > query.limit && last ? encodeCursor([last.date, last.id]) : null;
   return { items, nextCursor };
 }
 

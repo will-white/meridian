@@ -14,6 +14,7 @@ import {
   truncDiv,
   type MonthKey,
 } from "./months.js";
+import { MAX_INPUT_YEAR } from "./wire.js";
 
 /**
  * Phase 2 plan engine: the multi-month grid, rollover chains, goal progress and
@@ -314,9 +315,14 @@ export function planAverage(
   return { cents: maxBig(0n, truncDiv(sum, BigInt(counted.length))), monthsWithData: counted.length };
 }
 
+/** The last month a projection may name: December of the last year a caller may send (2199-12). */
+export const LAST_PLAN_MONTH: MonthKey = `${MAX_INPUT_YEAR}-12`;
+
 /**
  * Goal progress from the goal category's bucket-natural actuals (categorized rows
  * plus net linked transfers). Only months in [startMonth, currentMonth] count.
+ * `projectedCompletionMonth` is null without a contribution, and when the contribution
+ * would not reach the target by LAST_PLAN_MONTH.
  */
 export function goalProgress(goal: GoalInput, actualByMonth: ReadonlyMap<MonthKey, bigint>, currentMonth: MonthKey): GoalProgress {
   let saved = goal.startingCents;
@@ -327,8 +333,11 @@ export function goalProgress(goal: GoalInput, actualByMonth: ReadonlyMap<MonthKe
   const monthsLeft = goal.targetDate === null ? null : Math.max(1, monthDiff(currentMonth, monthKey(goal.targetDate)) + 1);
   const needed = monthsLeft === null ? null : ceilDiv(remaining, BigInt(monthsLeft));
   const monthly = goal.monthlyContributionCents;
-  const projectedCompletionMonth =
-    remaining === 0n ? currentMonth : monthly > 0n ? addMonths(currentMonth, Number(ceilDiv(remaining, monthly))) : null;
+  // A dollar a month toward a large target lands thousands of years out: past the last month
+  // the app speaks of (LAST_PLAN_MONTH) there is no projection, rather than a month no contract can carry.
+  const monthsToGo = monthly > 0n ? ceilDiv(remaining, monthly) : null;
+  const reachable = monthsToGo !== null && monthsToGo <= BigInt(Math.max(0, monthDiff(currentMonth, LAST_PLAN_MONTH)));
+  const projectedCompletionMonth = remaining === 0n ? currentMonth : reachable ? addMonths(currentMonth, Number(monthsToGo)) : null;
   return {
     savedCents: saved,
     remainingToTargetCents: remaining,

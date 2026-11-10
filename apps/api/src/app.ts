@@ -10,7 +10,9 @@ import { z } from "zod";
 import type { Db } from "@meridian/db";
 import type { ApiConfig } from "./config.js";
 import { registerErrorHandler } from "./lib/errors.js";
+import { BODY_LIMIT } from "./lib/limits.js";
 import { authPlugin } from "./plugins/auth.js";
+import { requestGuardsPlugin } from "./plugins/requestGuards.js";
 import { accountRoutes } from "./routes/accounts.js";
 import { auditRoutes } from "./routes/audit.js";
 import { authRoutes } from "./routes/auth.js";
@@ -44,8 +46,10 @@ export interface BuildAppOptions {
 export async function buildApp({ db, config, logger, now }: BuildAppOptions) {
   const app = Fastify({
     logger: logger ?? config.nodeEnv !== "test",
-    trustProxy: true,
-    bodyLimit: 12 * 1024 * 1024, // CSV uploads travel in JSON bodies
+    // Only the listed reverse proxy may state the client address and the public host
+    // (X-Forwarded-For / -Host / -Proto); from any other peer those headers are ignored.
+    trustProxy: config.trustProxy.length > 0 ? config.trustProxy : false,
+    bodyLimit: BODY_LIMIT.default,
   }).withTypeProvider<ZodTypeProvider>();
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
@@ -69,6 +73,7 @@ export async function buildApp({ db, config, logger, now }: BuildAppOptions) {
   });
   await app.register(cookie, { secret: config.sessionSecret });
   await app.register(rateLimit, { global: false });
+  await app.register(requestGuardsPlugin);
   await app.register(authPlugin);
 
   app.get("/api/health", { config: { auth: "public" }, schema: { response: { 200: z.object({ ok: z.literal(true) }) } } }, async () => ({ ok: true as const }));
@@ -102,12 +107,23 @@ export async function buildApp({ db, config, logger, now }: BuildAppOptions) {
     { prefix: "/api" },
   );
 
-  // Production: the API also serves the built PWA with an SPA fallback.
-  if (config.webDistDir && existsSync(path.join(config.webDistDir, "index.html"))) {
-    await app.register(fastifyStatic, { root: config.webDistDir, wildcard: false, index: false });
-    app.setNotFoundHandler(async (request, reply) => {
-      if (request.method === "GET" && !request.url.startsWith("/api/")) return reply.sendFile("index.html");
-      return reply.status(404).send({ error: "Not found", code: "not_found" });
+  // Production: the API also serves the built PWA with an SPA fallback. The shell (HTML,
+  // scripts, styles, service worker, manifest, icon) holds no household data and has to load
+  // for a browser with no session, or the setup and sign-in screens could never render. So
+  // every file route registered in this scope is marked `static` (no session, no database);
+  // all data stays under /api behind the default guard.
+  const webDistDir = config.webDistDir;
+  if (webDistDir && existsSync(path.join(webDistDir, "index.html"))) {
+    await app.register(async (ui) => {
+      ui.addHook("onRoute", (route) => {
+        route.config = { ...route.config, auth: "static" };
+      });
+      // wildcard: false registers one exact route per file found at boot; nothing else is reachable.
+      await ui.register(fastifyStatic, { root: webDistDir, wildcard: false, index: false });
+      ui.setNotFoundHandler(async (request, reply) => {
+        if (request.method === "GET" && !request.url.startsWith("/api/")) return reply.sendFile("index.html");
+        return reply.status(404).send({ error: "Not found", code: "not_found" });
+      });
     });
   } else {
     app.setNotFoundHandler(async (_request, reply) => reply.status(404).send({ error: "Not found", code: "not_found" }));

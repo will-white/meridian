@@ -2,12 +2,13 @@ import { and, desc, eq, or, sql } from "drizzle-orm";
 import type { AuditAction, AuditEntity } from "@meridian/shared";
 import type { DbOrTx } from "../index.js";
 import { auditLog, user } from "../schema/index.js";
+import { decodeCursor, encodeCursor } from "./queryText.js";
 
 /**
  * Audit log for plan, category, group, goal, recurring, rule and settings edits
  * (spec: Security — edits keep history), plus the typed error every Phase 2
- * service throws. This module has no service dependencies, so every other
- * Phase 2 service can import from it without a cycle.
+ * service throws. This module has no service dependencies (queryText.ts is
+ * a leaf), so every other Phase 2 service can import from it without a cycle.
  */
 
 /** A service-level failure the API maps 1:1 onto an HTTP status and error code. */
@@ -111,24 +112,16 @@ export async function writeAudit(tx: DbOrTx, entry: AuditEntry): Promise<boolean
   return true;
 }
 
-function decodeCursor(cursor: string): { at: string; id: string } | undefined {
-  try {
-    const raw = Buffer.from(cursor, "base64url").toString("utf8");
-    const i = raw.lastIndexOf("|");
-    if (i <= 0) return undefined;
-    return { at: raw.slice(0, i), id: raw.slice(i + 1) };
-  } catch {
-    return undefined;
-  }
-}
-
-function encodeCursor(at: string, id: string): string {
-  return Buffer.from(`${at}|${id}`, "utf8").toString("base64url");
+/** The (at, id) a page ended on; a cursor this server did not issue is a 400, never a query. */
+function auditCursor(cursor: string): { at: string; id: string } {
+  const fields = decodeCursor(cursor, ["timestamp", "uuid"]);
+  if (!fields) throw new PlanError(400, "invalid_cursor", "That page marker is not valid; reload the list");
+  return { at: fields[0]!, id: fields[1]! };
 }
 
 /** Newest first, keyset-paginated on (at, id). The cursor carries the full-precision timestamp text. */
 export async function listAudit(db: DbOrTx, query: ListAuditQuery): Promise<{ items: AuditRow[]; nextCursor: string | null }> {
-  const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
+  const cursor = query.cursor !== undefined ? auditCursor(query.cursor) : undefined;
   const limit = Math.max(1, Math.min(query.limit, 200));
   const rows = await db
     .select({
@@ -166,6 +159,6 @@ export async function listAudit(db: DbOrTx, query: ListAuditQuery): Promise<{ it
   const last = page[page.length - 1];
   return {
     items: page.map(({ atText: _atText, ...r }) => r),
-    nextCursor: rows.length > limit && last ? encodeCursor(last.atText, last.id) : null,
+    nextCursor: rows.length > limit && last ? encodeCursor([last.atText, last.id]) : null,
   };
 }
