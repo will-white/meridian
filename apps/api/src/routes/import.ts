@@ -76,6 +76,7 @@ import {
   type TradesCsvMappingInput,
 } from "@meridian/shared";
 import { badRequest, notFound } from "../lib/errors.js";
+import { BODY_LIMIT } from "../lib/limits.js";
 import { toActionFoundView, toMappedPositionView, toMappedTradeView, toPositionsImportResult, toRowErrors, toTradesImportResult } from "../views/investments.js";
 import { auditContext, resolveToday, usePlanErrors } from "./plan.js";
 import { priceProviderConfigured, resolveWithoutCreating } from "./securities.js";
@@ -357,7 +358,7 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
     return out;
   }
 
-  r.post("/import/csv/preview", { schema: { body: CsvPreviewBody, response: { 200: CsvPreviewResponse } } }, async (request) => {
+  r.post("/import/csv/preview", { bodyLimit: BODY_LIMIT.csvImport, schema: { body: CsvPreviewBody, response: { 200: CsvPreviewResponse } } }, async (request) => {
     const rows = parseCsv(request.body.csvText);
     if (rows.length === 0) throw badRequest("The file is empty", "empty_csv");
     let mapping: CsvMappingInput | undefined = request.body.mapping;
@@ -400,7 +401,7 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
     };
   });
 
-  r.post("/import/csv/commit", { schema: { body: CsvCommitBody, response: { 200: ImportResult } } }, async (request) => {
+  r.post("/import/csv/commit", { bodyLimit: BODY_LIMIT.csvImport, schema: { body: CsvCommitBody, response: { 200: ImportResult } } }, async (request) => {
     const [acct] = await app.db.select({ id: account.id }).from(account).where(eq(account.id, request.body.accountId));
     if (!acct) throw notFound("Account not found");
     const rows = parseCsv(request.body.csvText);
@@ -485,7 +486,7 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
     await app.db.update(importLog).set({ status: "error", finishedAt: new Date(), message: (err as Error).message }).where(eq(importLog.id, logId));
   }
 
-  r.post("/import/positions/preview", { schema: { body: PositionsPreviewBody, response: { 200: PositionsPreviewResponse } } }, async (request) => {
+  r.post("/import/positions/preview", { bodyLimit: BODY_LIMIT.csvImport, schema: { body: PositionsPreviewBody, response: { 200: PositionsPreviewResponse } } }, async (request) => {
     const b = request.body;
     const rows = parseRows(b.csvText);
     if (rows.length === 0) throw badRequest("The file is empty", "empty_csv");
@@ -562,7 +563,7 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
    * implied prices of that date and queues the valuation; afterwards the holdings price refresh
    * when a provider is configured.
    */
-  r.post("/import/positions/commit", { schema: { body: PositionsCommitBody, response: { 200: PositionsImportResult } } }, async (request) => {
+  r.post("/import/positions/commit", { bodyLimit: BODY_LIMIT.csvImport, schema: { body: PositionsCommitBody, response: { 200: PositionsImportResult } } }, async (request) => {
     const b = request.body;
     const today = await resolveToday(app, b.today);
     const acct = await loadInvestmentAccount(app.db, b.accountId);
@@ -634,7 +635,7 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  r.post("/import/trades/preview", { schema: { body: TradesPreviewBody, response: { 200: TradesPreviewResponse } } }, async (request) => {
+  r.post("/import/trades/preview", { bodyLimit: BODY_LIMIT.csvImport, schema: { body: TradesPreviewBody, response: { 200: TradesPreviewResponse } } }, async (request) => {
     const b = request.body;
     const rows = parseRows(b.csvText);
     if (rows.length === 0) throw badRequest("The file is empty", "empty_csv");
@@ -697,7 +698,7 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
    * `not_investment_account` mark the log row `error`). A split row without a ratio and a file
    * without readable rows are refused before anything is written.
    */
-  r.post("/import/trades/commit", { schema: { body: TradesCommitBody, response: { 200: TradesImportResult } } }, async (request) => {
+  r.post("/import/trades/commit", { bodyLimit: BODY_LIMIT.csvImport, schema: { body: TradesCommitBody, response: { 200: TradesImportResult } } }, async (request) => {
     const b = request.body;
     const today = await resolveToday(app, b.today);
     const acct = await loadInvestmentAccount(app.db, b.accountId);

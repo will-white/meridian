@@ -109,7 +109,11 @@ describe.skipIf(!TEST_DATABASE_URL)("audit log and household settings", () => {
     const all = await listAudit(t.db, { entity: "month_plan", limit: 10 });
     expect(seen).toEqual(all.items.map((e) => e.id));
     expect(all.items.map((e) => (e.after as { i: number }).i)).toEqual([4, 3, 2, 1, 0]);
-    expect((await listAudit(t.db, { entity: "month_plan", limit: 2, cursor: "not-a-cursor" })).items).toHaveLength(2);
+    // A cursor this server did not issue is refused, never run as a query (and never silently the first page).
+    const forged = Buffer.from("2026-13-45 00:00:00+00|not-a-uuid", "utf8").toString("base64url");
+    for (const cursor of ["not-a-cursor", forged]) {
+      await expect(listAudit(t.db, { entity: "month_plan", limit: 2, cursor })).rejects.toMatchObject({ name: "PlanError", status: 400, code: "invalid_cursor" });
+    }
   });
 
   it("updates settings with an audit row and rejects bad values", async () => {

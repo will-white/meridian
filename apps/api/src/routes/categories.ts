@@ -4,6 +4,7 @@ import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import {
   alert,
+  containsPattern,
   createCategory,
   createCategoryGroup,
   deleteCategory,
@@ -124,7 +125,7 @@ export async function categoryRoutes(app: FastifyInstance): Promise<void> {
     app.db
       .select(payeeSelect)
       .from(payee)
-      .where(request.query.q ? sql`${payee.name} ilike ${`%${request.query.q}%`}` : undefined)
+      .where(request.query.q ? sql`${payee.name} ilike ${containsPattern(request.query.q)}` : undefined)
       .orderBy(asc(payee.name))
       .limit(500),
   );

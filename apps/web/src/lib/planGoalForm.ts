@@ -1,6 +1,6 @@
 import { formatCents } from "@meridian/shared";
 import type { GoalStatus, GoalView } from "@meridian/shared";
-import { parseAmountInput } from "./plan.js";
+import { monthLabel, parseAmountInput } from "./plan.js";
 
 /** Wire shape of POST/PATCH /goals (the CreateGoalBody / UpdateGoalBody fields the form uses). */
 export interface GoalBody {
@@ -112,4 +112,14 @@ export function linkedAccountOptions(
     if (!holder.has(g.linkedAccountId)) holder.set(g.linkedAccountId, g.name);
   }
   return accounts.map((a) => ({ id: a.id, name: a.name, takenBy: holder.get(a.id) ?? null }));
+}
+
+/**
+ * The projection part of a goal's "contributing $X/mo" line: the projected month, or why
+ * there is none (no contribution, or one too small to reach the target before 2200).
+ */
+export function goalProjectionText(goal: Pick<GoalView, "monthlyContributionCents" | "progress">, done: boolean): string {
+  if (done) return "";
+  if (goal.progress.projectedCompletionMonth) return ` · projected ${monthLabel(goal.progress.projectedCompletionMonth)}`;
+  return goal.monthlyContributionCents === "0" ? " · no projection without a contribution" : " · not reached before 2200 at this pace";
 }

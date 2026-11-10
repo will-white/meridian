@@ -36,6 +36,7 @@ import {
 import { PlanError, writeAudit, type AuditContext } from "./audit.js";
 import { fixed8FromDb, fixed8ToDb } from "./decimalDb.js";
 import { getPrice, latestPrices, requestPriceRefresh, upsertPrices, type LatestPriceRecord, type PriceRecord } from "./prices.js";
+import { containsPattern } from "./queryText.js";
 
 /**
  * The security master (imports design §3.2 under plan decisions 3, 4, 10 and 17; seams C39,
@@ -468,7 +469,7 @@ export async function getSecurity(db: DbOrTx, id: string): Promise<SecurityRecor
 /** Securities sorted by ticker (ticker-less rows by name after them); archived hidden unless asked. */
 export async function listSecurities(db: DbOrTx, query: SecurityListQuery = {}): Promise<SecurityRecord[]> {
   const q = query.q ? sanitizeText(query.q, 100) : "";
-  const pattern = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
+  const pattern = containsPattern(q);
   const rows = await db
     .select()
     .from(security)

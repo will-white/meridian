@@ -17,12 +17,20 @@ import {
   TransactionSource,
 } from "./enums.js";
 import { RuleActions, RuleConditions } from "./rules.js";
+import { CentsInput, CentsString, IsoDateInput, IsoDateString, MAX_LIST_ITEMS, MAX_SPLIT_TERM, MonthInput, MonthString, NonNegCentsInput, NonNegCentsString } from "./wire.js";
 
-/** Request and response contracts shared by the API and the web app. Cents are decimal strings. */
+/**
+ * Request and response contracts shared by the API and the web app. Cents are decimal strings.
+ * The primitive shapes live in wire.ts: responses use the loose `CentsString`, `IsoDateString`
+ * and `MonthString`; everything a caller sends uses the bounded `CentsInput`, `IsoDateInput`
+ * and `MonthInput` (the API refuses to register a route whose request contract does not).
+ */
 
-export const CentsString = z.string().regex(/^-?\d+$/, "cents as an integer string");
-export const IsoDateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD");
 export const UuidParams = z.object({ id: z.string().uuid() });
+/** A CSV upload is at most 10,000,000 characters, so no row index is larger. */
+const MAX_CSV_ROWS = 10_000_000;
+/** One side of a split ratio (new:old). */
+const SplitTerm = z.number().int().min(1).max(MAX_SPLIT_TERM);
 export const OkResponse = z.object({ ok: z.literal(true) });
 export const ErrorResponse = z.object({ error: z.string(), code: z.string().optional() });
 /** Query-string booleans: "true"/"1" and "false"/"0" only. (z.coerce.boolean would read "false" as true.) */
@@ -71,7 +79,7 @@ export const TradesCsvMapping = z
     price: z.object({ column: ColumnRef }).optional(),
     amount: z.object({ column: ColumnRef, invert: z.boolean().default(false) }).optional(),
     /** Commission and fee columns are summed (Fidelity has both). */
-    fee: z.object({ columns: z.array(ColumnRef).min(1) }).optional(),
+    fee: z.object({ columns: z.array(ColumnRef).min(1).max(10) }).optional(),
     /** False when the amount column is the principal (price × quantity) and fees are separate. */
     amountIncludesFees: z.boolean().default(true),
     /** How a reinvest-looking row with a quantity is read (plan decision 6): a purchase row only, or a dividend plus a purchase. */
@@ -207,7 +215,7 @@ export const UpdateAccountBody = z.object({
   taxTreatment: TaxTreatment.optional(),
   onBudget: z.boolean().optional(),
   closed: z.boolean().optional(),
-  lowBalanceThresholdCents: CentsString.nullable().optional(),
+  lowBalanceThresholdCents: CentsInput.nullable().optional(),
   paymentDay: z.number().int().min(1).max(31).nullable().optional(),
   paymentFromAccountId: z.string().uuid().nullable().optional(),
   statementDay: z.number().int().min(1).max(31).nullable().optional(),
@@ -220,7 +228,7 @@ export const CreateManualAccountBody = z.object({
   name: z.string().min(1).max(100),
   type: AccountType,
   taxTreatment: TaxTreatment.optional(),
-  balanceCents: CentsString.optional(),
+  balanceCents: CentsInput.optional(),
 });
 
 // ---- Categories, payees, tags ----
@@ -283,8 +291,8 @@ export const TransactionQuery = z.object({
   categoryId: z.string().uuid().optional(),
   uncategorized: QueryBoolean.optional(),
   transfers: z.enum(["include", "exclude", "only"]).default("include"),
-  from: IsoDateString.optional(),
-  to: IsoDateString.optional(),
+  from: IsoDateInput.optional(),
+  to: IsoDateInput.optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
   /** Opaque cursor from the previous page. */
   cursor: z.string().optional(),
@@ -303,7 +311,7 @@ export const UpdateTransactionBody = z.object({
   payeeName: z.string().min(1).max(200).optional(),
   notes: z.string().max(2000).nullable().optional(),
   isTransfer: z.boolean().optional(),
-  tags: z.array(z.string().min(1).max(50)).optional(),
+  tags: z.array(z.string().min(1).max(50)).max(50).optional(),
 });
 /** Replace a transaction's split lines: two or more lines that add up to its amount, or none to remove the split. */
 export const SetTransactionSplitsBody = z.object({
@@ -311,7 +319,7 @@ export const SetTransactionSplitsBody = z.object({
     .array(
       z.object({
         categoryId: z.string().uuid(),
-        amountCents: CentsString,
+        amountCents: CentsInput,
         memo: z.string().max(200).nullable().optional(),
       }),
     )
@@ -320,8 +328,8 @@ export const SetTransactionSplitsBody = z.object({
 export type SetTransactionSplitsBody = z.infer<typeof SetTransactionSplitsBody>;
 export const CreateManualTransactionBody = z.object({
   accountId: z.string().uuid(),
-  date: IsoDateString,
-  amountCents: CentsString,
+  date: IsoDateInput,
+  amountCents: CentsInput,
   payeeName: z.string().min(1).max(200),
   categoryId: z.string().uuid().nullable().optional(),
   notes: z.string().max(2000).optional(),
@@ -352,7 +360,7 @@ export const UpdateRuleBody = z.object({
   conditions: RuleConditions.optional(),
   actions: RuleActions.optional(),
 });
-export const ReorderRulesBody = z.object({ ids: z.array(z.string().uuid()).min(1) });
+export const ReorderRulesBody = z.object({ ids: z.array(z.string().uuid()).min(1).max(MAX_LIST_ITEMS) });
 export const RunRulesBody = z.object({ scope: z.enum(["uncategorized", "all"]) });
 export const RunRulesResponse = z.object({ examined: z.number().int(), changed: z.number().int() });
 export type RunRulesResponse = z.infer<typeof RunRulesResponse>;
@@ -421,9 +429,7 @@ export type JobView = z.infer<typeof JobView>;
 // =====================================================================
 import { AlertKind, AmountMode, AuditAction, AuditEntity, Cadence, GoalStatus, PlannedSource, RecurringSource, RecurringStatus, RolloverMode } from "./enums.js";
 
-export const MonthString = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "YYYY-MM");
-export const NonNegCentsString = z.string().regex(/^\d+$/, "cents as a non-negative integer string");
-export const TodayQuery = z.object({ today: IsoDateString.optional() });
+export const TodayQuery = z.object({ today: IsoDateInput.optional() });
 
 // ---- Settings ----
 export const HouseholdSettingView = z.object({
@@ -445,9 +451,9 @@ export const HouseholdSettingView = z.object({
 });
 export type HouseholdSettingView = z.infer<typeof HouseholdSettingView>;
 export const UpdateHouseholdSettingBody = z.object({
-  planStartMonth: MonthString.optional(),
+  planStartMonth: MonthInput.optional(),
   zeroBased: z.boolean().optional(),
-  lowBalanceThresholdCents: CentsString.optional(),
+  lowBalanceThresholdCents: CentsInput.optional(),
   primaryAccountId: z.string().uuid().nullable().optional(),
   projectionDefaultDays: z.number().int().min(1).max(366).optional(),
   timezone: z.string().min(1).max(64).optional(),
@@ -455,7 +461,7 @@ export const UpdateHouseholdSettingBody = z.object({
   benchmarkSecurityId: z.string().uuid().nullable().optional(),
   investmentIncomeCategoryId: z.string().uuid().nullable().optional(),
   rebalanceBandBp: z.number().int().min(0).max(5000).optional(),
-  rebalanceMinTradeCents: NonNegCentsString.optional(),
+  rebalanceMinTradeCents: NonNegCentsInput.optional(),
 });
 
 // ---- Categories and groups (Phase 2 extensions) ----
@@ -470,7 +476,7 @@ export const CategoryGroupView = z.object({
 export type CategoryGroupView = z.infer<typeof CategoryGroupView>;
 export const CreateCategoryGroupBody = z.object({ name: z.string().min(1).max(100), bucket: Bucket });
 export const UpdateCategoryGroupBody = z.object({ name: z.string().min(1).max(100).optional(), hidden: z.boolean().optional() });
-export const ReorderCategoryGroupsBody = z.object({ bucket: Bucket, ids: z.array(z.string().uuid()).min(1) });
+export const ReorderCategoryGroupsBody = z.object({ bucket: Bucket, ids: z.array(z.string().uuid()).min(1).max(MAX_LIST_ITEMS) });
 
 /** Extended Phase 2 category view (replaces the Phase 1 shape; superset). */
 export const CategoryDetailView = CategoryView.extend({
@@ -488,12 +494,12 @@ export const UpdateCategoryBodyV2 = z.object({
   hidden: z.boolean().optional(),
   groupId: z.string().uuid().nullable().optional(),
   rolloverMode: RolloverMode.optional(),
-  rolloverFromMonth: MonthString.nullable().optional(),
+  rolloverFromMonth: MonthInput.nullable().optional(),
 });
-export const ReorderCategoriesBody = z.object({ groupId: z.string().uuid().nullable(), ids: z.array(z.string().uuid()).min(1) });
+export const ReorderCategoriesBody = z.object({ groupId: z.string().uuid().nullable(), ids: z.array(z.string().uuid()).min(1).max(MAX_LIST_ITEMS) });
 
 // ---- Plan grid ----
-export const PlanQuery = z.object({ from: MonthString.optional(), to: MonthString.optional(), today: IsoDateString.optional() });
+export const PlanQuery = z.object({ from: MonthInput.optional(), to: MonthInput.optional(), today: IsoDateInput.optional() });
 export type PlanQuery = z.infer<typeof PlanQuery>;
 export const PlanCellView = z.object({
   plannedCents: NonNegCentsString,
@@ -595,13 +601,13 @@ export type PlanResponse = z.infer<typeof PlanResponse>;
 
 export const PlanCellEdit = z
   .object({
-    month: MonthString,
+    month: MonthInput,
     categoryId: z.string().uuid(),
     /** Explicit planned value; null clears it (the auto value shows through). */
-    plannedCents: NonNegCentsString.nullable().optional(),
+    plannedCents: NonNegCentsInput.nullable().optional(),
     source: z.enum(["manual", "average"]).default("manual"),
     rolloverMode: RolloverMode.nullable().optional(),
-    carriedInOverrideCents: CentsString.nullable().optional(),
+    carriedInOverrideCents: CentsInput.nullable().optional(),
     note: z.string().max(500).nullable().optional(),
   })
   .refine((e) => e.plannedCents !== undefined || e.rolloverMode !== undefined || e.carriedInOverrideCents !== undefined || e.note !== undefined, {
@@ -611,21 +617,21 @@ export type PlanCellEdit = z.infer<typeof PlanCellEdit>;
 export const SetPlanCellsBody = z.object({
   edits: z.array(PlanCellEdit).min(1).max(600),
   /** When given, the response carries the fresh plan for this range. */
-  range: z.object({ from: MonthString, to: MonthString }).optional(),
-  today: IsoDateString.optional(),
+  range: z.object({ from: MonthInput, to: MonthInput }).optional(),
+  today: IsoDateInput.optional(),
 });
 export const SetPlanCellsResponse = z.object({ changed: z.number().int(), batchId: z.string().uuid(), plan: PlanResponse.nullable() });
 export const PlanAveragesQuery = z.object({
   months: z.coerce.number().pipe(z.union([z.literal(3), z.literal(6), z.literal(12)])),
-  asOf: MonthString.optional(),
-  today: IsoDateString.optional(),
+  asOf: MonthInput.optional(),
+  today: IsoDateInput.optional(),
 });
 export const PlanAveragesResponse = z.object({
   window: z.object({ from: MonthString, to: MonthString, monthsWithData: z.number().int() }),
   averages: z.array(z.object({ categoryId: z.string().uuid(), averageCents: NonNegCentsString })),
 });
 export type PlanAveragesResponse = z.infer<typeof PlanAveragesResponse>;
-export const CloseMonthBody = z.object({ through: MonthString.optional() });
+export const CloseMonthBody = z.object({ through: MonthInput.optional() });
 export const CloseMonthResponse = z.object({ inserted: z.number().int(), through: MonthString });
 
 // ---- Goals ----
@@ -641,22 +647,22 @@ export const CreateGoalBody = z.object({
   /** Existing savings-bucket category without a goal, or create one by name. */
   categoryId: z.string().uuid().optional(),
   newCategory: z.object({ name: z.string().min(1).max(100), groupId: z.string().uuid().optional() }).optional(),
-  targetCents: NonNegCentsString,
-  targetDate: IsoDateString.nullable().optional(),
+  targetCents: NonNegCentsInput,
+  targetDate: IsoDateInput.nullable().optional(),
   linkedAccountId: z.string().uuid().nullable().optional(),
-  monthlyContributionCents: NonNegCentsString.optional(),
-  startMonth: MonthString.optional(),
-  startingCents: CentsString.optional(),
+  monthlyContributionCents: NonNegCentsInput.optional(),
+  startMonth: MonthInput.optional(),
+  startingCents: CentsInput.optional(),
 });
 export const UpdateGoalBody = z.object({
   name: z.string().min(1).max(100).optional(),
   categoryId: z.string().uuid().optional(),
-  targetCents: NonNegCentsString.optional(),
-  targetDate: IsoDateString.nullable().optional(),
+  targetCents: NonNegCentsInput.optional(),
+  targetDate: IsoDateInput.nullable().optional(),
   linkedAccountId: z.string().uuid().nullable().optional(),
-  monthlyContributionCents: NonNegCentsString.optional(),
-  startMonth: MonthString.optional(),
-  startingCents: CentsString.optional(),
+  monthlyContributionCents: NonNegCentsInput.optional(),
+  startMonth: MonthInput.optional(),
+  startingCents: CentsInput.optional(),
   status: GoalStatus.optional(),
 });
 
@@ -737,7 +743,7 @@ const ScheduleInput = {
   anchorDay: z.number().int().min(1).max(31).nullable().optional(),
   anchorDay2: z.number().int().min(1).max(31).nullable().optional(),
   anchorMonth: z.number().int().min(1).max(12).nullable().optional(),
-  anchorDate: IsoDateString.nullable().optional(),
+  anchorDate: IsoDateInput.nullable().optional(),
 };
 export const CreateRecurringBody = z.object({
   name: z.string().min(1).max(200),
@@ -747,8 +753,8 @@ export const CreateRecurringBody = z.object({
   accountId: z.string().uuid(),
   transferAccountId: z.string().uuid().nullable().optional(),
   ...ScheduleInput,
-  expectedCents: CentsString,
-  toleranceCents: NonNegCentsString.optional(),
+  expectedCents: CentsInput,
+  toleranceCents: NonNegCentsInput.optional(),
   amountMode: AmountMode.optional(),
   notes: z.string().max(2000).optional(),
 });
@@ -761,9 +767,9 @@ export const UpdateRecurringBody = z.object({
   anchorDay: z.number().int().min(1).max(31).nullable().optional(),
   anchorDay2: z.number().int().min(1).max(31).nullable().optional(),
   anchorMonth: z.number().int().min(1).max(12).nullable().optional(),
-  anchorDate: IsoDateString.nullable().optional(),
-  expectedCents: CentsString.optional(),
-  toleranceCents: NonNegCentsString.optional(),
+  anchorDate: IsoDateInput.nullable().optional(),
+  expectedCents: CentsInput.optional(),
+  toleranceCents: NonNegCentsInput.optional(),
   amountMode: AmountMode.optional(),
   notes: z.string().max(2000).nullable().optional(),
   status: z.enum(["active", "paused", "cancelled", "dismissed"]).optional(),
@@ -820,21 +826,21 @@ export const DismissAllAlertsBody = z.object({ kind: AlertKind.optional() });
 
 // ---- Cash flow ----
 export const CashFlowWhatIfBody = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("skipOccurrence"), recurringId: z.string().uuid(), occurrenceDate: IsoDateString }),
+  z.object({ kind: z.literal("skipOccurrence"), recurringId: z.string().uuid(), occurrenceDate: IsoDateInput }),
   z.object({
     kind: z.literal("moveOccurrence"),
     recurringId: z.string().uuid(),
     shiftDays: z.number().int().min(-366).max(366).refine((n) => n !== 0, "shiftDays must not be 0"),
-    occurrenceDate: IsoDateString.optional(),
+    occurrenceDate: IsoDateInput.optional(),
   }),
-  z.object({ kind: z.literal("oneTime"), date: IsoDateString, amountCents: CentsString, accountId: z.string().uuid(), label: z.string().max(100).optional() }),
+  z.object({ kind: z.literal("oneTime"), date: IsoDateInput, amountCents: CentsInput, accountId: z.string().uuid(), label: z.string().max(100).optional() }),
 ]);
 export type CashFlowWhatIfBody = z.infer<typeof CashFlowWhatIfBody>;
 export const CashFlowProjectionBody = z.object({
-  today: IsoDateString.optional(),
+  today: IsoDateInput.optional(),
   horizonDays: z.number().int().min(1).max(366).optional(),
-  thresholdCents: CentsString.optional(),
-  accountIds: z.array(z.string().uuid()).optional(),
+  thresholdCents: CentsInput.optional(),
+  accountIds: z.array(z.string().uuid()).max(500).optional(),
   whatIfs: z.array(CashFlowWhatIfBody).max(50).default([]),
 });
 export const CashFlowEventView = z.object({
@@ -987,7 +993,8 @@ export type UpdateGoalBody = z.infer<typeof UpdateGoalBody>;
 // (docs/design/phase-3/*.md) under the reconciled names of docs/phase-3-plan.md
 // and seams.md: cents as CentsString, quantities and prices as Fixed8String /
 // NonNegFixed8String (decimal.ts), rates as JSON numbers, dates as IsoDateString,
-// months as MonthString; `asOf` is the date parameter and `accountIds` a
+// months as MonthString (in requests: the bounded CentsInput, IsoDateInput and
+// MonthInput of wire.ts); `asOf` is the date parameter and `accountIds` a
 // comma-separated list (QueryUuidList) on every GET; the engine's
 // POST /api/investments/performance keeps its body array (readOnly). The fragments
 // the Phase 1/2 contracts reference (AccountInvestmentView, the CSV mappings,
@@ -1034,9 +1041,9 @@ export const QueryUuidList = z
   .transform((s) => s.split(",").map((v) => v.trim()).filter((v) => v.length > 0))
   .pipe(z.array(z.string().uuid()).min(1).max(50));
 /** `asOf ≤ today` else 400 `validation`. */
-export const AsOfQuery = TodayQuery.extend({ asOf: IsoDateString.optional(), includeClosed: QueryBoolean.optional() });
+export const AsOfQuery = TodayQuery.extend({ asOf: IsoDateInput.optional(), includeClosed: QueryBoolean.optional() });
 /** `from`/`to` apply to `custom` only; `from < to ≤ today`. */
-export const InvestmentPeriodQuery = AsOfQuery.extend({ period: InvestmentPeriod.default("1y"), from: IsoDateString.optional(), to: IsoDateString.optional() });
+export const InvestmentPeriodQuery = AsOfQuery.extend({ period: InvestmentPeriod.default("1y"), from: IsoDateInput.optional(), to: IsoDateInput.optional() });
 export const PeriodView = z.object({ kind: InvestmentPeriod, from: IsoDateString, to: IsoDateString, days: z.number().int(), partial: z.boolean(), note: z.string().nullable() });
 /** The aggregate price freshness of an account or the portfolio. */
 export const AggregatePriceStatus = z.enum(["current", "stale", "implied", "n/a"]);
@@ -1139,10 +1146,10 @@ export const SecurityChoice = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("create"), security: SecuritySuggestion }),
 ]);
 export const RowChoice = z.object({
-  rowIndex: z.number().int(),
+  rowIndex: z.number().int().min(0).max(MAX_CSV_ROWS),
   security: SecurityChoice.optional(),
   /** A split ratio the file did not state (new:old). */
-  split: z.object({ num: z.number().int().min(1), den: z.number().int().min(1) }).optional(),
+  split: z.object({ num: SplitTerm, den: SplitTerm }).optional(),
 });
 export const PreviewSecurityRef = z.object({
   id: z.string().uuid().nullable(),
@@ -1161,9 +1168,9 @@ export const PositionsPreviewBody = z.object({
   accountId: z.string().uuid(),
   mapping: PositionsCsvMapping.optional(),
   profileId: z.string().uuid().optional(),
-  asOfDate: IsoDateString.optional(),
+  asOfDate: IsoDateInput.optional(),
   accountFilterValue: z.string().max(100).optional(),
-  choices: z.array(RowChoice).default([]),
+  choices: z.array(RowChoice).max(MAX_LIST_ITEMS).default([]),
 });
 export const MappedPositionView = z.object({
   rowIndex: z.number().int(),
@@ -1201,9 +1208,9 @@ export const PositionsCommitBody = PositionsPreviewBody.extend({
   mapping: PositionsCsvMapping,
   setBalance: z.boolean().optional(),
   /** The statement's total; the balance row = statementTotalCents ?? Σ positions (seams C40). */
-  statementTotalCents: CentsString.optional(),
+  statementTotalCents: CentsInput.optional(),
   saveProfile: SaveProfile.optional(),
-  today: IsoDateString.optional(),
+  today: IsoDateInput.optional(),
 });
 export const PositionsImportResult = z.object({
   importLogId: z.string().uuid(),
@@ -1230,7 +1237,7 @@ export const TradesPreviewBody = z.object({
   mapping: TradesCsvMapping.optional(),
   profileId: z.string().uuid().optional(),
   accountFilterValue: z.string().max(100).optional(),
-  choices: z.array(RowChoice).default([]),
+  choices: z.array(RowChoice).max(MAX_LIST_ITEMS).default([]),
 });
 export const LedgerMatchView = z.object({ ledgerTransactionId: z.string().uuid(), date: IsoDateString });
 export const MappedTradeView = z.object({
@@ -1281,7 +1288,7 @@ export const TradesPreviewResponse = z.object({
   errors: z.array(RowError),
   skipped: z.array(z.object({ rowIndex: z.number().int(), reason: z.string(), text: z.string() })),
 });
-export const TradesCommitBody = TradesPreviewBody.extend({ mapping: TradesCsvMapping, saveProfile: SaveProfile.optional(), today: IsoDateString.optional() });
+export const TradesCommitBody = TradesPreviewBody.extend({ mapping: TradesCsvMapping, saveProfile: SaveProfile.optional(), today: IsoDateInput.optional() });
 export const TradesImportResult = z.object({
   importLogId: z.string().uuid(),
   created: z.number().int(),
@@ -1322,25 +1329,25 @@ export const HoldingSnapshotView = z.object({
   updatedAt: z.string(),
 });
 export const SnapshotSummaryView = z.object({ date: IsoDateString, source: HoldingSource, positions: z.number().int(), totalValueCents: CentsString });
-export const SnapshotDateParams = z.object({ id: z.string().uuid(), date: IsoDateString });
+export const SnapshotDateParams = z.object({ id: z.string().uuid(), date: IsoDateInput });
 /** `GET /api/investments/accounts/:id/positions`: the latest snapshot on or before `asOf` (default today). */
-export const PositionsQuery = TodayQuery.extend({ asOf: IsoDateString.optional() });
+export const PositionsQuery = TodayQuery.extend({ asOf: IsoDateInput.optional() });
 export const ManualPositionInput = z
   .object({
     security: SecurityChoice,
     quantity: QuantityString.nullable().optional(),
     price: PriceString.optional(),
-    valueCents: CentsString.optional(),
-    costBasisCents: CentsString.nullable().optional(),
+    valueCents: CentsInput.optional(),
+    costBasisCents: CentsInput.nullable().optional(),
   })
   .refine((p) => p.price !== undefined || p.valueCents !== undefined, "price or valueCents required")
   .refine((p) => p.price === undefined || (p.quantity !== undefined && p.quantity !== null), "price needs a quantity");
 export const ManualPositionsBody = z.object({
-  asOfDate: IsoDateString,
+  asOfDate: IsoDateInput,
   setBalance: z.boolean().optional(),
-  statementTotalCents: CentsString.optional(),
+  statementTotalCents: CentsInput.optional(),
   positions: z.array(ManualPositionInput).min(1).max(500),
-  today: IsoDateString.optional(),
+  today: IsoDateInput.optional(),
 });
 
 // ---- Investment transactions (imports design §4; routes/investmentTxns.ts) ----
@@ -1387,14 +1394,14 @@ export const InvestmentTxnQuery = z.object({
   accountId: z.string().uuid().optional(),
   securityId: z.string().uuid().optional(),
   type: InvestmentTxnType.optional(),
-  from: IsoDateString.optional(),
-  to: IsoDateString.optional(),
+  from: IsoDateInput.optional(),
+  to: IsoDateInput.optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
   /** Keyset cursor on (date, sequence, id) descending. */
   cursor: z.string().optional(),
 });
 export const InvestmentTxnList = z.object({ items: z.array(InvestmentTxnView), nextCursor: z.string().nullable() });
-const TradeBase = { accountId: z.string().uuid(), date: IsoDateString, memo: z.string().max(2000).optional(), today: IsoDateString.optional() };
+const TradeBase = { accountId: z.string().uuid(), date: IsoDateInput, memo: z.string().max(2000).optional(), today: IsoDateInput.optional() };
 export const CreateInvestmentTxnBody = z.discriminatedUnion("type", [
   z.object({
     ...TradeBase,
@@ -1402,8 +1409,8 @@ export const CreateInvestmentTxnBody = z.discriminatedUnion("type", [
     securityId: z.string().uuid(),
     quantity: PositiveFixed8String,
     price: PriceString,
-    amountCents: CentsString.optional(),
-    feeCents: NonNegCentsString.optional(),
+    amountCents: CentsInput.optional(),
+    feeCents: NonNegCentsInput.optional(),
   }),
   z.object({
     ...TradeBase,
@@ -1411,18 +1418,18 @@ export const CreateInvestmentTxnBody = z.discriminatedUnion("type", [
     securityId: z.string().uuid(),
     quantity: PositiveFixed8String,
     price: PriceString,
-    amountCents: CentsString.optional(),
-    feeCents: NonNegCentsString.optional(),
+    amountCents: CentsInput.optional(),
+    feeCents: NonNegCentsInput.optional(),
     lotPicks: LotPicks.optional(),
   }),
-  z.object({ ...TradeBase, type: z.enum(["dividend", "interest"]), securityId: z.string().uuid().nullable().optional(), amountCents: CentsString }),
-  z.object({ ...TradeBase, type: z.literal("fee"), securityId: z.string().uuid().nullable().optional(), amountCents: CentsString }),
+  z.object({ ...TradeBase, type: z.enum(["dividend", "interest"]), securityId: z.string().uuid().nullable().optional(), amountCents: CentsInput }),
+  z.object({ ...TradeBase, type: z.literal("fee"), securityId: z.string().uuid().nullable().optional(), amountCents: CentsInput }),
   z.object({
     ...TradeBase,
     type: z.literal("split"),
     securityId: z.string().uuid(),
-    splitNum: z.number().int().min(1),
-    splitDen: z.number().int().min(1),
+    splitNum: SplitTerm,
+    splitDen: SplitTerm,
     quantity: PriceString.optional(),
   }),
   z.object({
@@ -1432,32 +1439,32 @@ export const CreateInvestmentTxnBody = z.discriminatedUnion("type", [
     /** Null for a cash transfer. */
     securityId: z.string().uuid().nullable().optional(),
     quantity: PositiveFixed8String.optional(),
-    amountCents: CentsString.optional(),
+    amountCents: CentsInput.optional(),
     /** Another investment account: the mirror leg is inserted with the same transfer group. */
     counterpartyAccountId: z.string().uuid().optional(),
-    costBasisCents: NonNegCentsString.nullable().optional(),
-    acquiredDate: IsoDateString.nullable().optional(),
+    costBasisCents: NonNegCentsInput.nullable().optional(),
+    acquiredDate: IsoDateInput.nullable().optional(),
     lotPicks: LotPicks.optional(),
   }),
 ]);
 export const UpdateInvestmentTxnBody = z.object({
   type: InvestmentTxnType.optional(),
   transferDirection: TransferDirection.nullable().optional(),
-  date: IsoDateString.optional(),
+  date: IsoDateInput.optional(),
   securityId: z.string().uuid().nullable().optional(),
   quantity: PriceString.nullable().optional(),
   price: PriceString.nullable().optional(),
-  amountCents: CentsString.optional(),
-  feeCents: NonNegCentsString.optional(),
-  splitNum: z.number().int().min(1).nullable().optional(),
-  splitDen: z.number().int().min(1).nullable().optional(),
-  costBasisCents: NonNegCentsString.nullable().optional(),
-  acquiredDate: IsoDateString.nullable().optional(),
+  amountCents: CentsInput.optional(),
+  feeCents: NonNegCentsInput.optional(),
+  splitNum: SplitTerm.nullable().optional(),
+  splitDen: SplitTerm.nullable().optional(),
+  costBasisCents: NonNegCentsInput.nullable().optional(),
+  acquiredDate: IsoDateInput.nullable().optional(),
   ledgerTransactionId: z.string().uuid().nullable().optional(),
   /** `null` unpairs both transfer legs. Lot picks are edited at `PUT /api/investments/txns/:id/lot-picks`. */
   transferGroupId: z.null().optional(),
   memo: z.string().max(2000).nullable().optional(),
-  today: IsoDateString.optional(),
+  today: IsoDateInput.optional(),
 });
 export const DeleteInvestmentTxnQuery = z.object({ deleteGroup: QueryBoolean.optional() });
 export const CreateInvestmentTxnResponse = z.object({ items: z.array(InvestmentTxnView), batchId: z.string().uuid() });
@@ -1472,13 +1479,13 @@ export const SetAllocationTargetsBody = z
 
 // ---- Lots and performance (lots design §4.2; routes/performance.ts) ----
 export const PerformanceRequestBody = z.object({
-  today: IsoDateString.optional(),
+  today: IsoDateInput.optional(),
   /** Default: since inception (the day before the earliest txn, flow or valuation of the selected accounts). */
-  from: IsoDateString.optional(),
+  from: IsoDateInput.optional(),
   /** Default: today; `from < to ≤ today`. */
-  to: IsoDateString.optional(),
+  to: IsoDateInput.optional(),
   /** Holdings valuation date; default: `to`. */
-  asOf: IsoDateString.optional(),
+  asOf: IsoDateInput.optional(),
   /** Default: every open investment-type account. */
   accountIds: z.array(z.string().uuid()).max(50).optional(),
   /** Absent → household_setting.benchmark_security_id; null → no benchmark. */
@@ -1714,8 +1721,8 @@ export const PerformanceResponse = z.object({
 export const LotsQuery = z.object({
   accountId: z.string().uuid().optional(),
   securityId: z.string().uuid().optional(),
-  asOf: IsoDateString.optional(),
-  today: IsoDateString.optional(),
+  asOf: IsoDateInput.optional(),
+  today: IsoDateInput.optional(),
   includeClosed: QueryBoolean.default("false"),
 });
 export const LotsAccountView = z.object({
@@ -1727,11 +1734,11 @@ export const LotsAccountView = z.object({
 });
 export const LotsResponse = z.object({ asOf: IsoDateString, lots: z.array(LotView), accounts: z.array(LotsAccountView) });
 export const RealizedGainsQuery = z.object({
-  from: IsoDateString,
-  to: IsoDateString,
+  from: IsoDateInput,
+  to: IsoDateInput,
   accountId: z.string().uuid().optional(),
   securityId: z.string().uuid().optional(),
-  today: IsoDateString.optional(),
+  today: IsoDateInput.optional(),
 });
 export const RealizedGainsResponse = z.object({
   from: IsoDateString,
@@ -1741,7 +1748,7 @@ export const RealizedGainsResponse = z.object({
   disposals: z.array(LotDisposalView),
 });
 /** `PUT /api/investments/txns/:id/lot-picks`: replaces the sale's picks; `[]` clears them. */
-export const SetLotPicksBody = z.object({ picks: z.array(LotPickInput).max(200), today: IsoDateString.optional() });
+export const SetLotPicksBody = z.object({ picks: z.array(LotPickInput).max(200), today: IsoDateInput.optional() });
 export const SetLotPicksResponse = z.object({ picks: z.array(LotPickView), warnings: z.array(EngineWarningView), batchId: z.string().uuid() });
 export const RebuildLotsBody = z.object({ accountId: z.string().uuid().optional() });
 export const RebuildLotsResponse = z.object({ accounts: z.number().int(), lots: z.number().int(), disposals: z.number().int(), warnings: z.array(EngineWarningView) });
@@ -1758,10 +1765,10 @@ export const PriceView = z.object({
   updatedAt: z.string(),
 });
 export const PriceHistoryQuery = z.object({
-  from: IsoDateString.optional(),
-  to: IsoDateString.optional(),
+  from: IsoDateInput.optional(),
+  to: IsoDateInput.optional(),
   limit: z.coerce.number().int().min(1).max(5000).default(400),
-  today: IsoDateString.optional(),
+  today: IsoDateInput.optional(),
 });
 export const PriceHistoryResponse = z.object({
   securityId: z.string().uuid(),
@@ -1774,10 +1781,10 @@ export const PriceHistoryResponse = z.object({
   items: z.array(PriceView),
 });
 export const SecurityIdParams = z.object({ securityId: z.string().uuid() });
-export const PriceParams = z.object({ securityId: z.string().uuid(), date: IsoDateString });
+export const PriceParams = z.object({ securityId: z.string().uuid(), date: IsoDateInput });
 /** `PUT /api/prices/:securityId/:date`: a manual close (`date ≤ today`, never for the cash security). */
-export const SetPriceBody = z.object({ close: NonNegFixed8String, today: IsoDateString.optional() });
-export const RefreshPricesBody = z.object({ securityIds: z.array(z.string().uuid()).max(500).optional(), from: IsoDateString.optional() });
+export const SetPriceBody = z.object({ close: NonNegFixed8String, today: IsoDateInput.optional() });
+export const RefreshPricesBody = z.object({ securityIds: z.array(z.string().uuid()).max(500).optional(), from: IsoDateInput.optional() });
 export const RefreshPricesResponse = z.object({ jobId: z.string().uuid(), created: z.boolean(), movedUp: z.boolean() });
 export const RebuildImpliedPricesResponse = z.object({ written: z.number().int() });
 export const SecurityPriceStatusView = z.object({
@@ -1885,11 +1892,11 @@ export const AccountValuationView = z.object({
   warnings: z.array(z.string()),
 });
 export const ValuationSummaryQuery = TodayQuery.extend({
-  asOf: IsoDateString.optional(),
+  asOf: IsoDateInput.optional(),
   accountIds: QueryUuidList.optional(),
   period: InvestmentPeriod.default("1m"),
   /** The start of a `custom` period. */
-  from: IsoDateString.optional(),
+  from: IsoDateInput.optional(),
 });
 /** Period change, one computation (plan decision 12): change = growth + net flows; growth null with a reason. */
 export const ChangeSummaryView = z.object({
@@ -1926,8 +1933,8 @@ export const ValuationSummaryResponse = z.object({
   accounts: z.array(AccountValuationView),
 });
 export const ValuationSeriesQuery = TodayQuery.extend({
-  from: IsoDateString,
-  to: IsoDateString,
+  from: IsoDateInput,
+  to: IsoDateInput,
   accountIds: QueryUuidList.optional(),
   step: z.enum(["day", "week", "month"]).default("day"),
 });
@@ -1964,18 +1971,18 @@ export const ReconcileRowBody = z
     /** Dollars for the cash row. */
     quantity: Fixed8String,
     price: NonNegFixed8String.optional(),
-    valueCents: CentsString.optional(),
+    valueCents: CentsInput.optional(),
   })
   .refine((r) => r.securityId !== undefined || r.ticker !== undefined || r.isCash, { message: "securityId, ticker or isCash" });
 export const ReconcilePreviewBody = z.object({
   accountId: z.string().uuid(),
-  date: IsoDateString,
+  date: IsoDateInput,
   /** Default: Σ rows. */
-  statementTotalCents: CentsString.optional(),
+  statementTotalCents: CentsInput.optional(),
   rows: z.array(ReconcileRowBody).max(500),
   /** Default RECONCILE_TOLERANCE_CENTS (100). */
-  toleranceCents: NonNegCentsString.optional(),
-  today: IsoDateString.optional(),
+  toleranceCents: NonNegCentsInput.optional(),
+  today: IsoDateInput.optional(),
 });
 export const ReconcileRowView = z.object({
   securityId: z.string().uuid().nullable(),
@@ -2326,8 +2333,8 @@ export const PerformanceView = z.object({
 // Income (plan decision 13)
 export const IncomeQuery = AsOfQuery.extend({
   period: InvestmentPeriod.default("ytd"),
-  from: IsoDateString.optional(),
-  to: IsoDateString.optional(),
+  from: IsoDateInput.optional(),
+  to: IsoDateInput.optional(),
   accountId: z.string().uuid().optional(),
 });
 export const IncomeMonthView = z.object({
@@ -2377,7 +2384,7 @@ export const RunIncomeFeedResponse = z.object({
 });
 
 // Why did it change (views design §3.9; `from < to ≤ today`, at most 5 years)
-export const AccountChangesQuery = TodayQuery.extend({ from: IsoDateString, to: IsoDateString });
+export const AccountChangesQuery = TodayQuery.extend({ from: IsoDateInput, to: IsoDateInput });
 export const HoldingChangeView = z.object({
   securityId: z.string().uuid().nullable(),
   ticker: z.string().nullable(),

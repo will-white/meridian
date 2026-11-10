@@ -27,6 +27,8 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    proxy: { "/api": "http://localhost:3000" },
+    // The API binds loopback (API_HOST). The Host header is passed through unchanged, which the
+    // API's same-origin check for changes relies on.
+    proxy: { "/api": "http://127.0.0.1:3000" },
   },
 });

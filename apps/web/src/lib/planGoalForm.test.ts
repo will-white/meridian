@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GoalView } from "@meridian/shared";
-import { NEW_CATEGORY, buildGoalBody, initialGoalForm, linkedAccountOptions, percentFromBp, type GoalFormState } from "./planGoalForm.js";
+import { NEW_CATEGORY, buildGoalBody, goalProjectionText, initialGoalForm, linkedAccountOptions, percentFromBp, type GoalFormState } from "./planGoalForm.js";
 
 const CATEGORY = "22222222-2222-4222-8222-222222222222";
 const ACCOUNT = "44444444-4444-4444-8444-444444444444";
@@ -139,5 +139,21 @@ describe("linkedAccountOptions", () => {
     const goals = [goal("ef", "Emergency Fund", "sav"), goal("vac", "Vacation", null)];
     expect(linkedAccountOptions(accounts, goals, "ef").map((a) => a.takenBy)).toEqual([null, null]);
     expect(linkedAccountOptions(accounts, goals, "vac").map((a) => a.takenBy)).toEqual(["Emergency Fund", null]);
+  });
+});
+
+describe("goalProjectionText", () => {
+  const progress = { savedCents: "280000", remainingToTargetCents: "720000", progressBp: 2800, monthsLeft: 12, neededPerMonthCents: "60000", onTrack: false };
+
+  it("names the projected month, or says why there is none", () => {
+    expect(goalProjectionText({ monthlyContributionCents: "50000", progress: { ...progress, projectedCompletionMonth: "2028-01" } }, false)).toBe(" · projected Jan 2028");
+    expect(goalProjectionText({ monthlyContributionCents: "0", progress: { ...progress, projectedCompletionMonth: null } }, false)).toBe(" · no projection without a contribution");
+    // A contribution too small to reach the target by 2199-12: the API sends no month.
+    expect(goalProjectionText({ monthlyContributionCents: "100", progress: { ...progress, projectedCompletionMonth: null } }, false)).toBe(" · not reached before 2200 at this pace");
+  });
+
+  it("says nothing once the target is reached", () => {
+    expect(goalProjectionText({ monthlyContributionCents: "50000", progress: { ...progress, projectedCompletionMonth: "2026-10" } }, true)).toBe("");
+    expect(goalProjectionText({ monthlyContributionCents: "0", progress: { ...progress, projectedCompletionMonth: null } }, true)).toBe("");
   });
 });

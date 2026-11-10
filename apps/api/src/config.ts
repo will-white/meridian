@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { isIP } from "node:net";
 import path from "node:path";
 import { z } from "zod";
 import { parsePriceProviderId, type PriceProviderId } from "@meridian/shared";
@@ -31,9 +32,43 @@ export function resolveDatabaseUrl(env: NodeJS.ProcessEnv = process.env): string
   return url;
 }
 
+/** Address ranges `TRUST_PROXY` may name instead of spelling them out (the proxy-addr presets Fastify understands). */
+const TRUST_PROXY_PRESETS = new Set(["loopback", "linklocal", "uniquelocal"]);
+
+/**
+ * `TRUST_PROXY`: the reverse proxy's address(es), comma separated: IPs, CIDR ranges, or the
+ * presets `loopback`, `linklocal` and `uniquelocal` (10/8, 172.16/12, 192.168/16, fc00::/7).
+ * Only a peer on this list may state the client's address and the public host through
+ * `X-Forwarded-For` / `X-Forwarded-Host`; from anyone else the headers are ignored. Empty
+ * (the default) trusts nobody. "Trust every peer" and hop counts are refused on purpose: a
+ * client that reaches the port directly could then pick its own address and dodge the
+ * sign-in rate limits.
+ */
+export function parseTrustProxy(value: string | undefined): string[] {
+  const entries = (value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+  const lowered = entries.map((entry) => entry.toLowerCase());
+  if (lowered.length === 1 && ["false", "off", "none", "0"].includes(lowered[0]!)) return [];
+  for (const entry of lowered) {
+    if (TRUST_PROXY_PRESETS.has(entry)) continue;
+    const [address = "", prefix, ...rest] = entry.split("/");
+    const family = isIP(address);
+    const prefixOk = prefix === undefined || (/^\d{1,3}$/.test(prefix) && Number(prefix) <= (family === 4 ? 32 : 128));
+    if (family === 0 || !prefixOk || rest.length > 0) {
+      throw new Error(`TRUST_PROXY must list the reverse proxy's addresses (an IP, a CIDR range, or loopback, linklocal, uniquelocal), not "${entry}"`);
+    }
+  }
+  return lowered;
+}
+
 const Env = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  /** Interface to listen on. Loopback unless told otherwise; the Docker image sets 0.0.0.0 so the proxy container can reach it. */
+  API_HOST: z.string().trim().min(1).default("127.0.0.1"),
   API_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  TRUST_PROXY: z.string().optional(),
   SESSION_SECRET: z.string().min(32, "SESSION_SECRET must be at least 32 characters"),
   /** Directory with the built web app; served by the API in production. */
   WEB_DIST_DIR: z.string().optional(),
@@ -59,7 +94,11 @@ export function parseCatchupHour(value: string | undefined, fallback = 6): numbe
 export interface ApiConfig {
   nodeEnv: "development" | "test" | "production";
   databaseUrl: string;
+  /** Interface the server binds (`API_HOST`). */
+  host: string;
   port: number;
+  /** Peers whose `X-Forwarded-*` headers are believed (`TRUST_PROXY`); empty trusts nobody. */
+  trustProxy: string[];
   sessionSecret: string;
   secretsKey: string;
   webDistDir: string | undefined;
@@ -83,7 +122,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   return {
     nodeEnv: parsed.NODE_ENV,
     databaseUrl: resolveDatabaseUrl(env),
+    host: parsed.API_HOST,
     port: parsed.API_PORT,
+    trustProxy: parseTrustProxy(parsed.TRUST_PROXY),
     sessionSecret: parsed.SESSION_SECRET,
     secretsKey: readSecretsKey(env),
     webDistDir: parsed.WEB_DIST_DIR ?? (production ? path.resolve(process.cwd(), "apps/web/dist") : undefined),

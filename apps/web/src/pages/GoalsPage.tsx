@@ -7,7 +7,7 @@ import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
 import { api, query } from "../lib/api.js";
 import { money, shortDate, titleCase } from "../lib/format.js";
 import { localToday, monthLabel } from "../lib/plan.js";
-import { NEW_CATEGORY, buildGoalBody, initialGoalForm, linkedAccountOptions, percentFromBp, type GoalBody, type GoalFormState } from "../lib/planGoalForm.js";
+import { NEW_CATEGORY, buildGoalBody, goalProjectionText, initialGoalForm, linkedAccountOptions, percentFromBp, type GoalBody, type GoalFormState } from "../lib/planGoalForm.js";
 import "./GoalsPage.css";
 
 interface GoalFormProps {
@@ -174,8 +174,7 @@ function GoalCard({ goal, onEdit, onDelete, deleting }: { goal: GoalView; onEdit
         )}
         <span>
           contributing {money(goal.monthlyContributionCents)}/mo
-          {p.projectedCompletionMonth && !done && ` · projected ${monthLabel(p.projectedCompletionMonth)}`}
-          {!p.projectedCompletionMonth && !done && goal.monthlyContributionCents === "0" && " · no projection without a contribution"}
+          {goalProjectionText(goal, done)}
         </span>
         <span className="muted small">
           counting from {monthLabel(goal.startMonth)}

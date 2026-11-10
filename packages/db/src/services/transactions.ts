@@ -5,6 +5,7 @@ import { account, category, payee, savingsGoal, split, transaction } from "../sc
 import { PlanError } from "./audit.js";
 import { resolvePayee } from "./payees.js";
 import { onBudgetOrFeedCategory } from "./planScope.js";
+import { containsPattern, decodeCursor, encodeCursor } from "./queryText.js";
 import { setTransactionTags, tagsForTransactions } from "./tags.js";
 import { unpairTransfer } from "./transfers.js";
 
@@ -67,18 +68,11 @@ export interface TransactionListRow {
   splits: TransactionSplitRow[];
 }
 
-function decodeCursor(cursor: string): { date: string; id: string } | undefined {
-  try {
-    const [date, id] = Buffer.from(cursor, "base64url").toString("utf8").split("|");
-    if (!date || !id) return undefined;
-    return { date, id };
-  } catch {
-    return undefined;
-  }
-}
-
-function encodeCursor(date: string, id: string): string {
-  return Buffer.from(`${date}|${id}`, "utf8").toString("base64url");
+/** The (date, id) a page ended on; a cursor this server did not issue is a 400, never a query. */
+function transactionCursor(cursor: string): { date: string; id: string } {
+  const fields = decodeCursor(cursor, ["date", "uuid"]);
+  if (!fields) throw new PlanError(400, "invalid_cursor", "That page marker is not valid; reload the list");
+  return { date: fields[0]!, id: fields[1]! };
 }
 
 /** The split lines of the given transactions, in a stable order (amount, then id). */
@@ -134,9 +128,9 @@ async function goalRowsFilter(db: DbOrTx, goalId: string): Promise<SQL> {
 
 /** Register query: newest first, keyset-paginated on (date, id). */
 export async function listTransactions(db: DbOrTx, query: ListTransactionsQuery): Promise<{ items: TransactionListRow[]; nextCursor: string | null }> {
-  const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
+  const cursor = query.cursor !== undefined ? transactionCursor(query.cursor) : undefined;
   const q = query.q?.trim();
-  const pattern = q ? `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%` : undefined;
+  const pattern = q ? containsPattern(q) : undefined;
   const goalFilter = query.goalId ? await goalRowsFilter(db, query.goalId) : undefined;
 
   const rows = await db
@@ -197,7 +191,7 @@ export async function listTransactions(db: DbOrTx, query: ListTransactionsQuery)
   const splits = await splitsForTransactions(db, ids);
   const items: TransactionListRow[] = page.map((r) => ({ ...r, tags: tags.get(r.id) ?? [], splits: splits.get(r.id) ?? [] }));
   const last = page[page.length - 1];
-  const nextCursor = rows.length > query.limit && last ? encodeCursor(last.date, last.id) : null;
+  const nextCursor = rows.length > query.limit && last ? encodeCursor([last.date, last.id]) : null;
   return { items, nextCursor };
 }
 

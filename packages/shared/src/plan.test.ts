@@ -1037,6 +1037,31 @@ describe("goalProgress", () => {
     expect(goalProgress({ ...vacation, monthlyContributionCents: 40000n }, new Map(), "2026-10")).toMatchObject({ onTrack: true, projectedCompletionMonth: "2027-06" });
   });
 
+  it("projects no completion month past 2199-12 (a dollar a month toward a large target)", () => {
+    // From 2026-10, 2199-12 is 173 × 12 + 2 = 2,078 months away. Remaining is 720,000 cents.
+    // 720,000 / 347 = 2,074.9 → 2,075 months → 2026-10 + 2,075 = 2199-09 (2,075 = 172 years + 11 months).
+    expect(goalProgress({ ...emergency, monthlyContributionCents: 347n }, actuals, "2026-10").projectedCompletionMonth).toBe("2199-09");
+    // 720,000 / 346.5… : 2,078 months needs at least 720,000 / 2,078 = 346.49 → 347 cents; at 346 cents it takes 2,081 months.
+    expect(goalProgress({ ...emergency, monthlyContributionCents: 346n }, actuals, "2026-10").projectedCompletionMonth).toBeNull();
+    // Exactly on the last month: remaining 2,078 cents at 1 cent a month.
+    expect(goalProgress({ ...emergency, targetCents: 282078n, monthlyContributionCents: 1n }, actuals, "2026-10").projectedCompletionMonth).toBe("2199-12");
+    expect(goalProgress({ ...emergency, targetCents: 282079n, monthlyContributionCents: 1n }, actuals, "2026-10").projectedCompletionMonth).toBeNull();
+    // $100,000 at $1 a month is 8,333 years: no projection, and the rest of the progress is unchanged.
+    expect(goalProgress({ ...emergency, targetCents: 10_000_000n, monthlyContributionCents: 100n }, actuals, "2026-10")).toEqual({
+      savedCents: 280000n,
+      remainingToTargetCents: 9_720_000n,
+      progressBp: 280,
+      monthsLeft: 12,
+      neededPerMonthCents: 810000n,
+      projectedCompletionMonth: null,
+      onTrack: false,
+    });
+    // The largest amounts a caller may send do not overflow anything.
+    expect(goalProgress({ ...emergency, targetCents: 999_999_999_999_999n, monthlyContributionCents: 1n }, actuals, "2026-10").projectedCompletionMonth).toBeNull();
+    // A reached target is "now" whatever the month.
+    expect(goalProgress({ ...emergency, targetCents: 100n }, actuals, "2199-12").projectedCompletionMonth).toBe("2199-12");
+  });
+
   it("handles no target date, a past target, no contribution, a reached target and net withdrawals", () => {
     expect(goalProgress({ ...emergency, targetDate: null }, actuals, "2026-10")).toMatchObject({ monthsLeft: null, neededPerMonthCents: null, onTrack: null, projectedCompletionMonth: "2028-01" });
     expect(goalProgress({ ...emergency, targetDate: "2026-03-31" }, actuals, "2026-10")).toMatchObject({ monthsLeft: 1, neededPerMonthCents: 720000n, onTrack: false });

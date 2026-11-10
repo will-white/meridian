@@ -28,6 +28,7 @@ import { enqueueJob } from "./jobs.js";
 import { listLotPicks, rebuildLotsForAccounts, validateLotPicks, writeLotPicks, type LotPickInputRecord, type LotPickRecord } from "./lots.js";
 import { resolvePayee } from "./payees.js";
 import { requestPriceRefresh } from "./prices.js";
+import { decodeCursor, encodeCursor } from "./queryText.js";
 import { loadRules } from "./rules.js";
 import { cashSecurity, createSecurity, learnAliases, requireSecurity, resolveSecurity } from "./securities.js";
 import { pairTransfersInDb, unpairTransfer } from "./transfers.js";
@@ -176,20 +177,11 @@ export function assertTxnShape(r: TxnShape): void {
 
 // ---- Reads ----
 
-function decodeCursor(cursor: string): { date: string; sequence: number; id: string } | undefined {
-  try {
-    const [date, sequence, id] = Buffer.from(cursor, "base64url").toString("utf8").split("|");
-    if (!date || sequence === undefined || !id) return undefined;
-    const n = Number(sequence);
-    if (!Number.isInteger(n)) return undefined;
-    return { date, sequence: n, id };
-  } catch {
-    return undefined;
-  }
-}
-
-function encodeCursor(date: string, sequence: number, id: string): string {
-  return Buffer.from(`${date}|${sequence}|${id}`, "utf8").toString("base64url");
+/** The (date, sequence, id) a page ended on; a cursor this server did not issue is a 400, never a query. */
+function investmentTxnCursor(cursor: string): { date: string; sequence: number; id: string } {
+  const fields = decodeCursor(cursor, ["date", "int", "uuid"]);
+  if (!fields) throw new PlanError(400, "invalid_cursor", "That page marker is not valid; reload the list");
+  return { date: fields[0]!, sequence: Number(fields[1]), id: fields[2]! };
 }
 
 export interface ListInvestmentTxnsQuery {
@@ -248,7 +240,7 @@ async function selectRecords(db: DbOrTx, where: ReturnType<typeof and>, limit: n
 
 /** Newest first, keyset-paginated on (date, sequence, id). */
 export async function listInvestmentTxns(db: DbOrTx, q: ListInvestmentTxnsQuery): Promise<{ items: InvestmentTxnRecord[]; nextCursor: string | null }> {
-  const cursor = q.cursor ? decodeCursor(q.cursor) : undefined;
+  const cursor = q.cursor !== undefined ? investmentTxnCursor(q.cursor) : undefined;
   const limit = Math.max(1, Math.min(q.limit, 500));
   const items = await selectRecords(
     db,
@@ -270,7 +262,7 @@ export async function listInvestmentTxns(db: DbOrTx, q: ListInvestmentTxnsQuery)
   );
   const page = items.slice(0, limit);
   const last = page[page.length - 1];
-  return { items: page, nextCursor: items.length > limit && last ? encodeCursor(last.date, last.sequence, last.id) : null };
+  return { items: page, nextCursor: items.length > limit && last ? encodeCursor([last.date, last.sequence, last.id]) : null };
 }
 
 export async function getInvestmentTxn(db: DbOrTx, id: string): Promise<InvestmentTxnRecord | undefined> {

@@ -1,8 +1,9 @@
 import { z } from "zod";
-import { isIsoDate, type IsoDate } from "./dates.js";
+import type { IsoDate } from "./dates.js";
 import { sha256Hex } from "./crypto.js";
 import { normalizePayee } from "./payee.js";
 import { sanitizeText } from "./sanitize.js";
+import { isInputDate, MAX_INPUT_CENTS } from "./wire.js";
 
 /** RFC 4180 CSV parser: quoted fields, doubled quotes, CR/LF/CRLF, BOM. */
 export function parseCsv(text: string, delimiter = ","): string[][] {
@@ -66,7 +67,8 @@ const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "
 
 function build(y: number, m: number, d: number): IsoDate | undefined {
   const date = `${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-  return isIsoDate(date) ? date : undefined;
+  // The same bounds as a date typed into the app: a real calendar date, 1900 to 2199.
+  return isInputDate(date) ? date : undefined;
 }
 
 export function parseCsvDate(raw: string, format: CsvDateFormat): IsoDate | undefined {
@@ -133,6 +135,8 @@ export function parseLooseMoney(raw: string): bigint | undefined {
   if (s.startsWith("+")) s = s.slice(1);
   const m = /^(\d*)(?:\.(\d{0,2}))?$/.exec(s);
   if (!m || (m[1] === "" && (m[2] ?? "") === "")) return undefined;
+  // The same bound as an amount typed into the app (15 digits of cents); a longer run of digits is not an amount.
+  if (m[1]!.replace(/^0+/, "").length > MAX_INPUT_CENTS.toString().length - 2) return undefined;
   const whole = BigInt(m[1] || "0");
   const frac = BigInt((m[2] ?? "").padEnd(2, "0"));
   const cents = whole * 100n + frac;
