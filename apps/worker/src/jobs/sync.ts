@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
-import { applyAccountSet, connection, enqueueJob, importLog, requestPriceRefresh, type HoldingsStats, type JobRow } from "@meridian/db";
-import { addDays, decryptSecret, toIsoDate, type IsoDate } from "@meridian/shared";
+import { applyAccountSet, connection, enqueueJob, importLog, requestPriceRefresh, type ConnectionError, type HoldingsStats, type JobRow } from "@meridian/db";
+import { addDays, decryptSecret, highWaterMarkAfterSync, syncWindowStart, toIsoDate, type IsoDate, type SyncWindowConfig } from "@meridian/shared";
 import { priceConfigOf } from "../env.js";
 import { fetchAccounts, SimplefinError } from "../simplefin/client.js";
 import type { JobContext } from "./context.js";
@@ -20,9 +20,23 @@ export interface SyncOutcome {
   investmentTxnsLinked: number;
 }
 
-/** Compute the overlapping window: 7 days before the last high-water mark, or 93 days back the first time. */
-export function syncWindowStart(syncedThrough: IsoDate | null, today: IsoDate, config: { initialWindowDays: number; overlapDays: number }): IsoDate {
-  return syncedThrough ? addDays(syncedThrough, -config.overlapDays) : addDays(today, -config.initialWindowDays);
+export { syncWindowStart };
+
+/**
+ * The entry a sync leaves on the connection when the window could not reach back to the
+ * high-water mark: the mark is older than the most a sync asks for (a bank unreadable, or the
+ * worker off, for longer than the first-sync window less the overlap), so the days between
+ * the mark and the window were never requested. Null when the window reaches the mark.
+ */
+export function syncGapNotice(previous: IsoDate | null, windowStart: IsoDate, config: SyncWindowConfig): ConnectionError | null {
+  if (previous === null) return null;
+  const from = addDays(previous, 1);
+  const to = addDays(windowStart, -1);
+  if (from > to) return null;
+  return {
+    code: "sync.gap",
+    message: `The last complete sync was ${previous}. A sync asks the Bridge for at most ${config.initialWindowDays} days, so transactions from ${from} to ${to} were not requested. Import a CSV from the bank for that period if any are missing.`,
+  };
 }
 
 /**
@@ -31,6 +45,13 @@ export function syncWindowStart(syncedThrough: IsoDate | null, today: IsoDate, c
  * status, then queue the follow-ups: a recurring run after every full sync, a holdings
  * price fetch when a security was created (only with a provider configured), and the income
  * feed when a synced investment account has one (plan decision 18).
+ *
+ * The high-water mark moves only when the response was complete (`highWaterMarkAfterSync`):
+ * a 200 that carries a connection or account problem, or a stale copy of an account, leaves
+ * it where it was, so the window keeps reaching back to the last complete sync. Every run,
+ * whether it worked or not, records `last_attempt_at`, which is what the scheduler spaces
+ * syncs from; a refusal that retrying cannot fix (403, 402) also pauses scheduled syncs, and
+ * a failed run empties `last_errors`, which described the response before it.
  */
 export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutcome> {
   const connectionId = String(job.payload["connectionId"] ?? "");
@@ -42,7 +63,9 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
 
   const today = toIsoDate(ctx.now());
   const fullResync = job.payload["fullResync"] === true;
+  // A full resync asks for the whole first-sync window; the mark itself is kept until the response is in.
   const windowStart = balancesOnly ? undefined : syncWindowStart(fullResync ? null : conn.syncedThrough, today, ctx.config);
+  const gap = windowStart ? syncGapNotice(conn.syncedThrough, windowStart, ctx.config) : null;
   const kind = balancesOnly ? "simplefin.balances" : "simplefin.sync";
   const [log] = await ctx.db.insert(importLog).values({ connectionId, kind }).returning({ id: importLog.id });
   const importLogId = log!.id;
@@ -60,16 +83,34 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
     if (windowStart) applyOptions.windowStart = windowStart;
     const applied = await applyAccountSet(ctx.db, applyOptions);
 
+    const errors = gap ? [...applied.errors, gap] : applied.errors;
     const authError = applied.errors.some((e) => e.code === "con.auth");
+    const mark =
+      windowStart === undefined
+        ? undefined
+        : highWaterMarkAfterSync({
+            previous: conn.syncedThrough,
+            today,
+            windowStart,
+            incomplete: applied.incomplete,
+            accountsCreated: applied.accountsCreated,
+            balanceDates: applied.balanceDates,
+            config: ctx.config,
+          });
+    // One instant for both: "the last attempt was the last success" is read off their equality.
+    const finishedAt = ctx.now();
     await ctx.db
       .update(connection)
       .set({
         status: authError ? "auth_required" : "ok",
-        lastSyncAt: ctx.now(),
-        ...(balancesOnly ? {} : { syncedThrough: today }),
-        lastErrors: applied.errors,
+        lastSyncAt: finishedAt,
+        lastAttemptAt: finishedAt,
+        // The Bridge answered: whatever paused the schedule is over.
+        syncPaused: false,
+        ...(mark === undefined ? {} : { syncedThrough: mark }),
+        lastErrors: errors,
         lastError: authError ? "The Bridge reports this bank connection needs to be re-authenticated." : null,
-        updatedAt: ctx.now(),
+        updatedAt: finishedAt,
       })
       .where(eq(connection.id, connectionId));
 
@@ -83,7 +124,7 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
     };
     await ctx.db
       .update(importLog)
-      .set({ status: "ok", finishedAt: ctx.now(), stats, errors: applied.errors, message: balancesOnly ? "Balances refreshed" : `Synced from ${windowStart}` })
+      .set({ status: "ok", finishedAt: ctx.now(), stats, errors, message: balancesOnly ? "Balances refreshed" : `Synced from ${windowStart}` })
       .where(eq(importLog.id, importLogId));
 
     // Every successful full sync is followed by one recurring run (suggestions, matcher, alerts); balances-only refreshes carry no transactions.
@@ -105,7 +146,7 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
       replacedPending: applied.stats.replacedPending,
       removedPending: applied.stats.removedPending,
       transfersPaired: applied.transfersPaired,
-      errors: applied.errors.length,
+      errors: errors.length,
       holdings: applied.holdings,
       investmentTxnsLinked: applied.investmentTxnsLinked,
     };
@@ -114,8 +155,22 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const status = err instanceof SimplefinError && err.kind === "forbidden" ? "auth_required" : "error";
-    await ctx.db.update(connection).set({ status, lastError: message, updatedAt: ctx.now() }).where(eq(connection.id, connectionId));
+    // 403 and 402 do not get better by asking again: the schedule stops until a sync started by hand succeeds.
+    const paused = err instanceof SimplefinError && err.permanent;
+    await ctx.db
+      .update(connection)
+      .set({
+        status,
+        lastError: message,
+        // The entries of the last response describe a sync that is no longer the latest one.
+        lastErrors: [],
+        lastAttemptAt: ctx.now(),
+        ...(paused ? { syncPaused: true } : {}),
+        updatedAt: ctx.now(),
+      })
+      .where(eq(connection.id, connectionId));
     await ctx.db.update(importLog).set({ status: "error", finishedAt: ctx.now(), message }).where(eq(importLog.id, importLogId));
+    if (paused && !conn.syncPaused) ctx.log.warn(`[sync] connection ${connectionId}: the Bridge refused the request; scheduled syncs are paused until a sync started from the Connections page succeeds`);
     throw err;
   }
 }

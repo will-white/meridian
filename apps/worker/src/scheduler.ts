@@ -17,23 +17,35 @@ import { expectedPriceDate, localClockInTimeZone, toIsoDate, type IsoDate } from
 import { DEFAULT_DETECT_HOUR_UTC, priceConfigOf } from "./env.js";
 import type { JobContext } from "./jobs/context.js";
 
-/** Queue a sync for every SimpleFIN connection whose last sync is older than the interval. Returns how many were queued. */
+/**
+ * Queue a sync for every SimpleFIN connection that was last tried longer ago than the
+ * interval. Returns how many were queued.
+ *
+ * The interval runs from the last attempt (`last_attempt_at`), not the last success, so a
+ * connection whose sync fails is asked as often as one that works and no more: the tick is
+ * every minute, the interval 6 hours. A connection the Bridge refused outright (403, 402:
+ * `sync_paused`) is not scheduled at all until a sync started by hand succeeds or it is
+ * switched back on. A connection whose last attempt failed gets one attempt per interval
+ * instead of the queue's three.
+ */
 export async function scheduleDueSyncs(ctx: JobContext): Promise<number> {
   const cutoff = new Date(ctx.now().getTime() - ctx.config.syncIntervalHours * 3600_000);
   const due = await ctx.db
-    .select({ id: connection.id })
+    .select({ id: connection.id, lastSyncAt: connection.lastSyncAt, lastAttemptAt: connection.lastAttemptAt })
     .from(connection)
     .where(
       and(
         eq(connection.type, "simplefin"),
         isNotNull(connection.accessUrlEnc),
         inArray(connection.status, ["ok", "error", "auth_required"]),
-        or(isNull(connection.lastSyncAt), lt(connection.lastSyncAt, cutoff)),
+        eq(connection.syncPaused, false),
+        or(isNull(connection.lastAttemptAt), lt(connection.lastAttemptAt, cutoff)),
       ),
     );
   let queued = 0;
   for (const c of due) {
-    const job = await enqueueJob(ctx.db, "simplefin.sync", { connectionId: c.id, scheduled: true }, { dedupe: true });
+    const failing = c.lastAttemptAt !== null && (c.lastSyncAt === null || c.lastSyncAt < c.lastAttemptAt);
+    const job = await enqueueJob(ctx.db, "simplefin.sync", { connectionId: c.id, scheduled: true }, { dedupe: true, ...(failing ? { maxAttempts: 1 } : {}) });
     if (job.created) queued++;
   }
   return queued;

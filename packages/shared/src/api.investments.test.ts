@@ -984,6 +984,8 @@ describe("Phase 1/2 contracts extended for Phase 3", () => {
       name: "Fidelity positions",
       status: "ok",
       lastSyncAt: null,
+      lastAttemptAt: null,
+      syncPaused: false,
       syncedThrough: null,
       lastError: null,
       lastErrors: [],

@@ -1,8 +1,8 @@
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { activeJobsByConnection, connection, enqueueJob, importLog, listRecentJobs } from "@meridian/db";
+import { activeJobsByConnection, connection, enqueueJob, importLog, job as jobTable, listRecentJobs } from "@meridian/db";
 import {
   ConnectionView,
   CreateSimplefinConnectionBody,
@@ -14,7 +14,7 @@ import {
   UpdateConnectionBody,
   UuidParams,
 } from "@meridian/shared";
-import { badRequest, notFound } from "../lib/errors.js";
+import { badRequest, HttpError, notFound } from "../lib/errors.js";
 import { toConnectionView, toImportLogView, toJobView } from "../views.js";
 
 export async function connectionRoutes(app: FastifyInstance): Promise<void> {
@@ -55,6 +55,8 @@ export async function connectionRoutes(app: FastifyInstance): Promise<void> {
     const patch: Partial<typeof connection.$inferInsert> = { updatedAt: new Date() };
     if (request.body.name !== undefined) patch.name = request.body.name.trim();
     if (request.body.status !== undefined) patch.status = request.body.status;
+    // Switching a connection (back) on is the household saying "try again": a pause left by a 403 or 402 is lifted.
+    if (request.body.status === "ok") patch.syncPaused = false;
     const [row] = await app.db.update(connection).set(patch).where(eq(connection.id, request.params.id)).returning();
     if (!row) throw notFound("Connection not found");
     return (await listConnections()).find((c) => c.id === row.id)!;
@@ -66,7 +68,13 @@ export async function connectionRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true as const };
   });
 
-  /** Queue a sync now. The worker picks it up within its poll interval. */
+  /**
+   * Queue a sync now. The worker picks it up within its poll interval. One sync per connection
+   * is queued or running at a time, so "sync now" during one returns that one. A full resync
+   * (the whole first-sync window again, for after a bank was unreadable) is never dropped that
+   * way: a sync still waiting is turned into one, and while one is running the answer is 409
+   * `sync_running`.
+   */
   r.post(
     "/connections/:id/sync",
     {
@@ -86,8 +94,18 @@ export async function connectionRoutes(app: FastifyInstance): Promise<void> {
       if (!row.accessUrlEnc) throw badRequest("This connection has no access URL yet; paste a new setup token", "no_access_url");
       const type = request.body.balancesOnly ? "simplefin.balances" : "simplefin.sync";
       const payload: Record<string, unknown> = { connectionId: row.id, manual: true };
-      if (request.body.fullResync) payload["fullResync"] = true;
-      return toJobView(await enqueueJob(app.db, type, payload, { dedupe: true }));
+      const fullResync = request.body.fullResync && !request.body.balancesOnly;
+      if (fullResync) payload["fullResync"] = true;
+      const queued = await enqueueJob(app.db, type, payload, { dedupe: true });
+      if (queued.created || !fullResync || queued.payload["fullResync"] === true) return toJobView(queued);
+      // A sync was already there and it is not a full one. Only a job the worker has not claimed can still change.
+      const [upgraded] = await app.db
+        .update(jobTable)
+        .set({ payload: sql`${jobTable.payload} || ${JSON.stringify({ manual: true, fullResync: true })}::jsonb` })
+        .where(and(eq(jobTable.id, queued.id), eq(jobTable.status, "queued")))
+        .returning();
+      if (!upgraded) throw new HttpError(409, "A sync is running for this connection; ask for the full resync when it has finished", "sync_running");
+      return toJobView(upgraded);
     },
   );
 

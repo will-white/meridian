@@ -1,11 +1,12 @@
 import { asc, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { account, createSession, holdingSnapshot, job, price, security, session, signInEvent, user, type Db } from "@meridian/db";
+import { account, connection, createSession, enqueueJob, holdingSnapshot, job, price, security, session, signInEvent, user, type Db } from "@meridian/db";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "@meridian/db/testing";
-import { generateSecretsKey } from "@meridian/shared";
+import { encryptSecret, generateSecretsKey } from "@meridian/shared";
 import type { WorkerConfig } from "./env.js";
 import type { JobContext } from "./jobs/context.js";
-import { atMostEvery, DAILY_JOB_TYPES, inCatchupWindow, purgeSignInData, schedulePriceJobs, SIGN_IN_PURGE_INTERVAL_MS } from "./scheduler.js";
+import { drainQueue } from "./runner.js";
+import { atMostEvery, DAILY_JOB_TYPES, inCatchupWindow, purgeSignInData, scheduleDueSyncs, schedulePriceJobs, SIGN_IN_PURGE_INTERVAL_MS } from "./scheduler.js";
 
 /**
  * The price feed's clock (prices design §3.13, test 24) on the household-local day
@@ -164,5 +165,156 @@ describe.skipIf(!TEST_DATABASE_URL)("purgeSignInData", () => {
     expect((await t.db.select({ id: session.id }).from(session)).map((r) => r.id)).toEqual([live.id]);
     expect(await t.db.select({ kind: signInEvent.kind }).from(signInEvent)).toEqual([{ kind: "code_failed" }]);
     expect(await purgeSignInData({ db: t.db, now: () => now })).toEqual({ sessions: 0, events: 0 });
+  });
+});
+
+/**
+ * The scheduler ticks every minute and the sync interval is 6 hours. A connection whose sync
+ * fails must not be asked again on the next tick: the Bridge counts requests, and every
+ * attempt adds a job row and an import log row.
+ */
+describe.skipIf(!TEST_DATABASE_URL)("scheduleDueSyncs after a sync has failed", () => {
+  let t: TestDb;
+  let db: Db;
+  let ctx: JobContext;
+  let connectionId: string;
+  const secretsKey = generateSecretsKey();
+  let now = new Date("2026-10-13T06:00:00Z");
+  let bridgeStatus = 200;
+  let requests = 0;
+  const config: WorkerConfig = { databaseUrl: "unused", secretsKey, workerId: "test-worker", syncIntervalHours: 6, pollIntervalMs: 10, initialWindowDays: 93, overlapDays: 7, requestTimeoutMs: 5000 };
+  const HOUR = 3600_000;
+  const MINUTE = 60_000;
+
+  const conn = async () => (await db.select().from(connection).where(eq(connection.id, connectionId)))[0]!;
+  const syncJobs = async () => (await db.select().from(job).orderBy(asc(job.createdAt))).filter((j) => j.type === "simplefin.sync");
+  /** A scheduler tick followed by a pass of the runner, `times` times, `minutes` apart. A retry the queue is holding back is made due at once: the worst case for the Bridge. */
+  const tick = async (times: number, minutes = 1) => {
+    for (let i = 0; i < times; i++) {
+      now = new Date(now.getTime() + minutes * MINUTE);
+      await scheduleDueSyncs(ctx);
+      await db.update(job).set({ runAt: new Date(0) }).where(eq(job.status, "queued"));
+      await drainQueue(ctx);
+    }
+  };
+  /** A connection that last synced (and was last tried) 7 hours ago, so a sync is due; the queue and the request count start empty. */
+  const dueConnection = async () => {
+    await db.delete(job);
+    const seven = new Date(now.getTime() - 7 * HOUR);
+    await db
+      .update(connection)
+      .set({ status: "ok", lastSyncAt: seven, lastAttemptAt: seven, syncPaused: false, lastError: null, lastErrors: [{ code: "act.missingdata", message: "The Bridge returned incomplete data for this account.", accountId: "CHK" }] })
+      .where(eq(connection.id, connectionId));
+    requests = 0;
+  };
+
+  beforeAll(async () => {
+    t = await createTestDb();
+    db = t.db;
+    const [row] = await db.insert(connection).values({ type: "simplefin", name: "Bank", status: "ok", accessUrlEnc: await encryptSecret("https://alice:s3cret@bridge.example.test/simplefin", secretsKey) }).returning({ id: connection.id });
+    connectionId = row!.id;
+    ctx = {
+      db,
+      config,
+      client: {
+        fetch: (async () => {
+          requests++;
+          return bridgeStatus === 200 ? new Response(JSON.stringify({ errors: [], errlist: [], accounts: [] }), { status: 200 }) : new Response("", { status: bridgeStatus });
+        }) as typeof fetch,
+      },
+      now: () => now,
+      log: { info: () => {}, warn: () => {}, error: () => {} },
+    };
+  });
+  afterAll(async () => {
+    await t?.cleanup();
+  });
+
+  it("asks a Bridge that refuses the access URL (403) once, then leaves it alone until a sync started by hand succeeds", async () => {
+    await dueConnection();
+    bridgeStatus = 403;
+    // An hour of ticks: one request, one failed job. Before the fix this was 60 of each.
+    await tick(60);
+    expect(requests).toBe(1);
+    expect((await syncJobs()).map((j) => [j.status, j.attempts])).toEqual([["failed", 1]]);
+    expect(await conn()).toMatchObject({ status: "auth_required", syncPaused: true, lastErrors: [] });
+    // A whole day later it has still not been asked again.
+    await tick(48, 30);
+    expect(requests).toBe(1);
+
+    // The household starts a sync from the Connections page; it fails the same way and nothing resumes.
+    await enqueueJob(db, "simplefin.sync", { connectionId, manual: true }, { dedupe: true });
+    await tick(60);
+    expect(requests).toBe(2);
+    expect((await conn()).syncPaused).toBe(true);
+
+    // Access is restored and a sync by hand works: the schedule picks the connection up again, one interval later.
+    bridgeStatus = 200;
+    await enqueueJob(db, "simplefin.sync", { connectionId, manual: true }, { dedupe: true });
+    await drainQueue(ctx);
+    expect(requests).toBe(3);
+    expect(await conn()).toMatchObject({ status: "ok", syncPaused: false, lastError: null, lastAttemptAt: now, lastSyncAt: now });
+    now = new Date(now.getTime() + 6 * HOUR - MINUTE);
+    expect(await scheduleDueSyncs(ctx)).toBe(0);
+    now = new Date(now.getTime() + 2 * MINUTE);
+    expect(await scheduleDueSyncs(ctx)).toBe(1);
+  });
+
+  it("does the same when the Bridge asks for payment (402)", async () => {
+    await dueConnection();
+    bridgeStatus = 402;
+    await tick(60);
+    expect(requests).toBe(1);
+    expect(await conn()).toMatchObject({ status: "error", syncPaused: true });
+    expect((await conn()).lastError).toMatch(/payment required/);
+    await tick(48, 30);
+    expect(requests).toBe(1);
+  });
+
+  it("retries a Bridge that is down three times, then once per interval until it answers", async () => {
+    await dueConnection();
+    bridgeStatus = 503;
+    // The first round keeps its quick retries: three attempts, then nothing for the rest of the hour.
+    await tick(60);
+    expect(requests).toBe(3);
+    expect((await syncJobs()).map((j) => [j.status, j.attempts, j.maxAttempts])).toEqual([["failed", 3, 3]]);
+    const afterFirstRound = await conn();
+    expect(afterFirstRound).toMatchObject({ status: "error", syncPaused: false, lastErrors: [] });
+
+    // Nothing more until 6 hours after the last attempt; then one attempt per interval, with no quick retries.
+    now = new Date(afterFirstRound.lastAttemptAt!.getTime() + 6 * HOUR - MINUTE);
+    await tick(1, 0);
+    expect(requests).toBe(3);
+    await tick(60);
+    expect(requests).toBe(4);
+    expect((await syncJobs()).map((j) => [j.status, j.attempts, j.maxAttempts])).toEqual([
+      ["failed", 3, 3],
+      ["failed", 1, 1],
+    ]);
+    now = new Date((await conn()).lastAttemptAt!.getTime() + 6 * HOUR);
+    await tick(60);
+    expect(requests).toBe(5);
+
+    // The Bridge is back: the next scheduled attempt succeeds, and a later failure gets its three attempts again.
+    bridgeStatus = 200;
+    now = new Date((await conn()).lastAttemptAt!.getTime() + 6 * HOUR);
+    await tick(60);
+    expect(requests).toBe(6);
+    expect(await conn()).toMatchObject({ status: "ok", lastError: null });
+    bridgeStatus = 503;
+    now = new Date((await conn()).lastAttemptAt!.getTime() + 6 * HOUR);
+    await tick(60);
+    expect(requests).toBe(9);
+  });
+
+  it("leaves a disabled connection and one still waiting for its access URL alone", async () => {
+    await dueConnection();
+    bridgeStatus = 200;
+    await db.update(connection).set({ status: "disabled" }).where(eq(connection.id, connectionId));
+    await tick(5);
+    expect(requests).toBe(0);
+    await db.update(connection).set({ status: "error", accessUrlEnc: null }).where(eq(connection.id, connectionId));
+    await tick(5);
+    expect(requests).toBe(0);
   });
 });

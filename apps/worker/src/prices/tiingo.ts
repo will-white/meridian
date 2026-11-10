@@ -1,4 +1,5 @@
 import { mapSymbol, parseTiingoCsv, PROVIDER_BODY_LIMIT, type IsoDate, type PriceProvider, type PriceProviderId, type ProviderResult } from "@meridian/shared";
+import { describeFetchFailure } from "../fetchError.js";
 
 /**
  * Tiingo end-of-day adapter (prices design §3.12). One GET per symbol and date range, CSV
@@ -83,8 +84,7 @@ export class TiingoProvider implements PriceProvider {
         redirect: "error",
       });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { ok: false, kind: "network", message: `tiingo: could not reach the price server: ${message}` };
+      return { ok: false, kind: "network", message: `tiingo: could not reach the price server: ${describeFetchFailure(err, { timeoutMs: this.timeoutMs })}` };
     }
 
     let body: string;
