@@ -18,7 +18,7 @@ pnpm db:migrate                 # applies packages/db/drizzle to DATABASE_URL
 pnpm dev                        # api on :3000, worker, web on :5173 (proxies /api)
 ```
 
-Open http://localhost:5173, create the owner account, enroll an authenticator app, then paste a SimpleFIN setup token on the Connections page.
+Open http://localhost:5173, create the owner account, enroll an authenticator app, then paste a SimpleFIN setup token on the Connections page. Create the owner right after the first start: until then, whoever opens the app first can.
 
 The API listens on loopback (`API_HOST`, default `127.0.0.1`) and believes no `X-Forwarded-*` header unless `TRUST_PROXY` names the proxy that sent it.
 
@@ -32,6 +32,32 @@ docker compose -f deploy/docker-compose.yml up -d --build
 Caddy serves the app on the LAN at `https://$SITE_ADDRESS` with an internally issued certificate; trust its root CA on your devices. For access from outside, put the server on Tailscale. Do not port-forward.
 
 The `web` container serves the built UI and the API on port 3000, reachable only from the compose network. The UI's files load without a session; everything under `/api` needs one. Changes are accepted only from the app's own origin and only as JSON. If you put a different reverse proxy in front, it must pass the `Host` header through (or send `X-Forwarded-Host`), and `TRUST_PROXY` in `deploy/docker-compose.yml` must name its address so the sign-in rate limits count the real client.
+
+## Accounts and sign-in
+
+There are two roles. The **owner** (one account, created on first run) changes everything. **Viewers** see everything and change nothing except their own sign-in; the owner adds them under Settings > Household members with a first password, and each viewer sets up their own authenticator app at their first sign-in.
+
+Under Settings > Sign-in and security every member can change their password (the current one is required; other sessions are signed out), move to a new authenticator (the old one keeps working until a code from the new one is accepted), see where they are signed in and sign those sessions out, and review the sign-in activity: completed sign-ins and failed attempts, kept for 90 days. The owner sees every member's activity, can set a new password for a viewer who forgot theirs, clear the authenticator of a viewer who lost their phone, and remove a viewer.
+
+How sign-in behaves:
+
+- A password alone opens nothing: it starts a ten-minute session that can only take the authenticator code. Five wrong codes end it (enter the password again), and codes are refused for up to 15 minutes after five attempts on one account.
+- Each authenticator code works once.
+- A signed-in session ends after `SESSION_TTL_DAYS` (30) or after `SESSION_IDLE_DAYS` (14) without use, whichever comes first.
+- The database stores a hash of each session id, never the id, so a backup holds nothing that can be used to sign in.
+
+### Locked out
+
+If the owner has lost the authenticator or forgotten the password, recover from the server's console. These commands talk to the database directly, end the member's sessions and are recorded in the audit log:
+
+```bash
+docker compose -f deploy/docker-compose.yml exec web node apps/api/dist/admin.js users
+docker compose -f deploy/docker-compose.yml exec web node apps/api/dist/admin.js reset-totp <username>
+docker compose -f deploy/docker-compose.yml exec web node apps/api/dist/admin.js reset-password <username>
+docker compose -f deploy/docker-compose.yml exec web node apps/api/dist/admin.js sign-out <username>
+```
+
+`reset-totp` clears the authenticator: sign in with the password and set up a new one straight away, because until then the password alone reaches that setup screen. `reset-password` prints a temporary password once; sign in with it and change it under Settings. `users` lists the accounts that exist: if the app shows "Sign in" before you ever created an account, someone else on your network got there first; check with `users`, then reset that account or start again with an empty database. In development the same commands run as `pnpm --filter @meridian/api admin <command>`, with `DATABASE_URL` set as for `pnpm dev`.
 
 ## Commands
 

@@ -2,16 +2,59 @@ import { eq } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import QRCode from "qrcode";
-import type { z } from "zod";
-import { seedDefaultCategories, session, user } from "@meridian/db";
-import { AuthStatus, decryptSecret, encryptSecret, LoginBody, OkResponse, SetupBody, TotpCodeBody, TotpSetupResponse } from "@meridian/shared";
-import { hashPassword, newSessionId, newTotpSecret, totpFor, verifyPassword, verifyTotp } from "../lib/auth.js";
-import { badRequest, forbidden, HttpError, unauthorized } from "../lib/errors.js";
+import { z } from "zod";
+import {
+  acceptTotpStep,
+  activatePendingTotp,
+  confirmTotpEnrollment,
+  countFailedSignIns,
+  createOwner,
+  createSession,
+  deleteOwnSession,
+  deleteSession,
+  deleteUserSessions,
+  listSessions,
+  listSignInEvents,
+  PENDING_SESSION_MS,
+  purgeExpiredSessions,
+  recordFailedCode,
+  recordSignInEvent,
+  rotateSession,
+  seedDefaultCategories,
+  setPassword,
+  setPendingTotpSecret,
+  startTotpEnrollment,
+  user,
+  type DbOrTx,
+  type IssuedSession,
+} from "@meridian/db";
+import {
+  AuthStatus,
+  ChangePasswordBody,
+  decryptSecret,
+  encryptSecret,
+  LoginBody,
+  OkResponse,
+  PasswordConfirmBody,
+  RevokeSessionsResponse,
+  SessionIdParams,
+  SessionView,
+  SetupBody,
+  SignInActivity,
+  TotpCodeBody,
+  TotpSetupResponse,
+  type SignInEventKind,
+} from "@meridian/shared";
+import { hashPassword, matchTotpStep, newTotpSecret, totpFor, verifyPassword } from "../lib/auth.js";
+import { badRequest, forbidden, HttpError, notFound, unauthorized } from "../lib/errors.js";
 import { BODY_LIMIT, SIGN_IN_LIMIT } from "../lib/limits.js";
-import { clearSessionCookie, setSessionCookie, type AuthState } from "../plugins/auth.js";
+import { clearSessionCookie, clientOf, setSessionCookie, type AuthSession, type AuthState, type AuthUser } from "../plugins/auth.js";
+import { auditContext } from "./plan.js";
 
 /** A valid Argon2id hash of a random password, verified against on unknown usernames so timing does not reveal them. */
 const DUMMY_HASH_PROMISE = hashPassword("meridian-dummy-password-for-constant-time");
+
+const DAY_MS = 86_400_000;
 
 function statusFor(state: AuthState): AuthStatus {
   switch (state.kind) {
@@ -28,16 +71,25 @@ function statusFor(state: AuthState): AuthStatus {
   }
 }
 
+/** The caller of a route whose guard level is `full`: signed in, second factor proven. */
+function signedIn(request: FastifyRequest): { user: AuthUser; session: AuthSession } {
+  if (request.auth.kind !== "ok") throw unauthorized();
+  return request.auth;
+}
+
 export async function authRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
-  const ttlMs = () => app.config.sessionTtlDays * 86_400_000;
+  const now = () => app.authNow();
 
   // Limits keyed on the account rather than the address (see SIGN_IN_LIMIT). They run in the
   // handler, after the per-address limit and validation, because the key is in the body or session.
-  const passwordLimit = app.createRateLimit({ ...SIGN_IN_LIMIT.passwordPerUsername, keyGenerator: (request) => `username:${(request.body as z.infer<typeof LoginBody>).username.trim().toLowerCase()}` });
+  const usernameKey = (username: string) => `username:${username.trim().toLowerCase()}`;
+  const passwordLimit = app.createRateLimit({ ...SIGN_IN_LIMIT.passwordPerUsername, keyGenerator: (request) => usernameKey((request.body as z.infer<typeof LoginBody>).username) });
+  /** Re-entering the password on a signed-in session counts against the same allowance as signing in. */
+  const reauthLimit = app.createRateLimit({ ...SIGN_IN_LIMIT.passwordPerUsername, keyGenerator: (request) => ("user" in request.auth ? usernameKey(request.auth.user.username) : `address:${request.ip}`) });
   const codeLimit = app.createRateLimit({
     ...SIGN_IN_LIMIT.codePerUser,
-    keyGenerator: (request) => (request.auth.kind === "totp_required" ? `user:${request.auth.user.id}` : `address:${request.ip}`),
+    keyGenerator: (request) => ("user" in request.auth ? `user:${request.auth.user.id}` : `address:${request.ip}`),
   });
   async function enforce(limit: typeof passwordLimit, request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const result = await limit(request);
@@ -46,11 +98,40 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     throw new HttpError(429, `Too many attempts. Try again in ${result.ttlInSeconds} seconds.`, "rate_limited");
   }
 
-  async function startSession(userId: string, totpVerified: boolean) {
-    const id = newSessionId();
-    const expiresAt = new Date(Date.now() + ttlMs());
-    await app.db.insert(session).values({ id, userId, expiresAt, totpVerified });
-    return { id, expiresAt };
+  /** A password-only session: ten minutes to send a code (or to enroll), and good for nothing else. */
+  async function startPendingSession(request: FastifyRequest, reply: FastifyReply, userId: string): Promise<void> {
+    const s = await createSession(app.db, { userId, totpVerified: false, ttlMs: PENDING_SESSION_MS, idleMs: PENDING_SESSION_MS, now: now(), ...clientOf(request) });
+    setSessionCookie(reply, app.config, s.token, s.expiresAt);
+  }
+
+  /** What a signed-in session is created with. A new id is issued every time: after the code, after a password change. */
+  const fullSession = (request: FastifyRequest, userId: string) => ({
+    userId,
+    totpVerified: true,
+    ttlMs: app.config.sessionTtlDays * DAY_MS,
+    idleMs: app.config.sessionIdleDays * DAY_MS,
+    now: now(),
+    ...clientOf(request),
+  });
+
+  /**
+   * The signed-in session that takes the place of the one this request came in on, inside the
+   * caller's transaction. If that session ended while the request was in flight, the request is
+   * refused and the transaction (an accepted code step, a new password) is rolled back with it.
+   */
+  async function replaceSession(tx: DbOrTx, request: FastifyRequest, state: { user: AuthUser; session: AuthSession }): Promise<IssuedSession> {
+    const issued = await rotateSession(tx, state.session.id, fullSession(request, state.user.id));
+    if (!issued) throw unauthorized();
+    return issued;
+  }
+
+  const recordEvent = (request: FastifyRequest, who: { id: string; username: string }, kind: SignInEventKind) =>
+    recordSignInEvent(app.db, { userId: who.id, username: who.username, kind, ...clientOf(request) });
+
+  async function requirePassword(request: FastifyRequest, reply: FastifyReply, userId: string, password: string): Promise<void> {
+    await enforce(reauthLimit, request, reply);
+    const [row] = await app.db.select({ passwordHash: user.passwordHash }).from(user).where(eq(user.id, userId));
+    if (!row || !(await verifyPassword(row.passwordHash, password))) throw forbidden("That is not your current password", "wrong_password");
   }
 
   r.get("/auth/status", { config: { auth: "public" }, schema: { response: { 200: AuthStatus } } }, async (request) => statusFor(request.auth));
@@ -61,12 +142,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     async (request, reply) => {
       if (request.auth.kind !== "setup_required") throw forbidden("The owner account already exists", "already_setup");
       const passwordHash = await hashPassword(request.body.password);
-      const username = request.body.username.trim();
-      const [created] = await app.db.insert(user).values({ username, passwordHash, role: "owner" }).returning({ id: user.id });
+      // Requests that arrive together all pass the check above; createOwner decides them one at a time.
+      const created = await createOwner(app.db, { username: request.body.username, passwordHash }, auditContext(request).batchId);
       await seedDefaultCategories(app.db);
-      const s = await startSession(created!.id, false);
-      setSessionCookie(reply, app.config, s.id, s.expiresAt);
-      return { setupRequired: false, authenticated: true, totpRequired: false, totpEnrolled: false, username };
+      await startPendingSession(request, reply, created.id);
+      return { setupRequired: false, authenticated: true, totpRequired: false, totpEnrolled: false, username: created.username, role: "owner" as const };
     },
   );
 
@@ -78,18 +158,22 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       await enforce(passwordLimit, request, reply);
       const [row] = await app.db.select().from(user).where(eq(user.username, request.body.username.trim()));
       const ok = await verifyPassword(row?.passwordHash ?? (await DUMMY_HASH_PROMISE), request.body.password);
-      if (!row || !ok) throw unauthorized("Wrong username or password", "bad_credentials");
-      const s = await startSession(row.id, false);
-      setSessionCookie(reply, app.config, s.id, s.expiresAt);
+      if (!row || !ok) {
+        // Only attempts on a real account are kept: what is typed as an unknown username may be a password.
+        if (row) await recordEvent(request, row, "password_failed");
+        throw unauthorized("Wrong username or password", "bad_credentials");
+      }
+      // The session this browser came in on (if any) ends here, and so do this user's expired ones.
+      if ("session" in request.auth) await deleteSession(app.db, request.auth.session.id);
+      await purgeExpiredSessions(app.db, now(), row.id);
+      await startPendingSession(request, reply, row.id);
       const enrolled = row.totpConfirmedAt !== null;
-      return { setupRequired: false, authenticated: !enrolled, totpRequired: enrolled, totpEnrolled: enrolled, username: row.username };
+      return { setupRequired: false, authenticated: !enrolled, totpRequired: enrolled, totpEnrolled: enrolled, username: row.username, role: row.role };
     },
   );
 
   r.post("/auth/logout", { config: { auth: "session" }, schema: { response: { 200: OkResponse } } }, async (request, reply) => {
-    if (request.auth.kind !== "anonymous" && request.auth.kind !== "setup_required") {
-      await app.db.delete(session).where(eq(session.id, request.auth.session.id));
-    }
+    if ("session" in request.auth) await deleteSession(app.db, request.auth.session.id);
     clearSessionCookie(reply, app.config);
     return { ok: true as const };
   });
@@ -101,14 +185,18 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (state.kind === "totp_required") throw unauthorized("Enter your authenticator code", "totp_required");
     if (state.user.totpEnrolled) throw badRequest("Two-factor authentication is already set up", "already_enrolled");
     const secret = newTotpSecret();
-    await app.db.update(user).set({ totpSecretEnc: await encryptSecret(secret, app.config.secretsKey) }).where(eq(user.id, state.user.id));
-    const otpauthUrl = totpFor(secret, state.user.username).toString();
-    const qrDataUrl = await QRCode.toDataURL(otpauthUrl, { margin: 1, width: 220 });
-    return { otpauthUrl, qrDataUrl, secret };
+    await startTotpEnrollment(app.db, state.user.id, await encryptSecret(secret, app.config.secretsKey));
+    return totpSetupResponse(secret, state.user.username);
   });
 
-  /** Prove a code from the authenticator; TOTP is enforced from here on. */
-  r.post("/auth/totp/confirm", { bodyLimit: BODY_LIMIT.signIn, config: { auth: "session" }, schema: { body: TotpCodeBody, response: { 200: AuthStatus } } }, async (request) => {
+  async function totpSetupResponse(secret: string, username: string): Promise<TotpSetupResponse> {
+    const otpauthUrl = totpFor(secret, username).toString();
+    const qrDataUrl = await QRCode.toDataURL(otpauthUrl, { margin: 1, width: 220 });
+    return { otpauthUrl, qrDataUrl, secret };
+  }
+
+  /** Prove a code from the authenticator; TOTP is enforced from here on, and the browser gets a new, signed-in session id. */
+  r.post("/auth/totp/confirm", { bodyLimit: BODY_LIMIT.signIn, config: { auth: "session" }, schema: { body: TotpCodeBody, response: { 200: AuthStatus } } }, async (request, reply) => {
     const state = request.auth;
     if (state.kind === "anonymous" || state.kind === "setup_required") throw unauthorized();
     if (state.kind === "totp_required") throw unauthorized("Enter your authenticator code", "totp_required");
@@ -116,10 +204,16 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const [row] = await app.db.select({ totpSecretEnc: user.totpSecretEnc }).from(user).where(eq(user.id, state.user.id));
     if (!row?.totpSecretEnc) throw badRequest("Start two-factor setup first", "totp_not_started");
     const secret = await decryptSecret(row.totpSecretEnc, app.config.secretsKey);
-    if (!verifyTotp(secret, state.user.username, request.body.code)) throw unauthorized("That code is not valid", "bad_totp");
-    await app.db.update(user).set({ totpConfirmedAt: new Date() }).where(eq(user.id, state.user.id));
-    await app.db.update(session).set({ totpVerified: true }).where(eq(session.id, state.session.id));
-    return { setupRequired: false, authenticated: true, totpRequired: false, totpEnrolled: true, username: state.user.username };
+    const step = matchTotpStep(secret, state.user.username, request.body.code, now().getTime());
+    if (step === null) throw unauthorized("That code is not valid", "bad_totp");
+    const issued = await app.db.transaction(async (tx): Promise<IssuedSession> => {
+      // The code's step is recorded, so the code that completed enrollment cannot also complete a sign-in.
+      if (!(await confirmTotpEnrollment(tx, { userId: state.user.id, step, now: now() }, auditContext(request)))) throw badRequest("Two-factor authentication is already set up", "already_enrolled");
+      return replaceSession(tx, request, state);
+    });
+    setSessionCookie(reply, app.config, issued.token, issued.expiresAt);
+    await recordEvent(request, state.user, "signed_in");
+    return { setupRequired: false, authenticated: true, totpRequired: false, totpEnrolled: true, username: state.user.username, role: state.user.role };
   });
 
   /** Second factor after a password login. */
@@ -135,9 +229,117 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       const [row] = await app.db.select({ totpSecretEnc: user.totpSecretEnc }).from(user).where(eq(user.id, state.user.id));
       if (!row?.totpSecretEnc) throw badRequest("Two-factor authentication is not set up", "totp_not_enrolled");
       const secret = await decryptSecret(row.totpSecretEnc, app.config.secretsKey);
-      if (!verifyTotp(secret, state.user.username, request.body.code)) throw unauthorized("That code is not valid", "bad_totp");
-      await app.db.update(session).set({ totpVerified: true }).where(eq(session.id, state.session.id));
-      return { setupRequired: false, authenticated: true, totpRequired: false, totpEnrolled: true, username: state.user.username };
+      const step = matchTotpStep(secret, state.user.username, request.body.code, now().getTime());
+      // One transaction: the step is taken (once, ever) and the signed-in session with its new id is created, or neither.
+      const issued =
+        step === null
+          ? null
+          : await app.db.transaction(async (tx): Promise<IssuedSession | null> => {
+              if (!(await acceptTotpStep(tx, state.user.id, step))) return null; // right code, already used
+              return replaceSession(tx, request, state);
+            });
+      if (!issued) {
+        const { ended } = await recordFailedCode(app.db, state.session.id);
+        await recordEvent(request, state.user, ended ? "code_lockout" : "code_failed");
+        if (ended) {
+          clearSessionCookie(reply, app.config);
+          throw unauthorized("Too many wrong codes. Sign in again with your password.", "sign_in_again");
+        }
+        throw unauthorized("That code is not valid. If you have already used it, wait for the next one.", "bad_totp");
+      }
+      setSessionCookie(reply, app.config, issued.token, issued.expiresAt);
+      await recordEvent(request, state.user, "signed_in");
+      return { setupRequired: false, authenticated: true, totpRequired: false, totpEnrolled: true, username: state.user.username, role: state.user.role };
     },
   );
+
+  // ---- The caller's own account: every role may change its own password, authenticator and sessions ----
+
+  /** Change your password by proving the current one. Every other session of yours ends; this one continues under a new id. */
+  r.post(
+    "/auth/password",
+    { bodyLimit: BODY_LIMIT.signIn, config: { ownAccount: true, rateLimit: SIGN_IN_LIMIT.passwordPerAddress }, schema: { body: ChangePasswordBody, response: { 200: RevokeSessionsResponse } } },
+    async (request, reply) => {
+      const state = signedIn(request);
+      await requirePassword(request, reply, state.user.id, request.body.currentPassword);
+      if (request.body.newPassword === request.body.currentPassword) throw badRequest("The new password is the same as the current one", "same_password");
+      const passwordHash = await hashPassword(request.body.newPassword);
+      const { revoked, issued } = await app.db.transaction(async (tx) => {
+        const revoked = await setPassword(tx, { userId: state.user.id, passwordHash, now: now(), keepSessionId: state.session.id }, auditContext(request));
+        return { revoked, issued: await replaceSession(tx, request, state) };
+      });
+      setSessionCookie(reply, app.config, issued.token, issued.expiresAt);
+      return { revoked };
+    },
+  );
+
+  /** Move to a new authenticator, step 1: re-enter the password, get a new secret. The current authenticator stays in force. */
+  r.post(
+    "/auth/totp/replace",
+    { bodyLimit: BODY_LIMIT.signIn, config: { ownAccount: true, rateLimit: SIGN_IN_LIMIT.passwordPerAddress }, schema: { body: PasswordConfirmBody, response: { 200: TotpSetupResponse } } },
+    async (request, reply) => {
+      const state = signedIn(request);
+      await requirePassword(request, reply, state.user.id, request.body.password);
+      const secret = newTotpSecret();
+      await setPendingTotpSecret(app.db, state.user.id, await encryptSecret(secret, app.config.secretsKey));
+      reply.header("Cache-Control", "no-store");
+      return totpSetupResponse(secret, state.user.username);
+    },
+  );
+
+  /** Step 2: a code from the new authenticator makes it the only one. Every other session of yours ends. */
+  r.post(
+    "/auth/totp/replace/confirm",
+    { bodyLimit: BODY_LIMIT.signIn, config: { ownAccount: true, rateLimit: SIGN_IN_LIMIT.codePerAddress }, schema: { body: TotpCodeBody, response: { 200: RevokeSessionsResponse } } },
+    async (request, reply) => {
+      const state = signedIn(request);
+      await enforce(codeLimit, request, reply);
+      const [row] = await app.db.select({ pending: user.totpPendingSecretEnc }).from(user).where(eq(user.id, state.user.id));
+      if (!row?.pending) throw badRequest("Start the replacement first", "totp_replace_not_started");
+      const secret = await decryptSecret(row.pending, app.config.secretsKey);
+      const step = matchTotpStep(secret, state.user.username, request.body.code, now().getTime());
+      if (step === null) throw badRequest("That code is not from the new authenticator", "bad_totp");
+      const revoked = await activatePendingTotp(app.db, { userId: state.user.id, step, now: now(), keepSessionId: state.session.id }, auditContext(request));
+      if (revoked === null) throw badRequest("Start the replacement first", "totp_replace_not_started");
+      return { revoked };
+    },
+  );
+
+  /** Where you are signed in. A session is named by the hash the database stores, never by the cookie's id. */
+  r.get("/auth/sessions", { schema: { response: { 200: z.array(SessionView) } } }, async (request, reply) => {
+    const state = signedIn(request);
+    reply.header("Cache-Control", "no-store");
+    return (await listSessions(app.db, state.user.id, now())).map((s) => ({
+      id: s.id,
+      createdAt: s.createdAt.toISOString(),
+      lastSeenAt: s.lastSeenAt.toISOString(),
+      expiresAt: s.expiresAt.toISOString(),
+      current: s.id === state.session.id,
+      ip: s.ip,
+      userAgent: s.userAgent,
+    }));
+  });
+
+  /** Sign out everywhere else. */
+  r.post("/auth/sessions/revoke-others", { config: { ownAccount: true }, schema: { response: { 200: RevokeSessionsResponse } } }, async (request) => {
+    const state = signedIn(request);
+    return { revoked: await deleteUserSessions(app.db, state.user.id, state.session.id) };
+  });
+
+  /** Sign one of your sessions out (this one included). */
+  r.delete("/auth/sessions/:id", { config: { ownAccount: true }, schema: { params: SessionIdParams, response: { 200: OkResponse } } }, async (request, reply) => {
+    const state = signedIn(request);
+    if (!(await deleteOwnSession(app.db, state.user.id, request.params.id))) throw notFound("No such session");
+    if (request.params.id === state.session.id) clearSessionCookie(reply, app.config);
+    return { ok: true as const };
+  });
+
+  /** Sign-in activity: the owner sees every member's, a viewer their own. */
+  r.get("/auth/activity", { schema: { response: { 200: SignInActivity } } }, async (request, reply) => {
+    const state = signedIn(request);
+    const scope = state.user.role === "owner" ? {} : { userId: state.user.id };
+    reply.header("Cache-Control", "no-store");
+    const [items, failedLast7Days] = await Promise.all([listSignInEvents(app.db, { ...scope, limit: 100 }), countFailedSignIns(app.db, { ...scope, days: 7 })]);
+    return { items: items.map((e) => ({ id: e.id, at: e.at.toISOString(), username: e.username, kind: e.kind, ip: e.ip, userAgent: e.userAgent })), failedLast7Days };
+  });
 }

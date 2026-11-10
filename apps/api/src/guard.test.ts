@@ -1,18 +1,6 @@
-import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { session, user } from "@meridian/db";
-import { createTestApp, OWNER_PASSWORD, signInOwner, TEST_DATABASE_URL, totpCode, type TestApp } from "./test/helpers.js";
-
-/** A viewer-role user with a verified session, inserted directly; returns the cookie jar for inject(). */
-async function viewerCookies(t: TestApp): Promise<Record<string, string>> {
-  const [row] = await t.db.db
-    .insert(user)
-    .values({ username: `viewer-${randomBytes(4).toString("hex")}`, passwordHash: "never-verified", role: "viewer", totpConfirmedAt: new Date() })
-    .returning({ id: user.id });
-  const id = randomBytes(32).toString("hex");
-  await t.db.db.insert(session).values({ id, userId: row!.id, expiresAt: new Date(Date.now() + 86_400_000), totpVerified: true });
-  return { meridian_session: t.app.signCookie(id) };
-}
+import { user } from "@meridian/db";
+import { createTestApp, OWNER_PASSWORD, sessionCookies, signInOwner, TEST_DATABASE_URL, totpCode, viewerCookies, type TestApp } from "./test/helpers.js";
 
 const JSON_HEADERS = { "content-type": "application/json" };
 const KB = 1024;
@@ -281,11 +269,7 @@ describe.skipIf(!TEST_DATABASE_URL)("sign-in limits that do not depend on the ad
   it("allows 5 authenticator codes per 15 minutes per user, across sessions and addresses", async () => {
     // Fresh password sessions inserted directly (the password limiter above is spent for this minute).
     const [owner] = await t.db.db.select({ id: user.id }).from(user);
-    const halfSession = async () => {
-      const id = randomBytes(32).toString("hex");
-      await t.db.db.insert(session).values({ id, userId: owner!.id, expiresAt: new Date(Date.now() + 86_400_000), totpVerified: false });
-      return { meridian_session: t.app.signCookie(id) };
-    };
+    const halfSession = () => sessionCookies(t, owner!.id, { totpVerified: false });
     const right = totpCode(secret);
     const wrong = right === "000000" ? "111111" : "000000";
     for (let i = 0; i < 5; i++) {

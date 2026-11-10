@@ -1,11 +1,11 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { account, holdingSnapshot, job, price, security, type Db } from "@meridian/db";
+import { account, createSession, holdingSnapshot, job, price, security, session, signInEvent, user, type Db } from "@meridian/db";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "@meridian/db/testing";
 import { generateSecretsKey } from "@meridian/shared";
 import type { WorkerConfig } from "./env.js";
 import type { JobContext } from "./jobs/context.js";
-import { DAILY_JOB_TYPES, inCatchupWindow, schedulePriceJobs } from "./scheduler.js";
+import { atMostEvery, DAILY_JOB_TYPES, inCatchupWindow, purgeSignInData, schedulePriceJobs, SIGN_IN_PURGE_INTERVAL_MS } from "./scheduler.js";
 
 /**
  * The price feed's clock (prices design §3.13, test 24) on the household-local day
@@ -110,5 +110,59 @@ describe.skipIf(!TEST_DATABASE_URL)("schedulePriceJobs", () => {
     expect(await schedulePriceJobs({ ...ctx, config: { ...config, prices: { ...config.prices, catchupHour: null } } })).toBe(0);
     expect(await schedulePriceJobs(ctx)).toBe(1);
     expect(await priceJobs()).toEqual([{ reason: "catchup", day: "2026-10-15", dedupeKey: "prices:catchup:2026-10-15" }]);
+  });
+});
+
+describe("atMostEvery", () => {
+  it("runs the first call, skips calls inside the interval, and retries a failed run on the next call", async () => {
+    let now = new Date("2026-11-10T09:00:00Z");
+    let runs = 0;
+    let fail = false;
+    const hourly = atMostEvery(SIGN_IN_PURGE_INTERVAL_MS, async () => {
+      if (fail) throw new Error("database is restarting");
+      return ++runs;
+    });
+    const ctx = { now: () => now };
+    expect(SIGN_IN_PURGE_INTERVAL_MS).toBe(60 * 60 * 1000);
+    expect(await hourly(ctx)).toBe(1);
+    now = new Date("2026-11-10T09:59:59Z");
+    expect(await hourly(ctx)).toBeNull();
+    now = new Date("2026-11-10T10:00:00Z");
+    fail = true;
+    await expect(hourly(ctx)).rejects.toThrow("database is restarting");
+    fail = false;
+    now = new Date("2026-11-10T10:01:00Z"); // one minute later, not one hour: the failed run did not count
+    expect(await hourly(ctx)).toBe(2);
+  });
+});
+
+describe.skipIf(!TEST_DATABASE_URL)("purgeSignInData", () => {
+  let t: TestDb;
+  beforeAll(async () => {
+    t = await createTestDb();
+  });
+  afterAll(async () => {
+    await t?.cleanup();
+  });
+
+  it("deletes sessions past their end and sign-in activity older than 90 days, and nothing else", async () => {
+    const now = new Date("2026-11-10T09:00:00Z");
+    const day = 86_400_000;
+    const [owner] = await t.db.insert(user).values({ username: "owner", passwordHash: "hash" }).returning({ id: user.id });
+    const base = { userId: owner!.id, totpVerified: true, ttlMs: 30 * day, idleMs: 14 * day, ip: null, userAgent: null };
+    const live = await createSession(t.db, { ...base, now: new Date(now.getTime() - 13 * day) }); // idle for 13 of 14 days
+    await createSession(t.db, { ...base, now: new Date(now.getTime() - 15 * day) }); // idle too long
+    await createSession(t.db, { ...base, now: new Date(now.getTime() - 31 * day) }); // past 30 days
+    await createSession(t.db, { ...base, totpVerified: false, ttlMs: 600_000, idleMs: 600_000, now: new Date(now.getTime() - 601_000) }); // an abandoned password-only session
+    await t.db.insert(signInEvent).values([
+      { at: sql`now() - interval '89 days'`, userId: owner!.id, username: "owner", kind: "code_failed" },
+      { at: sql`now() - interval '91 days'`, userId: owner!.id, username: "owner", kind: "code_failed" },
+      { at: sql`now() - interval '400 days'`, userId: owner!.id, username: "owner", kind: "signed_in" },
+    ]);
+
+    expect(await purgeSignInData({ db: t.db, now: () => now })).toEqual({ sessions: 3, events: 2 });
+    expect((await t.db.select({ id: session.id }).from(session)).map((r) => r.id)).toEqual([live.id]);
+    expect(await t.db.select({ kind: signInEvent.kind }).from(signInEvent)).toEqual([{ kind: "code_failed" }]);
+    expect(await purgeSignInData({ db: t.db, now: () => now })).toEqual({ sessions: 0, events: 0 });
   });
 });

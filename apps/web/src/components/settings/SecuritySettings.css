@@ -1,0 +1,8 @@
+/* Settings > Sign-in and security: the same card column as the settings form above it. */
+.security { margin-top: 2rem; }
+.security-heading { font-size: 1.25rem; margin-bottom: 0.75rem; }
+.security-scroll { overflow-x: auto; }
+.security-inline { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.security-qr { align-self: flex-start; }
+.security-warning { background: color-mix(in srgb, var(--warn) 14%, transparent); padding: 0.5rem 0.75rem; border-radius: 6px; margin: 0 0 0.75rem; }
+.security-failed { color: var(--bad); }

@@ -72,7 +72,10 @@ const Env = z.object({
   SESSION_SECRET: z.string().min(32, "SESSION_SECRET must be at least 32 characters"),
   /** Directory with the built web app; served by the API in production. */
   WEB_DIST_DIR: z.string().optional(),
+  /** A signed-in session ends after this many days, however often it is used. */
   SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+  /** A signed-in session ends after this many days without a request. */
+  SESSION_IDLE_DAYS: z.coerce.number().int().min(1).max(365).default(14),
   /**
    * Phase 3 price feed, read here for display and the `not_configured` state only; the API
    * never reads the key. Normalized by the shared `parsePriceProviderId` (as the worker does),
@@ -102,7 +105,10 @@ export interface ApiConfig {
   sessionSecret: string;
   secretsKey: string;
   webDistDir: string | undefined;
+  /** Absolute lifetime of a signed-in session (`SESSION_TTL_DAYS`). */
   sessionTtlDays: number;
+  /** Allowed inactivity of a signed-in session (`SESSION_IDLE_DAYS`). */
+  sessionIdleDays: number;
   secureCookies: boolean;
   /**
    * Phase 3 price feed as the worker sees it (`PRICE_PROVIDER`; null = `none`), for the Prices
@@ -129,6 +135,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     secretsKey: readSecretsKey(env),
     webDistDir: parsed.WEB_DIST_DIR ?? (production ? path.resolve(process.cwd(), "apps/web/dist") : undefined),
     sessionTtlDays: parsed.SESSION_TTL_DAYS,
+    sessionIdleDays: parsed.SESSION_IDLE_DAYS,
     secureCookies: production,
     priceProvider: parsePriceProviderId(parsed.PRICE_PROVIDER),
     priceFetchHour: parsed.PRICE_FETCH_HOUR,

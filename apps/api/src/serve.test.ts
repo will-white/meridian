@@ -42,7 +42,7 @@ describe("serving the built web app while the database is down", () => {
     const app = await buildApp({
       db: down,
       logger: false,
-      config: { nodeEnv: "test", databaseUrl: "unused", host: "127.0.0.1", port: 0, trustProxy: [], sessionSecret: "s".repeat(32), secretsKey: "unused", webDistDir: dist, sessionTtlDays: 1, secureCookies: false },
+      config: { nodeEnv: "test", databaseUrl: "unused", host: "127.0.0.1", port: 0, trustProxy: [], sessionSecret: "s".repeat(32), secretsKey: "unused", webDistDir: dist, sessionTtlDays: 1, sessionIdleDays: 1, secureCookies: false },
     });
     try {
       for (const url of [...ASSETS, "/", "/plan"]) {

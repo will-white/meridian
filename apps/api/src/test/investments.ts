@@ -1,8 +1,6 @@
-import { randomBytes } from "node:crypto";
 import * as OTPAuth from "otpauth";
-import { session, user } from "@meridian/db";
 import { INV_SEED_NOW, seedInvestmentFixture, seedInvestmentLots, type InvestmentSeed } from "@meridian/db/testing";
-import { createTestApp, type TestApp } from "./helpers.js";
+import { createTestApp, viewerCookies, type TestApp } from "./helpers.js";
 
 /**
  * A test app on the Phase 3 INV seed (docs/design/phase-3/views-and-api.md §7.0) with the
@@ -29,13 +27,4 @@ export async function freshInvestmentApp(options: { lots?: boolean } = {}): Prom
   return { t, S, lotIds };
 }
 
-/** A viewer-role user with a verified session, inserted directly; returns the cookie jar for inject(). */
-export async function viewerCookies(t: TestApp): Promise<Record<string, string>> {
-  const [row] = await t.db.db
-    .insert(user)
-    .values({ username: `viewer-${randomBytes(4).toString("hex")}`, passwordHash: "never-verified", role: "viewer", totpConfirmedAt: new Date() })
-    .returning({ id: user.id });
-  const id = randomBytes(32).toString("hex");
-  await t.db.db.insert(session).values({ id, userId: row!.id, expiresAt: new Date(Date.now() + 86_400_000), totpVerified: true });
-  return { meridian_session: t.app.signCookie(id) };
-}
+export { viewerCookies };

@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "node ../../scripts/bundle.mjs src/server.ts dist/server.js",
+    "build": "node ../../scripts/bundle.mjs src/server.ts dist/server.js && node ../../scripts/bundle.mjs src/admin.ts dist/admin.js",
+    "admin": "tsx src/admin.ts",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
