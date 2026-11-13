@@ -69,7 +69,8 @@ export async function connectionRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
-   * Queue a sync now. The worker picks it up within its poll interval. One sync per connection
+   * Queue a sync now (or, while a setup token is stored and not yet claimed, the claim). The
+   * worker picks it up within its poll interval. One sync per connection
    * is queued or running at a time, so "sync now" during one returns that one. A full resync
    * (the whole first-sync window again, for after a bank was unreadable) is never dropped that
    * way: a sync still waiting is turned into one, and while one is running the answer is 409
@@ -88,10 +89,18 @@ export async function connectionRoutes(app: FastifyInstance): Promise<void> {
       const [row] = await app.db.select().from(connection).where(eq(connection.id, request.params.id));
       if (!row) throw notFound("Connection not found");
       if (row.type !== "simplefin") throw badRequest("Only SimpleFIN connections sync", "not_simplefin");
-      if (row.status === "claiming" && row.claimTokenEnc) {
-        return toJobView(await enqueueJob(app.db, "simplefin.claim", { connectionId: row.id }, { dedupe: true }));
+      // A token that is stored but not claimed yet (the claim failed for a reason that passes: audit a4-sync-parse-06) is claimed again.
+      if (row.claimTokenEnc && !row.accessUrlEnc) {
+        const claim = await enqueueJob(app.db, "simplefin.claim", { connectionId: row.id }, { dedupe: true });
+        if (row.status !== "disabled") await app.db.update(connection).set({ status: "claiming", updatedAt: new Date() }).where(eq(connection.id, row.id));
+        return toJobView(claim);
       }
-      if (!row.accessUrlEnc) throw badRequest("This connection has no access URL yet; paste a new setup token", "no_access_url");
+      if (!row.accessUrlEnc) {
+        throw badRequest(
+          "This connection has no access URL: its setup token was refused or used up. Remove the connection and add it again with a new setup token from the SimpleFIN Bridge.",
+          "no_access_url",
+        );
+      }
       const type = request.body.balancesOnly ? "simplefin.balances" : "simplefin.sync";
       const payload: Record<string, unknown> = { connectionId: row.id, manual: true };
       const fullResync = request.body.fullResync && !request.body.balancesOnly;

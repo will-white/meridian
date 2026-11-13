@@ -12,7 +12,7 @@ import {
   type HoldingsStats,
   type JobRow,
 } from "@meridian/db";
-import { parseSimplefinHoldings, sanitizeText, SimplefinAccountSet, toIsoDate } from "@meridian/shared";
+import { parseSimplefinHoldings, readSimplefinAccountSet, sanitizeText, toIsoDate, type SimplefinAccountSet } from "@meridian/shared";
 import type { JobContext } from "./context.js";
 
 export interface ReprocessHoldingsOutcome extends HoldingsStats {
@@ -84,12 +84,15 @@ export async function runReprocessHoldingsJob(ctx: JobContext, job: JobRow): Pro
 
   try {
     for (const row of rows) {
-      const parsed = SimplefinAccountSet.safeParse(row.rawPayload);
-      if (!parsed.success) {
+      // Read one account at a time, as the sync does (audit a4-sync-parse-03): an account that cannot be read costs only itself.
+      let accountsRead: SimplefinAccountSet["accounts"];
+      try {
+        accountsRead = readSimplefinAccountSet(row.rawPayload).set.accounts;
+      } catch {
         outcome.payloadsUnparseable++;
         continue;
       }
-      for (const sf of parsed.data.accounts) {
+      for (const sf of accountsRead) {
         const acct = byExternalId.get(sf.id);
         if (!acct) {
           outcome.accountsUnknown++;

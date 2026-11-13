@@ -1,8 +1,22 @@
 import { eq } from "drizzle-orm";
 import { connection, enqueueJob, importLog, type JobRow } from "@meridian/db";
-import { decryptSecret, encryptSecret } from "@meridian/shared";
+import { decryptSecret, encryptSecret, errorMessageText } from "@meridian/shared";
 import { claimAccessUrl, SimplefinError } from "../simplefin/client.js";
 import type { JobContext } from "./context.js";
+
+/**
+ * What the connection says after a claim failed, and whether the token is spent. The Bridge
+ * refusing the token (403) or answering with an access URL that was not kept (another host)
+ * spends it: it is deleted and the household creates a new one. Any other failure (the Bridge
+ * down, a timeout, a host this server is not set up to call) leaves the token stored, and
+ * `POST /connections/:id/sync` (Sync now) queues the claim again (audit a4-sync-parse-06).
+ */
+export function claimFailure(err: unknown): { message: string; spent: boolean } {
+  const reason = errorMessageText(err);
+  if (err instanceof SimplefinError && (err.kind === "claim_forbidden" || err.kind === "access_url_refused")) return { message: reason, spent: true };
+  if (err instanceof SimplefinError && err.kind === "host_not_allowed") return { message: `${reason} Then press Sync now to claim the token.`, spent: false };
+  return { message: `The setup token could not be claimed yet: ${reason.replace(/\.$/, "")}. Press Sync now to try again.`, spent: false };
+}
 
 /** Turn a pasted setup token into an encrypted Access URL, then queue the first sync. */
 export async function runClaimJob(ctx: JobContext, job: JobRow): Promise<void> {
@@ -26,15 +40,14 @@ export async function runClaimJob(ctx: JobContext, job: JobRow): Promise<void> {
     await ctx.db.update(importLog).set({ status: "ok", finishedAt: ctx.now(), message: "Access URL claimed" }).where(eq(importLog.id, log!.id));
     await enqueueJob(ctx.db, "simplefin.sync", { connectionId }, { dedupe: true });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    const permanent = err instanceof SimplefinError ? err.permanent : false;
+    const { message, spent } = claimFailure(err);
     await ctx.db
       .update(connection)
       .set({
         status: "error",
         lastError: message,
-        // A refused token is dead; keep it only while a retry could still succeed.
-        claimTokenEnc: permanent ? null : conn.claimTokenEnc,
+        // A refused token is dead; any other is kept, so the claim can be tried again.
+        claimTokenEnc: spent ? null : conn.claimTokenEnc,
         updatedAt: ctx.now(),
       })
       .where(eq(connection.id, connectionId));

@@ -16,7 +16,7 @@ export function toIsoDate(date: Date): IsoDate {
   return date.toISOString().slice(0, 10);
 }
 
-/** Unix seconds (SimpleFIN `posted` / `transaction_date`) to a UTC calendar date. */
+/** Unix seconds (SimpleFIN `posted` / `transacted_at`) to a UTC calendar date. */
 export function unixToIsoDate(seconds: number): IsoDate {
   return toIsoDate(new Date(seconds * 1000));
 }

@@ -3,7 +3,18 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parsePriceProviderId } from "@meridian/shared";
-import { loadConfig, loadPriceConfig, PRICE_DEFAULTS, priceConfigOf, readCatchupHour, readPriceProvider, readTiingoApiKey, resolveDatabaseUrl } from "./env.js";
+import {
+  loadConfig,
+  loadPriceConfig,
+  PRICE_DEFAULTS,
+  priceConfigOf,
+  readCatchupHour,
+  readPriceProvider,
+  readSimplefinAllowedHosts,
+  readSimplefinMaxResponseBytes,
+  readTiingoApiKey,
+  resolveDatabaseUrl,
+} from "./env.js";
 
 describe("resolveDatabaseUrl", () => {
   it("assembles the URL from POSTGRES_* inside Docker and escapes the password", () => {
@@ -98,5 +109,22 @@ describe("price feed configuration (prices design §6.4)", () => {
     expect(config.prices).toMatchObject({ provider: "tiingo", tiingoApiKey: "k" });
     expect(config.detectHourUtc).toBe(3);
     expect(loadConfig({ DATABASE_URL: "postgres://x", SECRETS_KEY: "s" }).prices?.provider).toBeNull();
+  });
+});
+
+describe("SimpleFIN hosts and response size (a4-sync-parse-13, a4-sync-parse-15)", () => {
+  it("allows the Bridge's hosts unless SIMPLEFIN_ALLOWED_HOSTS lists others, and refuses anything that is not a host name", () => {
+    expect(readSimplefinAllowedHosts({})).toEqual(["bridge.simplefin.org", "beta-bridge.simplefin.org"]);
+    expect(readSimplefinAllowedHosts({ SIMPLEFIN_ALLOWED_HOSTS: " " })).toEqual(["bridge.simplefin.org", "beta-bridge.simplefin.org"]);
+    expect(readSimplefinAllowedHosts({ SIMPLEFIN_ALLOWED_HOSTS: "Bridge.SimpleFIN.org, sfin.home.example 192.168.1.20" })).toEqual(["bridge.simplefin.org", "sfin.home.example", "192.168.1.20"]);
+    expect(() => readSimplefinAllowedHosts({ SIMPLEFIN_ALLOWED_HOSTS: "https://bridge.simplefin.org" })).toThrow(/host names only/);
+    expect(() => readSimplefinAllowedHosts({ SIMPLEFIN_ALLOWED_HOSTS: "bridge.simplefin.org:443" })).toThrow(/host names only/);
+  });
+  it("reads at most 50 MB of a response unless SIMPLEFIN_MAX_RESPONSE_MB says otherwise", () => {
+    expect(readSimplefinMaxResponseBytes({})).toBe(50_000_000);
+    expect(readSimplefinMaxResponseBytes({ SIMPLEFIN_MAX_RESPONSE_MB: "120" })).toBe(120_000_000);
+    expect(readSimplefinMaxResponseBytes({ SIMPLEFIN_MAX_RESPONSE_MB: "0" })).toBe(50_000_000);
+    const config = loadConfig({ DATABASE_URL: "postgres://x", SECRETS_KEY: "s" });
+    expect(config).toMatchObject({ simplefinAllowedHosts: ["bridge.simplefin.org", "beta-bridge.simplefin.org"], simplefinMaxResponseBytes: 50_000_000 });
   });
 });

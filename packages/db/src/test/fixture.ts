@@ -186,7 +186,7 @@ export function renderAccountSet(options: RenderOptions): SimplefinAccountSet {
         posted: unix(postDate),
         amount: ev.amount,
         description: ev.postedDescription ?? ev.description,
-        transaction_date: unix(ev.date, 0),
+        transacted_at: unix(ev.date, 0),
         pending: false,
       });
     } else {
@@ -195,7 +195,7 @@ export function renderAccountSet(options: RenderOptions): SimplefinAccountSet {
         posted: 0,
         amount: ev.amount,
         description: ev.description,
-        transaction_date: unix(ev.date, 0),
+        transacted_at: unix(ev.date, 0),
         pending: true,
       });
     }

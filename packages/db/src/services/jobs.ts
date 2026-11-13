@@ -1,6 +1,6 @@
-import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import type { Db, DbOrTx } from "../index.js";
-import { job } from "../schema/index.js";
+import { connection, importLog, job } from "../schema/index.js";
 
 export type JobRow = typeof job.$inferSelect;
 export type JobType = JobRow["type"];
@@ -79,10 +79,15 @@ export async function completeJob(tx: DbOrTx, id: string): Promise<void> {
   await tx.update(job).set({ status: "done", finishedAt: new Date(), lockedBy: null, lastError: null }).where(eq(job.id, id));
 }
 
+/** The wait before the next attempt after `attempts` failed ones: 2, 4, 8 … minutes, at most an hour. */
+export function retryDelayMs(attempts: number): number {
+  return Math.min(60, 2 ** attempts) * 60_000;
+}
+
 /** Record a failure; retry with exponential backoff until maxAttempts is spent. */
 export async function failJob(tx: DbOrTx, row: Pick<JobRow, "id" | "attempts" | "maxAttempts">, error: string, options: { retry?: boolean } = {}): Promise<void> {
   const retry = options.retry !== false && row.attempts < row.maxAttempts;
-  const delayMs = Math.min(60, 2 ** row.attempts) * 60_000;
+  const delayMs = retryDelayMs(row.attempts);
   await tx
     .update(job)
     .set(
@@ -93,15 +98,62 @@ export async function failJob(tx: DbOrTx, row: Pick<JobRow, "id" | "attempts" | 
     .where(eq(job.id, row.id));
 }
 
-/** Jobs stuck in `running` (worker died) go back to the queue. */
-export async function requeueStaleJobs(tx: DbOrTx, olderThanMinutes = 30): Promise<number> {
+export interface StaleJobsOutcome {
+  /** Put back in the queue, to run after the backoff of a failed attempt. */
+  requeued: number;
+  /** Their attempts were spent: failed. */
+  failed: number;
+}
+
+export const STALE_JOB_MESSAGE = "The worker stopped before this job finished (it was restarted, or ran out of memory)";
+
+/**
+ * Jobs stuck in `running` because the worker died (audit a4-sync-parse-07). A crash counts as
+ * a failed attempt: a job whose attempts are spent is failed, any other goes back to the queue
+ * after the same backoff `failJob` gives, so a job that kills the worker cannot run again
+ * every half hour for ever, and the single try a failing connection gets (audit decision 27)
+ * stays single. A SimpleFIN job's open import log rows are closed as errors, and a sync's
+ * connection records the attempt as a failed sync does, so the scheduler spaces the next one
+ * from it.
+ */
+export async function requeueStaleJobs(db: Db, olderThanMinutes = 30): Promise<StaleJobsOutcome> {
   const cutoff = new Date(Date.now() - olderThanMinutes * 60_000);
-  const rows = await tx
-    .update(job)
-    .set({ status: "queued", lockedBy: null, lastError: "worker did not finish; requeued" })
-    .where(and(eq(job.status, "running"), lt(job.startedAt, cutoff)))
-    .returning({ id: job.id });
-  return rows.length;
+  const stale = await db
+    .select()
+    .from(job)
+    .where(and(eq(job.status, "running"), lt(job.startedAt, cutoff)));
+  const outcome: StaleJobsOutcome = { requeued: 0, failed: 0 };
+  for (const row of stale) {
+    const spent = row.attempts >= row.maxAttempts;
+    const now = new Date();
+    await db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(job)
+        .set(
+          spent
+            ? { status: "failed", lockedBy: null, lastError: STALE_JOB_MESSAGE, finishedAt: now }
+            : { status: "queued", lockedBy: null, lastError: `${STALE_JOB_MESSAGE}; tried again later`, runAt: new Date(now.getTime() + retryDelayMs(row.attempts)) },
+        )
+        .where(and(eq(job.id, row.id), eq(job.status, "running"), row.lockedBy === null ? undefined : eq(job.lockedBy, row.lockedBy)))
+        .returning({ id: job.id });
+      if (!updated) return;
+      if (spent) outcome.failed++;
+      else outcome.requeued++;
+      const connectionId = row.payload["connectionId"];
+      if (typeof connectionId !== "string" || !row.type.startsWith("simplefin.") || !row.startedAt) return;
+      await tx
+        .update(importLog)
+        .set({ status: "error", finishedAt: now, message: STALE_JOB_MESSAGE })
+        .where(and(eq(importLog.connectionId, connectionId), eq(importLog.status, "running"), gte(importLog.startedAt, row.startedAt)));
+      if (row.type === "simplefin.sync" || row.type === "simplefin.balances") {
+        await tx
+          .update(connection)
+          .set({ status: "error", lastError: STALE_JOB_MESSAGE, lastErrors: [], lastAttemptAt: now, updatedAt: now })
+          .where(and(eq(connection.id, connectionId), inArray(connection.status, ["ok", "error", "auth_required"])));
+      }
+    });
+  }
+  return outcome;
 }
 
 export async function listRecentJobs(tx: DbOrTx, limit = 50): Promise<JobRow[]> {

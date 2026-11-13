@@ -80,6 +80,8 @@ describe.skipIf(!TEST_DATABASE_URL)("recurring.detect, plan.close_month and the 
       db,
       config,
       client: {
+        // The suites' Bridge (the default list is the real Bridge's hosts).
+        allowedHosts: ["bridge.example.test"],
         fetch: (async (input: string | URL | Request) => {
           requests.push(new URL(String(input)));
           return nextResponse();

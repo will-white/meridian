@@ -67,6 +67,9 @@ The worker syncs each SimpleFIN connection every 6 hours (`SYNC_INTERVAL_HOURS`)
 - **The Bridge is down or unreachable.** The sync is retried twice within minutes, then once every 6 hours until it works. The error says why (a name that does not resolve, a refused connection, a certificate that was not accepted, a timeout).
 - **The Bridge refuses the access URL (403) or asks for payment (402).** Trying again cannot help, so scheduled syncs for that connection stop. Fix it at the Bridge, then press **Sync now**; when that sync works the schedule resumes. A revoked access URL needs a new setup token (add a new connection, remove the old one).
 - **Full resync** asks again for the whole first-sync window (93 days). Nothing is added twice. Use it when something looks missing after an outage.
+- **An odd value in a response.** Amounts are read to the cent whatever their form ("+5.00", "12.345", "1E+2"); one that cannot be read skips only that transaction, a balance that cannot be read keeps the last known one, and an account or transaction that cannot be read at all is skipped. The connection lists each of these, and every response is kept in the import log exactly as it arrived.
+- **A setup token that could not be claimed** (the Bridge was down for a moment) stays stored: press **Sync now** to try the claim again. A token the Bridge refused (403) is deleted; the connection says it may be compromised.
+- **Which servers.** The worker only calls the SimpleFIN Bridge's hosts (`SIMPLEFIN_ALLOWED_HOSTS`, default `bridge.simplefin.org` and `beta-bridge.simplefin.org`); a setup token for any other host is refused before any request. If you run your own SimpleFIN server, list its host there. Responses larger than `SIMPLEFIN_MAX_RESPONSE_MB` (50) are not read.
 
 ## Commands
 

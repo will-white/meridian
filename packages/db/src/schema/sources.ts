@@ -83,7 +83,7 @@ export const importLog = pgTable(
     status: text("status", { enum: ["running", "ok", "error"] }).notNull().default("running"),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
-    /** Raw SimpleFIN response or the CSV text, exactly as received. */
+    /** Raw SimpleFIN response or the CSV text, as received (a response that is not JSON as `{ notJson }`; NUL characters and unpaired surrogates, which jsonb refuses, as U+FFFD). */
     rawPayload: jsonb("raw_payload"),
     stats: jsonb("stats").$type<Record<string, number>>(),
     errors: jsonb("errors").$type<ConnectionError[]>().notNull().default([]),
