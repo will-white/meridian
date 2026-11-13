@@ -1,4 +1,5 @@
 import { claimNextJob, completeJob, failJob, requeueStaleJobs } from "@meridian/db";
+import { errorMessageText } from "@meridian/shared";
 import { dispatchJob } from "./jobs/index.js";
 import type { JobContext } from "./jobs/context.js";
 
@@ -22,7 +23,8 @@ export async function drainQueue(ctx: JobContext): Promise<number> {
       await completeJob(ctx.db, job.id);
       ctx.log.info(`[job] ${job.type} ${job.id} done in ${Date.now() - started}ms ${result ? JSON.stringify(result, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v)) : ""}`);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      // Shown on the Connections page: sanitized and bounded, since an error can quote what a server sent.
+      const message = errorMessageText(err);
       // Plan decision 18: retry unless the error says retrying cannot help.
       const retry = !isPermanentError(err);
       await failJob(ctx.db, job, message, { retry });
@@ -40,8 +42,8 @@ export function startRunner(ctx: JobContext): () => void {
     try {
       if (Date.now() - lastStaleSweep > 60_000) {
         lastStaleSweep = Date.now();
-        const n = await requeueStaleJobs(ctx.db, 30);
-        if (n > 0) ctx.log.warn(`[runner] requeued ${n} stale job(s)`);
+        const stale = await requeueStaleJobs(ctx.db, 30);
+        if (stale.requeued + stale.failed > 0) ctx.log.warn(`[runner] a worker stopped during ${stale.requeued + stale.failed} job(s): ${stale.requeued} requeued after a backoff, ${stale.failed} failed (attempts spent)`);
       }
       await drainQueue(ctx);
     } catch (err) {

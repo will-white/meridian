@@ -14,12 +14,18 @@ const { db, client } = createDb(config.databaseUrl, { max: 5 });
 const ctx: JobContext = {
   db,
   config,
-  client: { timeoutMs: config.requestTimeoutMs },
+  client: {
+    timeoutMs: config.requestTimeoutMs,
+    ...(config.simplefinAllowedHosts ? { allowedHosts: config.simplefinAllowedHosts } : {}),
+    ...(config.simplefinMaxResponseBytes ? { maxResponseBytes: config.simplefinMaxResponseBytes } : {}),
+  },
   now: () => new Date(),
   log: console,
 };
 
-console.log(`[worker] ${config.workerId} starting; sync every ${config.syncIntervalHours}h, polling every ${config.pollIntervalMs}ms`);
+console.log(
+  `[worker] ${config.workerId} starting; sync every ${config.syncIntervalHours}h, polling every ${config.pollIntervalMs}ms; SimpleFIN hosts: ${(config.simplefinAllowedHosts ?? []).join(", ")}`,
+);
 const stopRunner = startRunner(ctx);
 const stopScheduler = startScheduler(ctx);
 

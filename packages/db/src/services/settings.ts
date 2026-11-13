@@ -31,6 +31,16 @@ export function householdToday(setting: Pick<HouseholdSettingRow, "timezone">, n
 }
 
 /**
+ * The household's calendar date at `now`, read without creating the singleton (a sync must
+ * not create it before its transactions fix `plan_start_month`): the default zone when there
+ * is no row yet (Phase 2 plan decision 16).
+ */
+export async function readHouseholdToday(db: DbOrTx, now: Date): Promise<IsoDate> {
+  const [row] = await db.select({ timezone: householdSetting.timezone }).from(householdSetting).where(eq(householdSetting.id, 1));
+  return householdToday(row ?? { timezone: DEFAULT_TIMEZONE }, now);
+}
+
+/**
  * Read the singleton, creating it on first use with plan_start_month = the month of
  * the earliest transaction, or the current month when the ledger is empty.
  */

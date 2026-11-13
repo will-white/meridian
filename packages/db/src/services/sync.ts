@@ -1,9 +1,9 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   describeSimplefinError,
   impliedPrice,
   isInvestmentAccountType,
-  parseDecimalToCents,
+  parseSimplefinAmount,
   parseSimplefinHoldings,
   sanitizeText,
   simplefinFeedHealth,
@@ -15,9 +15,10 @@ import {
   type HoldingsParseResult,
   type IsoDate,
   type SimplefinAccountSet,
+  type SimplefinReadProblem,
 } from "@meridian/shared";
 import type { Db } from "../index.js";
-import { account, householdSetting, type ConnectionError } from "../schema/index.js";
+import { account, type ConnectionError } from "../schema/index.js";
 import { upsertSimplefinAccount } from "./accounts.js";
 import { PlanError } from "./audit.js";
 import { rebuildImpliedPrices, replaceHoldingSnapshot, type SnapshotPosition } from "./holdings.js";
@@ -25,7 +26,7 @@ import { ingestTransactions, type IncomingTransaction, type IngestStats } from "
 import { linkUnlinkedInvestmentTxns } from "./investmentTxns.js";
 import { loadRules } from "./rules.js";
 import { resolveSecurity } from "./securities.js";
-import { DEFAULT_TIMEZONE, householdToday } from "./settings.js";
+import { readHouseholdToday } from "./settings.js";
 import { pairTransfersInDb } from "./transfers.js";
 
 export interface ApplyAccountSetOptions {
@@ -35,8 +36,15 @@ export interface ApplyAccountSetOptions {
   /** Start of the requested window. Required unless balancesOnly. */
   windowStart?: IsoDate;
   balancesOnly?: boolean;
-  /** The clock (the worker's `ctx.now()`): dates the holdings' `today` check. Default: now. */
+  /** The clock (the worker's `ctx.now()`): the household's day for a pending item without a date, and the holdings' `today` check. Default: now. */
   now?: Date;
+  /**
+   * What `readSimplefinAccountSet` skipped (audit a4-sync-parse-03). Reported with the
+   * connection's entries; an account it skipped makes the response incomplete (unless the
+   * household closed it), and an account some of whose transactions it skipped keeps its
+   * unmatched pending rows.
+   */
+  readProblems?: readonly SimplefinReadProblem[];
 }
 
 /** Phase 3 (imports design §3.3 step 5): the holdings part of a sync's `import_log.stats`. */
@@ -92,22 +100,27 @@ export interface ApplyAccountSetResult {
   /** Phase 3: synced investment accounts with an income feed on (the worker queues `investments.income_feed` when > 0 after a full sync). */
   incomeFeedAccounts: number;
   /**
-   * The Bridge reported a connection or account problem (`simplefinFeedHealth`): the data of
-   * the accounts it covers may be stale or partial. Their pending rows were kept, and the
-   * connection's high-water mark must not move.
+   * The Bridge reported a connection or account problem (`simplefinFeedHealth`), or an open
+   * account could not be read at all: the data of the accounts it covers may be stale or
+   * partial. Their pending rows were kept, and the connection's high-water mark must not move.
+   * Problems with accounts the household closed are left out.
    */
   incomplete: boolean;
   /** The balance date of every account in the response the household has not closed: how fresh the Bridge's copy of each is. */
   balanceDates: IsoDate[];
 }
 
-/** Map one SimpleFIN transaction to the ingest shape, sanitizing every text field. */
-export function toIncomingTransaction(t: SimplefinAccountSet["accounts"][number]["transactions"][number], now = new Date()): IncomingTransaction {
+/**
+ * Map one SimpleFIN transaction to the ingest shape, sanitizing every text field. The amount
+ * is read by the caller (`parseSimplefinAmount`), so that one it cannot read skips only this
+ * transaction; `fallbackDate` is the household's day, for a pending item without a date.
+ */
+export function toIncomingTransaction(t: SimplefinAccountSet["accounts"][number]["transactions"][number], amountCents: bigint, fallbackDate: IsoDate): IncomingTransaction {
   const pending = t.pending === true || t.posted === 0;
   const out: IncomingTransaction = {
     externalId: t.id,
-    date: simplefinTransactionDate(t, now),
-    amountCents: parseDecimalToCents(t.amount),
+    date: simplefinTransactionDate(t, fallbackDate),
+    amountCents,
     description: sanitizeText(t.description, 500),
     pending,
   };
@@ -119,18 +132,28 @@ export function toIncomingTransaction(t: SimplefinAccountSet["accounts"][number]
   return out;
 }
 
+/**
+ * The connection's entries for a response: each `errlist` entry, described, then each plain
+ * string in `errors` that does not repeat one (a Bridge may send the same text in both).
+ */
 export function errorsFromAccountSet(set: SimplefinAccountSet): ConnectionError[] {
   const out: ConnectionError[] = set.errlist.map((e) => {
     const err: ConnectionError = { code: sanitizeText(e.code, 50), message: describeSimplefinError(e) };
     if (e.account_id) err.accountId = sanitizeText(e.account_id, 100);
     return err;
   });
+  const said = new Set([...set.errlist.map((e) => sanitizeText(e.msg, 300)), ...out.map((e) => e.message)]);
   for (const s of set.errors) {
     const message = sanitizeText(s, 300);
-    if (message && !out.some((e) => e.message === message)) out.push({ code: "error", message });
+    if (message && !said.has(message)) {
+      said.add(message);
+      out.push({ code: "error", message });
+    }
   }
   return out;
 }
+
+const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
 // ---- Phase 3: holdings from the feed (imports design §3.3; plan decision 18) ----
 
@@ -267,17 +290,8 @@ export async function applySimplefinHoldings(db: Db, input: ApplySimplefinHoldin
   });
 }
 
-/**
- * The day a feed's holdings may not be dated after: the later of the household's day and the
- * UTC day (the Bridge dates in UTC). Read without `getHouseholdSetting`, which would create the
- * singleton before the first sync's transactions fix `plan_start_month`.
- */
-async function syncToday(db: Db, now: Date): Promise<IsoDate> {
-  const [row] = await db.select({ timezone: householdSetting.timezone }).from(householdSetting).where(eq(householdSetting.id, 1));
-  const household = householdToday(row ?? { timezone: DEFAULT_TIMEZONE }, now);
-  const utc = toIsoDate(now);
-  return household > utc ? household : utc;
-}
+/** The later of two days: a feed's holdings may be dated up to the household's day or the UTC day (the Bridge dates in UTC), whichever is later. */
+const laterDay = (a: IsoDate, b: IsoDate): IsoDate => (a > b ? a : b);
 
 /**
  * Persist a parsed Account Set: accounts, balances, holdings (Phase 3, per account in its own
@@ -287,6 +301,12 @@ async function syncToday(db: Db, now: Date): Promise<IsoDate> {
  * An account covered by an `errlist` problem (the Bridge could not read it, read part of it,
  * or its bank needs re-authentication) is applied like any other, except that its list is
  * not taken as complete: pending rows missing from it stay.
+ *
+ * One odd value costs only itself (audit a4-sync-parse-01): a transaction whose amount cannot
+ * be read is skipped, a balance that cannot be read keeps the last known one, and each is
+ * reported for its account, as are amounts rounded to the cent. An account the household
+ * closed gets its balance and holdings but no transactions (a4-sync-parse-09): it no longer
+ * needs them.
  */
 export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): Promise<ApplyAccountSetResult> {
   const rules = await loadRules(db);
@@ -298,12 +318,26 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
   let accountsCreated = 0;
   let earliest: IsoDate | undefined;
   const now = options.now ?? new Date();
-  const today = await syncToday(db, now);
-  const health = simplefinFeedHealth(options.accountSet.errlist);
+  const householdDay = await readHouseholdToday(db, now);
+  const today = laterDay(householdDay, toIsoDate(now));
+  const closedIds = (
+    await db
+      .select({ externalId: account.externalId })
+      .from(account)
+      .where(and(eq(account.connectionId, options.connectionId), eq(account.closed, true)))
+  ).flatMap((r) => (r.externalId ? [r.externalId] : []));
+  const health = simplefinFeedHealth(options.accountSet.errlist, { closedAccountIds: closedIds });
+  const closedLabels = new Set(closedIds.map((id) => sanitizeText(id, 100)));
+  const readProblems = options.readProblems ?? [];
+  // An open account the reader could not read sent none of its transactions: the same hole as act.failed.
+  const unreadableAccount = readProblems.some((p) => p.code === "account.unreadable" && !(p.accountId !== undefined && closedLabels.has(p.accountId)));
+  const partlyRead = new Set(readProblems.flatMap((p) => (p.code === "transaction.unreadable" && p.accountId !== undefined ? [p.accountId] : [])));
+  const feedErrors: ConnectionError[] = [];
   const balanceDates: IsoDate[] = [];
 
   for (const sf of options.accountSet.accounts) {
-    const { id: accountId, created } = await db.transaction((tx) => upsertSimplefinAccount(tx, options.connectionId, sf));
+    const upserted = await db.transaction((tx) => upsertSimplefinAccount(tx, options.connectionId, sf));
+    const { id: accountId, created } = upserted;
     if (created) accountsCreated++;
     const [row] = await db
       .select({ name: account.name, type: account.type, closed: account.closed, investmentIncomeFeed: account.investmentIncomeFeed })
@@ -311,6 +345,23 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
       .where(eq(account.id, accountId));
     if (!row?.closed) balanceDates.push(unixToIsoDate(sf["balance-date"]));
     const accountName = row?.name ?? (sanitizeText(sf.name, 100) || "Account");
+    const label = sanitizeText(accountName, 100) || "Account";
+    const accountLabel = sanitizeText(sf.id, 100);
+    let rounded = upserted.rounded;
+    if (upserted.balanceUnreadable) {
+      feedErrors.push({ code: "balance.unreadable", message: `${label}: the balance from the Bridge could not be read, so it was not changed`, accountId: accountLabel });
+    } else if (upserted.availableUnreadable) {
+      feedErrors.push({ code: "balance.unreadable", message: `${label}: the available balance from the Bridge could not be read, so it was not changed`, accountId: accountLabel });
+    }
+    const reportRounded = () => {
+      if (rounded > 0) {
+        feedErrors.push({
+          code: "amount.rounded",
+          message: `${label}: ${rounded} ${plural(rounded, "amount", "amounts")} had digits below a cent and ${plural(rounded, "was", "were")} rounded to the cent`,
+          accountId: accountLabel,
+        });
+      }
+    };
     const accountType: AccountType = row?.type ?? "checking";
     if (row && isInvestmentAccountType(row.type)) {
       investmentAccountIds.push(accountId);
@@ -336,13 +387,35 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
       holdingErrors.push({ code: "holdings.parse_error", message: sanitizeText(`${accountName}: ${message}`, 300), accountId: sanitizeText(sf.id, 100) });
     }
 
-    if (options.balancesOnly) continue;
-    const incoming = sf.transactions.map((t) => toIncomingTransaction(t, now));
+    if (options.balancesOnly || row?.closed) {
+      reportRounded();
+      continue;
+    }
+    const incoming: IncomingTransaction[] = [];
+    let unreadable = 0;
+    for (const t of sf.transactions) {
+      const amount = parseSimplefinAmount(t.amount);
+      if (!amount) {
+        unreadable++;
+        continue;
+      }
+      if (amount.rounded) rounded++;
+      incoming.push(toIncomingTransaction(t, amount.cents, householdDay));
+    }
+    if (unreadable > 0) {
+      feedErrors.push({
+        code: "amount.unreadable",
+        message: `${label}: ${unreadable} ${plural(unreadable, "transaction was", "transactions were")} skipped because ${plural(unreadable, "its amount", "their amounts")} could not be read`,
+        accountId: accountLabel,
+      });
+    }
+    reportRounded();
     for (const t of incoming) if (!earliest || t.date < earliest) earliest = t.date;
     const ingestOptions: Parameters<typeof ingestTransactions>[2] = { accountId, source: "simplefin", rules };
     if (options.importLogId) ingestOptions.importLogId = options.importLogId;
     if (options.windowStart) ingestOptions.windowStart = options.windowStart;
-    if (health.affects(sf)) ingestOptions.keepUnmatchedPending = true;
+    // A list with a transaction left out is not the whole list: a pending row missing from it may be that one.
+    if (health.affects(sf) || unreadable > 0 || partlyRead.has(accountLabel)) ingestOptions.keepUnmatchedPending = true;
     const stats = await ingestTransactions(db, incoming, ingestOptions);
     totals.created += stats.created;
     totals.updated += stats.updated;
@@ -368,11 +441,11 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
     accountsCreated,
     stats: totals,
     transfersPaired,
-    errors: [...errorsFromAccountSet(options.accountSet), ...holdingErrors],
+    errors: [...errorsFromAccountSet(options.accountSet), ...readProblems.map((p) => ({ ...p })), ...feedErrors, ...holdingErrors],
     holdings,
     investmentTxnsLinked,
     incomeFeedAccounts,
-    incomplete: health.incomplete,
+    incomplete: health.incomplete || unreadableAccount,
     balanceDates,
   };
 }
