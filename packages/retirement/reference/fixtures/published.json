@@ -1,0 +1,22 @@
+[
+  {
+    "id": "trinity_1998_table3_50_stocks",
+    "claim": "Success rate of a 4% inflation-adjusted withdrawal over 30 years, 50% stocks and 50% bonds",
+    "value": 95,
+    "unit": "percent",
+    "source": "Cooley, Hubbard and Walz (1998), the Trinity study, Table 3 (1926 to 1995, S&P 500 and long-term high-grade corporate bonds); through secondary sources, as recorded in reference/sheets/r3.md §5 and seams.md §8 D18",
+    "url": "https://www.aaii.com/journal/199802/feature.pdf",
+    "verified": false,
+    "tolerance": 5
+  },
+  {
+    "id": "trinity_1998_table3_75_stocks",
+    "claim": "Success rate of a 4% inflation-adjusted withdrawal over 30 years, 75% stocks and 25% bonds",
+    "value": 98,
+    "unit": "percent",
+    "source": "Cooley, Hubbard and Walz (1998), the Trinity study, Table 3 (1926 to 1995, S&P 500 and long-term high-grade corporate bonds); through secondary sources, as recorded in reference/sheets/r3.md §5 and seams.md §8 D18",
+    "url": "https://www.aaii.com/journal/199802/feature.pdf",
+    "verified": false,
+    "tolerance": 5
+  }
+]

@@ -1,0 +1,368 @@
+{
+  "scenario": "R4",
+  "sheet": "packages/retirement/reference/sheets/r4.md",
+  "generatedBy": "packages/retirement/reference/independent.ts",
+  "units": "Money in today's dollars, rounded to the cent; rates as fractions.",
+  "parameters": {
+    "planYears": 30,
+    "startBalance": 1000000,
+    "baseSpending": 40000,
+    "stocks": {
+      "meanBp": 600,
+      "volBp": 1200
+    },
+    "inflation": {
+      "meanBp": 250,
+      "volBp": 100
+    },
+    "bonds": {
+      "meanBp": 400,
+      "volBp": 700
+    },
+    "bills": {
+      "meanBp": 300,
+      "volBp": 200
+    },
+    "lognormal": {
+      "stocks": {
+        "mu": 0.05190164839588206,
+        "sigma": 0.11284732808616926
+      },
+      "inflation": {
+        "mu": 0.024645024135294676,
+        "sigma": 0.009755865423091533
+      }
+    }
+  },
+  "generator": {
+    "algorithm": "mulberry32 uniforms u = (x + 0.5) / 2^32; Box–Muller z_S = sqrt(−2 ln u1) cos(2π u2), z_π = sqrt(−2 ln u1) sin(2π u2), one pair per plan year",
+    "seed": 1,
+    "uniformsPerPath": 60,
+    "layout": "One stream of the seed: the large run takes uniforms 0 to paths × 60 − 1; spread run j starts at uniform 4,000,000 × 60 + j × 10,000 × 60 (mulberry32 state = seed + offset × 0x6D2B79F5), so no two runs share a draw."
+  },
+  "paths": 4000000,
+  "successPaths": 2797468,
+  "successRate": 0.699367,
+  "toleranceAbs": 0.015,
+  "medianEndingReal": 337269.43,
+  "medianToleranceRel": 0.08,
+  "percentilesEndingReal": {
+    "p10": 0,
+    "p25": 0,
+    "p50": 337269.43,
+    "p75": 1004439.08,
+    "p90": 1952050.71
+  },
+  "spread": {
+    "runs": 40,
+    "pathsPerRun": 10000,
+    "successRate": {
+      "min": 0.688,
+      "max": 0.712,
+      "mean": 0.6989774999999997,
+      "sd": 0.005039611681214718
+    },
+    "binomialSd": 0.004585333131965441,
+    "medianEndingReal": {
+      "min": 315900.31,
+      "max": 350106.85
+    },
+    "perRun": [
+      {
+        "run": 0,
+        "uniformOffset": 240000000,
+        "successPaths": 6990,
+        "successRate": 0.699,
+        "medianEndingReal": 331608.93
+      },
+      {
+        "run": 1,
+        "uniformOffset": 240600000,
+        "successPaths": 7075,
+        "successRate": 0.7075,
+        "medianEndingReal": 347597.7
+      },
+      {
+        "run": 2,
+        "uniformOffset": 241200000,
+        "successPaths": 7003,
+        "successRate": 0.7003,
+        "medianEndingReal": 338255.84
+      },
+      {
+        "run": 3,
+        "uniformOffset": 241800000,
+        "successPaths": 6946,
+        "successRate": 0.6946,
+        "medianEndingReal": 324263.51
+      },
+      {
+        "run": 4,
+        "uniformOffset": 242400000,
+        "successPaths": 7120,
+        "successRate": 0.712,
+        "medianEndingReal": 340941.87
+      },
+      {
+        "run": 5,
+        "uniformOffset": 243000000,
+        "successPaths": 7013,
+        "successRate": 0.7013,
+        "medianEndingReal": 335840.14
+      },
+      {
+        "run": 6,
+        "uniformOffset": 243600000,
+        "successPaths": 6981,
+        "successRate": 0.6981,
+        "medianEndingReal": 347015.81
+      },
+      {
+        "run": 7,
+        "uniformOffset": 244200000,
+        "successPaths": 6924,
+        "successRate": 0.6924,
+        "medianEndingReal": 330733.15
+      },
+      {
+        "run": 8,
+        "uniformOffset": 244800000,
+        "successPaths": 7021,
+        "successRate": 0.7021,
+        "medianEndingReal": 348237.9
+      },
+      {
+        "run": 9,
+        "uniformOffset": 245400000,
+        "successPaths": 6950,
+        "successRate": 0.695,
+        "medianEndingReal": 340928.56
+      },
+      {
+        "run": 10,
+        "uniformOffset": 246000000,
+        "successPaths": 7059,
+        "successRate": 0.7059,
+        "medianEndingReal": 337986.56
+      },
+      {
+        "run": 11,
+        "uniformOffset": 246600000,
+        "successPaths": 6960,
+        "successRate": 0.696,
+        "medianEndingReal": 325391.2
+      },
+      {
+        "run": 12,
+        "uniformOffset": 247200000,
+        "successPaths": 6974,
+        "successRate": 0.6974,
+        "medianEndingReal": 343357.49
+      },
+      {
+        "run": 13,
+        "uniformOffset": 247800000,
+        "successPaths": 6967,
+        "successRate": 0.6967,
+        "medianEndingReal": 332859.2
+      },
+      {
+        "run": 14,
+        "uniformOffset": 248400000,
+        "successPaths": 6977,
+        "successRate": 0.6977,
+        "medianEndingReal": 340872.33
+      },
+      {
+        "run": 15,
+        "uniformOffset": 249000000,
+        "successPaths": 6989,
+        "successRate": 0.6989,
+        "medianEndingReal": 331124.27
+      },
+      {
+        "run": 16,
+        "uniformOffset": 249600000,
+        "successPaths": 6975,
+        "successRate": 0.6975,
+        "medianEndingReal": 340884.73
+      },
+      {
+        "run": 17,
+        "uniformOffset": 250200000,
+        "successPaths": 7040,
+        "successRate": 0.704,
+        "medianEndingReal": 334295.69
+      },
+      {
+        "run": 18,
+        "uniformOffset": 250800000,
+        "successPaths": 6891,
+        "successRate": 0.6891,
+        "medianEndingReal": 327612.07
+      },
+      {
+        "run": 19,
+        "uniformOffset": 251400000,
+        "successPaths": 6946,
+        "successRate": 0.6946,
+        "medianEndingReal": 338855.77
+      },
+      {
+        "run": 20,
+        "uniformOffset": 252000000,
+        "successPaths": 7031,
+        "successRate": 0.7031,
+        "medianEndingReal": 332265.07
+      },
+      {
+        "run": 21,
+        "uniformOffset": 252600000,
+        "successPaths": 6996,
+        "successRate": 0.6996,
+        "medianEndingReal": 330540.04
+      },
+      {
+        "run": 22,
+        "uniformOffset": 253200000,
+        "successPaths": 6934,
+        "successRate": 0.6934,
+        "medianEndingReal": 331990.15
+      },
+      {
+        "run": 23,
+        "uniformOffset": 253800000,
+        "successPaths": 7019,
+        "successRate": 0.7019,
+        "medianEndingReal": 336915.8
+      },
+      {
+        "run": 24,
+        "uniformOffset": 254400000,
+        "successPaths": 7061,
+        "successRate": 0.7061,
+        "medianEndingReal": 344843.32
+      },
+      {
+        "run": 25,
+        "uniformOffset": 255000000,
+        "successPaths": 7018,
+        "successRate": 0.7018,
+        "medianEndingReal": 347834.68
+      },
+      {
+        "run": 26,
+        "uniformOffset": 255600000,
+        "successPaths": 6978,
+        "successRate": 0.6978,
+        "medianEndingReal": 343525.2
+      },
+      {
+        "run": 27,
+        "uniformOffset": 256200000,
+        "successPaths": 6927,
+        "successRate": 0.6927,
+        "medianEndingReal": 332208.77
+      },
+      {
+        "run": 28,
+        "uniformOffset": 256800000,
+        "successPaths": 6989,
+        "successRate": 0.6989,
+        "medianEndingReal": 338144.75
+      },
+      {
+        "run": 29,
+        "uniformOffset": 257400000,
+        "successPaths": 6880,
+        "successRate": 0.688,
+        "medianEndingReal": 315900.31
+      },
+      {
+        "run": 30,
+        "uniformOffset": 258000000,
+        "successPaths": 7019,
+        "successRate": 0.7019,
+        "medianEndingReal": 339667.54
+      },
+      {
+        "run": 31,
+        "uniformOffset": 258600000,
+        "successPaths": 6985,
+        "successRate": 0.6985,
+        "medianEndingReal": 334474.62
+      },
+      {
+        "run": 32,
+        "uniformOffset": 259200000,
+        "successPaths": 6978,
+        "successRate": 0.6978,
+        "medianEndingReal": 334013.24
+      },
+      {
+        "run": 33,
+        "uniformOffset": 259800000,
+        "successPaths": 6984,
+        "successRate": 0.6984,
+        "medianEndingReal": 331780.52
+      },
+      {
+        "run": 34,
+        "uniformOffset": 260400000,
+        "successPaths": 7003,
+        "successRate": 0.7003,
+        "medianEndingReal": 346776.52
+      },
+      {
+        "run": 35,
+        "uniformOffset": 261000000,
+        "successPaths": 6934,
+        "successRate": 0.6934,
+        "medianEndingReal": 337284.24
+      },
+      {
+        "run": 36,
+        "uniformOffset": 261600000,
+        "successPaths": 6992,
+        "successRate": 0.6992,
+        "medianEndingReal": 341598.97
+      },
+      {
+        "run": 37,
+        "uniformOffset": 262200000,
+        "successPaths": 7098,
+        "successRate": 0.7098,
+        "medianEndingReal": 345958.97
+      },
+      {
+        "run": 38,
+        "uniformOffset": 262800000,
+        "successPaths": 6969,
+        "successRate": 0.6969,
+        "medianEndingReal": 334039.22
+      },
+      {
+        "run": 39,
+        "uniformOffset": 263400000,
+        "successPaths": 6995,
+        "successRate": 0.6995,
+        "medianEndingReal": 350106.85
+      }
+    ]
+  },
+  "design": {
+    "source": "r4.md §3 (strategies-outputs-web §7.9; seams.md §8 D17): the strategies designer's independent run during design",
+    "successRate": 0.6997,
+    "medianEndingReal": 337500,
+    "p75EndingReal": 1005000,
+    "spreadSuccessRate": {
+      "min": 0.688,
+      "max": 0.707,
+      "sd": 0.0043
+    },
+    "spreadMedianEndingReal": {
+      "min": 320800,
+      "max": 358100
+    }
+  }
+}
