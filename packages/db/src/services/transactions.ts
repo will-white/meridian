@@ -1,13 +1,14 @@
 import { and, asc, desc, eq, gte, ilike, inArray, isNull, lt, lte, or, sql, type SQL } from "drizzle-orm";
 import { goalOwnedMonthRanges, monthStart, type IsoDate } from "@meridian/shared";
 import type { Db, DbOrTx } from "../index.js";
-import { account, category, payee, savingsGoal, split, transaction } from "../schema/index.js";
-import { PlanError } from "./audit.js";
+import { account, category, payee, savingsGoal, split, transaction, transactionAlias } from "../schema/index.js";
+import { PlanError, writeAudit, type AuditContext } from "./audit.js";
 import { resolvePayee } from "./payees.js";
 import { onBudgetOrFeedCategory } from "./planScope.js";
 import { containsPattern, decodeCursor, encodeCursor } from "./queryText.js";
 import { setTransactionTags, tagsForTransactions } from "./tags.js";
-import { unpairTransfer } from "./transfers.js";
+import { loadRules } from "./rules.js";
+import { pairTransfersInDb, releaseTransferPartners, unpairTransfer } from "./transfers.js";
 
 export interface ListTransactionsQuery {
   q?: string;
@@ -257,12 +258,56 @@ export async function updateTransaction(db: Db, id: string, patch: TransactionPa
       set.payeeLocked = true;
     }
     if (patch.notes !== undefined) set.notes = patch.notes;
-    if (patch.isTransfer === true) set.isTransfer = true;
+    if (patch.isTransfer === true) {
+      set.isTransfer = true;
+      // A transfer leaves the plan, so a category automation gave it goes, as pairing clears it (audit a5-ingest-transfers-12).
+      const [row] = await tx.select({ categoryLocked: transaction.categoryLocked }).from(transaction).where(eq(transaction.id, id));
+      if (row && !row.categoryLocked && patch.categoryId === undefined) set.categoryId = null;
+    }
     if (patch.isTransfer === false) await unpairTransfer(tx, id);
     await tx.update(transaction).set(set).where(eq(transaction.id, id));
     if (patch.tags !== undefined) await setTransactionTags(tx, id, patch.tags);
   });
   return getTransaction(db, id);
+}
+
+/**
+ * Audit a5-ingest-transfers-09: the household deletes a row (a duplicate, a manual entry with a
+ * typo, a row imported by mistake). A transfer partner is released and may pair again; a row
+ * from the feed or a file leaves its ids behind as removed (`transaction_alias` with no row), so
+ * the next sync or a re-import does not bring it back. Investment rows belong to the
+ * investment flows (400 `investment_row`). Returns false when the row does not exist. Audited
+ * as `transaction`.
+ */
+export async function deleteTransaction(db: Db, id: string, audit: AuditContext): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const [row] = await tx.select().from(transaction).where(eq(transaction.id, id));
+    if (!row) return false;
+    if (row.source === "investment") throw new PlanError(400, "investment_row", "This row comes from an investment transaction; remove that one instead");
+    const released = await releaseTransferPartners(tx, [id], await loadRules(tx));
+    // Its own ids and the ids that pointed at it are remembered as removed.
+    await tx.update(transactionAlias).set({ transactionId: null }).where(eq(transactionAlias.transactionId, id));
+    await tx.delete(transaction).where(eq(transaction.id, id));
+    if (row.externalId !== null && (row.source === "simplefin" || row.source === "csv")) {
+      await tx
+        .insert(transactionAlias)
+        .values({ accountId: row.accountId, externalId: row.externalId, transactionId: null, source: row.source })
+        .onConflictDoUpdate({ target: [transactionAlias.accountId, transactionAlias.externalId], set: { transactionId: null } });
+    }
+    await writeAudit(tx, {
+      ...audit,
+      entity: "transaction",
+      entityId: id,
+      action: "delete",
+      before: { accountId: row.accountId, date: row.date, amountCents: row.amountCents, rawDescription: row.rawDescription, source: row.source, externalId: row.externalId, categoryId: row.categoryId, notes: row.notes },
+      after: null,
+    });
+    if (released.length > 0) {
+      const dates = released.map((r) => r.date).sort();
+      await pairTransfersInDb(tx, { since: dates[0]!, until: dates[dates.length - 1]! });
+    }
+    return true;
+  });
 }
 
 export async function createManualTransaction(

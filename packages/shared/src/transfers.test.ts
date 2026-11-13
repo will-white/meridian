@@ -75,3 +75,64 @@ describe("pairTransfers", () => {
     ]);
   });
 });
+
+describe("pairTransfers (audit a5-ingest-transfers)", () => {
+  const BROKERAGE = "acct-brokerage";
+
+  it("a5-ingest-transfers-10: pairs both hops of a same-day checking -> savings -> brokerage move, whatever the ids", () => {
+    // The ids are chosen so that taking the first closest inflow pairs checking with the brokerage,
+    // which leaves the savings outflow with only its own account's inflow.
+    const legs = [
+      t("o1", CHECKING, "2026-10-05", -100000n),
+      t("i2", BROKERAGE, "2026-10-05", 100000n),
+      t("o2", SAVINGS, "2026-10-05", -100000n),
+      t("i1", SAVINGS, "2026-10-05", 100000n),
+    ];
+    expect(pairTransfers(legs)).toEqual([
+      { outflowId: "o1", inflowId: "i1" },
+      { outflowId: "o2", inflowId: "i2" },
+    ]);
+    // Every assignment of ids gives the complete pairing.
+    const names = ["a", "b", "c", "d"];
+    const perms: string[][] = [];
+    const permute = (rest: string[], acc: string[]) => {
+      if (rest.length === 0) perms.push(acc);
+      rest.forEach((x, i) => permute([...rest.slice(0, i), ...rest.slice(i + 1)], [...acc, x]));
+    };
+    permute(names, []);
+    for (const [a, b, c, d] of perms) {
+      const pairs = pairTransfers([
+        t(a!, CHECKING, "2026-10-05", -100000n),
+        t(b!, SAVINGS, "2026-10-05", 100000n),
+        t(c!, SAVINGS, "2026-10-05", -100000n),
+        t(d!, BROKERAGE, "2026-10-05", 100000n),
+      ]);
+      expect(pairs).toHaveLength(2);
+      expect(pairs).toContainEqual({ outflowId: a, inflowId: b });
+      expect(pairs).toContainEqual({ outflowId: c, inflowId: d });
+    }
+  });
+
+  it("a5-ingest-transfers-10: a later outflow gets a leg when the earlier one can take another within the window", () => {
+    const pairs = pairTransfers([
+      t("early", CHECKING, "2026-10-05", -5000n),
+      t("near", SAVINGS, "2026-10-05", 5000n),
+      t("far", BROKERAGE, "2026-10-08", 5000n),
+      t("late", BROKERAGE, "2026-10-05", -5000n),
+    ]);
+    // "late" can reach only "near" (the other inflow is in its own account), so "early" takes "far".
+    expect(pairs).toEqual([
+      { outflowId: "early", inflowId: "far" },
+      { outflowId: "late", inflowId: "near" },
+    ]);
+  });
+
+  it("a5-ingest-transfers-04: never pairs two legs the household said are not a transfer", () => {
+    const legs = [t("dinner", CARD, "2026-10-10", -8400n), t("deposit", CHECKING, "2026-10-12", 8400n)];
+    expect(pairTransfers(legs, { isDismissed: (a, b) => a === "dinner" && b === "deposit" })).toEqual([]);
+    // Another leg of the same amount still pairs.
+    expect(pairTransfers([...legs, t("move", SAVINGS, "2026-10-12", -8400n)], { isDismissed: (a, b) => a === "dinner" && b === "deposit" })).toEqual([
+      { outflowId: "move", inflowId: "deposit" },
+    ]);
+  });
+});

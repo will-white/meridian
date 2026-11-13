@@ -90,7 +90,13 @@ export function mergeHoldingsStats(into: HoldingsStats, add: Readonly<HoldingsSt
 export interface ApplyAccountSetResult {
   accounts: number;
   accountsCreated: number;
-  stats: Omit<IngestStats, "insertedIds">;
+  /**
+   * Accounts the feed names that were found without a connection (left behind when the
+   * household removed one) and attached to this one instead of created again (audit
+   * a5-ingest-transfers-02). They appear on this connection for the first time, as created ones do.
+   */
+  accountsReattached: number;
+  stats: Omit<IngestStats, "insertedIds" | "earliestReleased">;
   transfersPaired: number;
   errors: ConnectionError[];
   /** Phase 3: holdings applied per account from `account.holdings` / `extra`. */
@@ -310,12 +316,13 @@ const laterDay = (a: IsoDate, b: IsoDate): IsoDate => (a > b ? a : b);
  */
 export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): Promise<ApplyAccountSetResult> {
   const rules = await loadRules(db);
-  const totals: ApplyAccountSetResult["stats"] = { created: 0, updated: 0, replacedPending: 0, removedPending: 0, skipped: 0 };
+  const totals: ApplyAccountSetResult["stats"] = { created: 0, updated: 0, replacedPending: 0, removedPending: 0, skipped: 0, duplicates: 0, releasedTransfers: 0 };
   const holdings = emptyHoldingsStats();
   const holdingErrors: ConnectionError[] = [];
   const investmentAccountIds: string[] = [];
   let incomeFeedAccounts = 0;
   let accountsCreated = 0;
+  let accountsReattached = 0;
   let earliest: IsoDate | undefined;
   const now = options.now ?? new Date();
   const householdDay = await readHouseholdToday(db, now);
@@ -339,6 +346,7 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
     const upserted = await db.transaction((tx) => upsertSimplefinAccount(tx, options.connectionId, sf));
     const { id: accountId, created } = upserted;
     if (created) accountsCreated++;
+    if (upserted.reattached) accountsReattached++;
     const [row] = await db
       .select({ name: account.name, type: account.type, closed: account.closed, investmentIncomeFeed: account.investmentIncomeFeed })
       .from(account)
@@ -422,10 +430,14 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
     totals.replacedPending += stats.replacedPending;
     totals.removedPending += stats.removedPending;
     totals.skipped += stats.skipped;
+    totals.duplicates += stats.duplicates;
+    totals.releasedTransfers += stats.releasedTransfers;
+    // A partner released from a removed pending leg may pair with the leg that replaces it (a5-ingest-transfers-05).
+    if (stats.earliestReleased && (!earliest || stats.earliestReleased < earliest)) earliest = stats.earliestReleased;
   }
 
   let transfersPaired = 0;
-  if (!options.balancesOnly && (totals.created > 0 || totals.replacedPending > 0)) {
+  if (!options.balancesOnly && (totals.created > 0 || totals.replacedPending > 0 || totals.releasedTransfers > 0)) {
     const since = options.windowStart && earliest ? (earliest < options.windowStart ? earliest : options.windowStart) : earliest;
     transfersPaired = await db.transaction((tx) => pairTransfersInDb(tx, since ? { since } : {}));
   }
@@ -439,6 +451,7 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
   return {
     accounts: options.accountSet.accounts.length,
     accountsCreated,
+    accountsReattached,
     stats: totals,
     transfersPaired,
     errors: [...errorsFromAccountSet(options.accountSet), ...readProblems.map((p) => ({ ...p })), ...feedErrors, ...holdingErrors],
@@ -448,4 +461,55 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
     incomplete: health.incomplete || unreadableAccount,
     balanceDates,
   };
+}
+
+export interface ReplayAccountSetResult {
+  accounts: number;
+  /** Feed accounts in the payload with no open account on the connection. */
+  accountsUnknown: number;
+  stats: Omit<IngestStats, "insertedIds" | "earliestReleased">;
+  transfersPaired: number;
+}
+
+/**
+ * Audit a5-ingest-transfers-13: replay one stored payload's transactions (`import_log.raw_payload`
+ * of a sync) after a reader or ingest fix, including items older than the Bridge's 93-day window
+ * that a full resync cannot reach. Replay mode (`ingestTransactions` with `replay`): posted
+ * items the ledger lacks are inserted (or recognized as rows it has under another id, or as
+ * rows the household deleted); a known row is left as it is, because the live feed keeps its
+ * bank-owned fields current; pending items are never inserted and no pending row is replaced or
+ * removed, because an old payload is not the feed's current view. Accounts, balances and
+ * holdings are not touched (holdings have their own replay). Running it twice changes nothing.
+ */
+export async function replayAccountSetTransactions(db: Db, options: { connectionId: string; accountSet: SimplefinAccountSet; importLogId?: string; now?: Date }): Promise<ReplayAccountSetResult> {
+  const rules = await loadRules(db);
+  const householdDay = await readHouseholdToday(db, options.now ?? new Date());
+  const totals: ReplayAccountSetResult["stats"] = { created: 0, updated: 0, replacedPending: 0, removedPending: 0, skipped: 0, duplicates: 0, releasedTransfers: 0 };
+  const accounts = await db
+    .select({ id: account.id, externalId: account.externalId, type: account.type, closed: account.closed })
+    .from(account)
+    .where(eq(account.connectionId, options.connectionId));
+  const byExternalId = new Map(accounts.filter((a) => a.externalId !== null && !a.closed).map((a) => [a.externalId!, a]));
+  let accountsUnknown = 0;
+  let earliest: IsoDate | undefined;
+  for (const sf of options.accountSet.accounts) {
+    const acct = byExternalId.get(sf.id);
+    if (!acct) {
+      accountsUnknown++;
+      continue;
+    }
+    const incoming: IncomingTransaction[] = [];
+    for (const t of sf.transactions) {
+      const amount = parseSimplefinAmount(t.amount);
+      if (!amount) continue;
+      const item = toIncomingTransaction(t, amount.cents, householdDay);
+      if (item.pending) continue;
+      incoming.push(item);
+      if (!earliest || item.date < earliest) earliest = item.date;
+    }
+    const stats = await ingestTransactions(db, incoming, { accountId: acct.id, accountType: acct.type, source: "simplefin", rules, replay: true, ...(options.importLogId ? { importLogId: options.importLogId } : {}) });
+    for (const key of Object.keys(totals) as Array<keyof typeof totals>) totals[key] += stats[key];
+  }
+  const transfersPaired = totals.created > 0 && earliest ? await db.transaction((tx) => pairTransfersInDb(tx, { since: earliest! })) : 0;
+  return { accounts: options.accountSet.accounts.length, accountsUnknown, stats: totals, transfersPaired };
 }
