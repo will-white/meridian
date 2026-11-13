@@ -13,6 +13,19 @@ export interface PayeeRow {
 export class PayeeCache {
   private readonly byName = new Map<string, PayeeRow>();
   constructor(private readonly tx: DbOrTx) {}
+  /**
+   * The payee a name means, by name or alias, without creating one: rules at import are
+   * evaluated against it, so a rule on a merged payee applies to every variant merged into it
+   * (audit a5-ingest-transfers-08).
+   */
+  async find(name: string): Promise<PayeeRow | undefined> {
+    const key = name.trim().toLowerCase();
+    const hit = this.byName.get(key);
+    if (hit) return hit;
+    const row = await findPayee(this.tx, name);
+    if (row) this.byName.set(key, row);
+    return row;
+  }
   async resolve(name: string): Promise<PayeeRow> {
     const key = name.trim().toLowerCase();
     const hit = this.byName.get(key);
@@ -23,8 +36,8 @@ export class PayeeCache {
   }
 }
 
-/** Find a payee by name or alias (case-insensitive), creating it when missing. */
-export async function resolvePayee(tx: DbOrTx, rawName: string): Promise<PayeeRow> {
+/** Find a payee by name or alias (case-insensitive); the name itself wins over an alias. */
+export async function findPayee(tx: DbOrTx, rawName: string): Promise<PayeeRow | undefined> {
   const name = rawName.trim() || "Unknown";
   const existing = await tx
     .select({ id: payee.id, name: payee.name, defaultCategoryId: payee.defaultCategoryId })
@@ -34,7 +47,14 @@ export async function resolvePayee(tx: DbOrTx, rawName: string): Promise<PayeeRo
     )
     .orderBy(sql`case when lower(${payee.name}) = lower(${name}) then 0 else 1 end`)
     .limit(1);
-  if (existing[0]) return existing[0];
+  return existing[0];
+}
+
+/** Find a payee by name or alias (case-insensitive), creating it when missing. */
+export async function resolvePayee(tx: DbOrTx, rawName: string): Promise<PayeeRow> {
+  const name = rawName.trim() || "Unknown";
+  const existing = await findPayee(tx, name);
+  if (existing) return existing;
   const inserted = await tx
     .insert(payee)
     .values({ name })

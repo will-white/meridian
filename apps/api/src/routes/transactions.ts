@@ -1,10 +1,33 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
-import { createManualTransaction, enqueueJob, getTransaction, listTransactions, setTransactionSplits, unlinkTransactionFromRecurring, updateTransaction } from "@meridian/db";
-import { CreateManualTransactionBody, SetTransactionSplitsBody, TransactionList, TransactionQuery, TransactionView, UpdateTransactionBody, UuidParams } from "@meridian/shared";
+import { z } from "zod";
+import {
+  createManualTransaction,
+  deleteTransaction,
+  enqueueJob,
+  getTransaction,
+  listTransactions,
+  pairTransactionsByHand,
+  setTransactionSplits,
+  transferCandidates,
+  unlinkTransactionFromRecurring,
+  updateTransaction,
+} from "@meridian/db";
+import {
+  CreateManualTransactionBody,
+  OkResponse,
+  PairTransactionBody,
+  SetTransactionSplitsBody,
+  TransactionList,
+  TransactionQuery,
+  TransactionView,
+  TransferCandidateView,
+  UpdateTransactionBody,
+  UuidParams,
+} from "@meridian/shared";
 import { notFound } from "../lib/errors.js";
 import { toTransactionView } from "../views.js";
-import { serverToday, usePlanErrors } from "./plan.js";
+import { auditContext, serverToday, usePlanErrors } from "./plan.js";
 
 export async function transactionRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
@@ -69,6 +92,48 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     );
     if (!row) throw notFound("Transaction not found");
     return toTransactionView(row);
+  });
+
+  /**
+   * Audit a5-ingest-transfers-09: delete a row (a duplicate, a typo, a row imported by mistake).
+   * Its transfer partner is released; a feed or CSV row's ids are remembered as removed so the
+   * next sync or a re-import does not bring it back. 400 `investment_row` for an investment row.
+   */
+  r.delete("/transactions/:id", { schema: { params: UuidParams, response: { 200: OkResponse } } }, async (request) => {
+    const existing = await getTransaction(app.db, request.params.id);
+    if (!existing) throw notFound("Transaction not found");
+    if (existing.recurringId !== null) {
+      const today = await serverToday(app);
+      await app.db.transaction((tx) => unlinkTransactionFromRecurring(tx, existing.id, { today, now: app.now() }));
+    }
+    if (!(await deleteTransaction(app.db, request.params.id, auditContext(request)))) throw notFound("Transaction not found");
+    await enqueueJob(app.db, "recurring.detect", { reason: "ledger" }, { dedupe: true });
+    return { ok: true as const };
+  });
+
+  /** Audit a5-ingest-transfers-12: the rows this one could be paired with by hand, closest date first. */
+  r.get("/transactions/:id/transfer-candidates", { schema: { params: UuidParams, response: { 200: z.array(TransferCandidateView) } } }, async (request) => {
+    const rows = await transferCandidates(app.db, request.params.id);
+    return rows.map((c) => ({ ...c, amountCents: c.amountCents.toString() }));
+  });
+
+  /**
+   * Audit a5-ingest-transfers-12: the household says this row and `otherId` are one transfer.
+   * 400 when they are in one account or not equal and opposite, 409 `already_paired`.
+   */
+  r.post("/transactions/:id/pair", { schema: { params: UuidParams, body: PairTransactionBody, response: { 200: TransactionView } } }, async (request) => {
+    const ctx = auditContext(request);
+    const before = await Promise.all([getTransaction(app.db, request.params.id), getTransaction(app.db, request.body.otherId)]);
+    if (!before[0] || !before[1]) throw notFound("Transaction not found");
+    await app.db.transaction((tx) => pairTransactionsByHand(tx, request.params.id, request.body.otherId, ctx));
+    // Recurring hook (design C5): a charge that became a transfer no longer belongs to its item.
+    for (const row of before) {
+      if (row!.recurringId !== null) {
+        const today = await serverToday(app);
+        await app.db.transaction((tx) => unlinkTransactionFromRecurring(tx, row!.id, { today, now: app.now() }));
+      }
+    }
+    return toTransactionView((await getTransaction(app.db, request.params.id))!);
   });
 
   r.post("/transactions", { schema: { body: CreateManualTransactionBody, response: { 200: TransactionView } } }, async (request) => {

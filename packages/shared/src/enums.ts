@@ -58,6 +58,7 @@ export const JobType = z.enum([
   "prices.fetch",
   "investments.valuation",
   "investments.income_feed",
+  "simplefin.reprocess_transactions",
 ]);
 export type JobType = z.infer<typeof JobType>;
 
@@ -104,6 +105,9 @@ export const AuditEntity = z.enum([
   "account",
   // Household members: created, removed, password or second factor changed (never the secrets themselves).
   "user",
+  // Ledger corrections (audit a5-ingest-transfers): a transaction deleted or paired by hand, a CSV import undone.
+  "transaction",
+  "import_log",
 ]);
 export type AuditEntity = z.infer<typeof AuditEntity>;
 

@@ -129,3 +129,50 @@ export const transactionTag = pgTable(
   },
   (t) => [primaryKey({ columns: [t.transactionId, t.tagId] })],
 );
+
+/**
+ * Audit a5-ingest-transfers: an external id the ledger knows under another row of the account,
+ * or one the household removed.
+ *
+ * - A bank CSV row that is the same purchase as a row the feed (or the household) already has
+ *   is not inserted; its id is kept here, pointing at that row, so a re-import finds it.
+ * - A feed row that took over a CSV row keeps the CSV id here; a pending id whose posted form
+ *   took over its row (both listed at once) is kept so the feed's pending copy is ignored.
+ * - `transaction_id` null: the household deleted the row, and the id is ignored when the feed
+ *   or a file brings it again.
+ *
+ * An id is either some row's `transaction.external_id` or here, never both.
+ */
+export const transactionAlias = pgTable(
+  "transaction_alias",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    accountId: uuid("account_id").notNull().references(() => account.id, { onDelete: "cascade" }),
+    externalId: text("external_id").notNull(),
+    transactionId: uuid("transaction_id").references(() => transaction.id, { onDelete: "cascade" }),
+    source: text("source", { enum: ["simplefin", "csv"] }).notNull(),
+    /** The import that recorded it (undoing a CSV import removes the ids it recorded). */
+    importLogId: uuid("import_log_id").references(() => importLog.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("transaction_alias_account_external_idx").on(t.accountId, t.externalId),
+    index("transaction_alias_transaction_idx").on(t.transactionId),
+    index("transaction_alias_import_log_idx").on(t.importLogId),
+  ],
+);
+
+/**
+ * Audit a5-ingest-transfers-04: two rows the household said are not one transfer
+ * ("transfer · undo"). Automatic pairing never pairs them with each other again. The smaller
+ * id comes first.
+ */
+export const transferDismissal = pgTable(
+  "transfer_dismissal",
+  {
+    firstId: uuid("first_id").notNull().references(() => transaction.id, { onDelete: "cascade" }),
+    secondId: uuid("second_id").notNull().references(() => transaction.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.firstId, t.secondId] }), index("transfer_dismissal_second_idx").on(t.secondId)],
+);

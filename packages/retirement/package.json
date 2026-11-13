@@ -5,11 +5,16 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "reference:write": "tsx reference/independent.ts --write",
+    "reference:check": "tsx reference/independent.ts --check"
   },
   "dependencies": {
     "@meridian/shared": "workspace:*",
     "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
   },
   "exports": {
     ".": "./src/index.ts",

@@ -129,6 +129,18 @@ export async function connectionRoutes(app: FastifyInstance): Promise<void> {
     return toJobView(await enqueueJob(app.db, "simplefin.reprocess_holdings", { connectionId: row.id }, { dedupe: true }));
   });
 
+  /**
+   * Audit a5-ingest-transfers-13: replay the connection's stored sync payloads for their
+   * transactions (after a reader or ingest fix, and for days older than the Bridge's 93-day
+   * window): posted items the ledger lacks are inserted; nothing it has is changed.
+   */
+  r.post("/connections/:id/reprocess-transactions", { schema: { params: UuidParams, response: { 200: JobView } } }, async (request) => {
+    const [row] = await app.db.select({ id: connection.id, type: connection.type }).from(connection).where(eq(connection.id, request.params.id));
+    if (!row) throw notFound("Connection not found");
+    if (row.type !== "simplefin") throw badRequest("Only SimpleFIN connections carry sync payloads to re-process", "not_simplefin");
+    return toJobView(await enqueueJob(app.db, "simplefin.reprocess_transactions", { connectionId: row.id }, { dedupe: true }));
+  });
+
   r.get("/connections/:id/imports", { schema: { params: UuidParams, response: { 200: z.array(ImportLogView) } } }, async (request) => {
     const rows = await app.db
       .select({

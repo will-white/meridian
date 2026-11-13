@@ -589,6 +589,18 @@ describe.skipIf(!TEST_DATABASE_URL)("investment transactions (imports tests 13â€
     expect(await ledgerRow(bank2!.id)).toMatchObject({ amountCents: 100000n, isTransfer: true });
     await deleteInvestmentTxn(t.db, e2.id, {}, ctx());
     expect(await ledgerRow(e2.ledgerTransactionId!)).toBeUndefined();
+
+    // Audit a5-ingest-transfers-01: a cash row whose deposit the account has by hand five days off (outside the twin window)
+    // is that row: no second ledger row; the cash transfer links to it and it is a transfer.
+    const [hand] = await t.db
+      .insert(transaction)
+      .values({ accountId: own, source: "manual", date: "2026-09-25", amountCents: 300000n, rawDescription: "ELECTRONIC FUNDS TRANSFER" })
+      .returning({ id: transaction.id });
+    const [log3] = await t.db.insert(importLog).values({ kind: "csv.trades", status: "ok" }).returning({ id: importLog.id });
+    const late = await importTrades(t.db, { accountId: own, trades: (await mapFile([["2026-09-30", "ELECTRONIC FUNDS TRANSFER RECEIVED", "", "", "", "", "3000.00", "E3"]])).trades, importLogId: log3!.id, today: TODAY, ctx: ctx() });
+    expect(late).toMatchObject({ created: 1, ledgerCreated: 0 });
+    expect((await rowByExt(own, "csvid:E3")).ledgerTransactionId).toBe(hand!.id);
+    expect(await ledgerRow(hand!.id)).toMatchObject({ amountCents: 300000n, isTransfer: true });
   });
 
   /**

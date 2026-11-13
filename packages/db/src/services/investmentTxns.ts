@@ -19,7 +19,7 @@ import {
   type TransferDirection,
 } from "@meridian/shared";
 import type { Db, DbOrTx } from "../index.js";
-import { account, investmentTxn, security, transaction } from "../schema/index.js";
+import { account, investmentTxn, security, transaction, transactionAlias } from "../schema/index.js";
 import { PlanError, writeAudit, type AuditContext } from "./audit.js";
 import { qtyFromDb, qtyToDb } from "./decimalDb.js";
 import { loadInvestmentAccount, type InvestmentAccountRow } from "./holdings.js";
@@ -1413,12 +1413,30 @@ export async function importTrades(db: Db, input: ImportTradesInput): Promise<Im
         (await tx.select({ id: investmentTxn.ledgerTransactionId }).from(investmentTxn).where(inArray(investmentTxn.ledgerTransactionId, ledgerRows.map((r) => r.id)))).map((r) => r.id),
       );
       const byExternalId = new Map(ledgerRows.map((r) => [r.externalId!, r.id]));
+      // A cash row the account already had by hand or from the feed (audit a5-ingest-transfers-01) is that row: its id points at it.
+      const aliased = await tx
+        .select({ externalId: transactionAlias.externalId, transactionId: transactionAlias.transactionId })
+        .from(transactionAlias)
+        .where(and(eq(transactionAlias.accountId, input.accountId), inArray(transactionAlias.externalId, items.map((i) => i.externalId))));
+      const viaAlias: string[] = [];
+      for (const a of aliased) {
+        if (a.transactionId === null || byExternalId.has(a.externalId)) continue;
+        byExternalId.set(a.externalId, a.transactionId);
+        viaAlias.push(a.transactionId);
+      }
+      if (viaAlias.length > 0) {
+        for (const r of await tx.select({ id: investmentTxn.ledgerTransactionId }).from(investmentTxn).where(inArray(investmentTxn.ledgerTransactionId, viaAlias))) alreadyLinked.add(r.id!);
+      }
+      const linkedViaAlias: string[] = [];
       for (const item of items) {
         const ledgerId = byExternalId.get(item.externalId);
         if (!ledgerId || alreadyLinked.has(ledgerId)) continue;
         alreadyLinked.add(ledgerId);
         await tx.update(investmentTxn).set({ ledgerTransactionId: ledgerId, updatedAt: new Date() }).where(eq(investmentTxn.id, item.txnId));
+        if (viaAlias.includes(ledgerId)) linkedViaAlias.push(ledgerId);
       }
+      // A bank row a cash transfer is linked to is a transfer (Phase 3 audit decision A5).
+      if (linkedViaAlias.length > 0) await markAsTransfers(tx, linkedViaAlias);
       const dates = toCreate.map((c) => c.date).sort();
       transfersPaired += await pairTransfersInDb(tx, { since: dates[0]!, until: dates[dates.length - 1]! });
     }

@@ -11,12 +11,23 @@ import {
   feedCategory,
   holdingSnapshot,
   investmentTxn,
+  linkFeedAccount,
   rebuildLotsForAccounts,
   requestValuation,
   setInvestmentIncomeFeed,
   writeAudit,
 } from "@meridian/db";
-import { AccountView, CreateManualAccountBody, defaultTaxTreatment, isInvestmentAccountType, toIsoDate, UpdateAccountBody, UuidParams } from "@meridian/shared";
+import {
+  AccountView,
+  CreateManualAccountBody,
+  defaultTaxTreatment,
+  isInvestmentAccountType,
+  LinkFeedAccountBody,
+  LinkFeedAccountResult,
+  toIsoDate,
+  UpdateAccountBody,
+  UuidParams,
+} from "@meridian/shared";
 import { badRequest, HttpError, notFound } from "../lib/errors.js";
 import { toAccountView } from "../views.js";
 import { auditContext, usePlanErrors } from "./plan.js";
@@ -188,5 +199,20 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     // The feed setting is the income service's (audited as `account`, runs the account inline, queues the job) in the same audit batch.
     if (b.investmentIncomeFeed !== undefined) await setInvestmentIncomeFeed(app.db, current.id, b.investmentIncomeFeed, { ...ctx, now: app.now() });
     return (await list(current.id))[0]!;
+  });
+
+  /**
+   * Audit a5-ingest-transfers-02: this account (one without a connection: left behind by a
+   * removed connection, or kept from CSV imports) takes over a feed account the sync created
+   * for the same bank account, which the Bridge re-issued under a new id. The feed account's
+   * rows are folded in without doubling and it is removed. 409 `account_connected` when this
+   * account has a connection, 400 `not_feed_account`, 409 `feed_account_has_history`.
+   */
+  r.post("/accounts/:id/link-feed", { schema: { params: UuidParams, body: LinkFeedAccountBody, response: { 200: LinkFeedAccountResult } } }, async (request) => {
+    const result = await linkFeedAccount(app.db, { accountId: request.params.id, feedAccountId: request.body.feedAccountId }, auditContext(request));
+    const [linked] = await app.db.select({ type: account.type }).from(account).where(eq(account.id, request.params.id));
+    // An investment account's value chain reads the balances it just took over.
+    if (linked && isInvestmentAccountType(linked.type)) await requestValuation(app.db, { reason: "setting", accountId: request.params.id });
+    return result;
   });
 }

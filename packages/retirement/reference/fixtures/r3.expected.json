@@ -1,0 +1,1504 @@
+{
+  "scenario": "R3",
+  "sheet": "packages/retirement/reference/sheets/r3.md",
+  "generatedBy": "packages/retirement/reference/independent.ts",
+  "dataFile": "packages/retirement/data/us-annual-returns.csv",
+  "dataSha256": "ded29a465fec10fd2877b7f3cbe91c86e1133b336623f4de62ce510a44965e8c",
+  "units": "Money in dollars rounded half away from zero to the cent; failIndex is the plan-year index (0 = 2027), −1 for never; cpiEnd to six decimals.",
+  "plan": {
+    "startYear": 2027,
+    "planYears": 30,
+    "startBalance": 1000000,
+    "baseSpending": 40000
+  },
+  "engineConvention": {
+    "description": "Complete cohorts, start years 1928 to 1996 (69 paths). At the start of each year 40,000 × cpi[t] is withdrawn (all that is left when short: the path fails), then the rebalanced account earns s × stocks + (1 − s) × bonds of the year's row, then cpi moves with the same row's inflation.",
+    "runs": [
+      {
+        "stockBp": 5000,
+        "paths": 69,
+        "firstStartYear": 1928,
+        "lastStartYear": 1996,
+        "successPaths": 64,
+        "successBp": 9275,
+        "failures": [
+          {
+            "startYear": 1964,
+            "failIndex": 29,
+            "shortfallReal": 14423.36
+          },
+          {
+            "startYear": 1965,
+            "failIndex": 26,
+            "shortfallReal": 156709.24
+          },
+          {
+            "startYear": 1966,
+            "failIndex": 24,
+            "shortfallReal": 203703.7
+          },
+          {
+            "startYear": 1968,
+            "failIndex": 27,
+            "shortfallReal": 112088.42
+          },
+          {
+            "startYear": 1969,
+            "failIndex": 27,
+            "shortfallReal": 105299.7
+          }
+        ],
+        "endingReal": {
+          "p10": 28267.59,
+          "p50": 1069960.25,
+          "p90": 3300302.14,
+          "startYearOfEach": {
+            "p10": 1967,
+            "p50": 1928,
+            "p90": 1991
+          }
+        },
+        "samples": [
+          {
+            "startYear": 1928,
+            "endNominal": 1756469.89,
+            "cpiEnd": 1.641622,
+            "endReal": 1069960.25
+          },
+          {
+            "startYear": 1929,
+            "endNominal": 963062.56,
+            "cpiEnd": 1.690063,
+            "endReal": 569838.32
+          },
+          {
+            "startYear": 1966,
+            "endNominal": 0,
+            "cpiEnd": 4.827052,
+            "endReal": 0
+          },
+          {
+            "startYear": 1973,
+            "endNominal": 766142.93,
+            "cpiEnd": 4.25648,
+            "endReal": 179994.5
+          },
+          {
+            "startYear": 1982,
+            "endNominal": 12134994.85,
+            "cpiEnd": 2.40077,
+            "endReal": 5054626.07
+          }
+        ],
+        "pathsDetail": [
+          {
+            "startYear": 1928,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1756469.89,
+            "endReal": 1069960.25
+          },
+          {
+            "startYear": 1929,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 963062.56,
+            "endReal": 569838.32
+          },
+          {
+            "startYear": 1930,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1340628.81,
+            "endReal": 784311.5
+          },
+          {
+            "startYear": 1931,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 2033158.81,
+            "endReal": 1098449.88
+          },
+          {
+            "startYear": 1932,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 4533359.52,
+            "endReal": 2206231.75
+          },
+          {
+            "startYear": 1933,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 4115921.55,
+            "endReal": 1773634.7
+          },
+          {
+            "startYear": 1934,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 2547411.75,
+            "endReal": 1088214
+          },
+          {
+            "startYear": 1935,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 2890074.99,
+            "endReal": 1241249.6
+          },
+          {
+            "startYear": 1936,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1402025.83,
+            "endReal": 608426.04
+          },
+          {
+            "startYear": 1937,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 384116.59,
+            "endReal": 163453.87
+          },
+          {
+            "startYear": 1938,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 2455558.43,
+            "endReal": 1043068.78
+          },
+          {
+            "startYear": 1939,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1266887.35,
+            "endReal": 499617.12
+          },
+          {
+            "startYear": 1940,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1281248.24,
+            "endReal": 475794.62
+          },
+          {
+            "startYear": 1941,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1935666.26,
+            "endReal": 685750.46
+          },
+          {
+            "startYear": 1942,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3954914.38,
+            "endReal": 1491512.07
+          },
+          {
+            "startYear": 1943,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 4185205.82,
+            "endReal": 1664235.11
+          },
+          {
+            "startYear": 1944,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3200414.96,
+            "endReal": 1205351.37
+          },
+          {
+            "startYear": 1945,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 2374210.72,
+            "endReal": 814276.02
+          },
+          {
+            "startYear": 1946,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1746342.48,
+            "endReal": 572674.27
+          },
+          {
+            "startYear": 1947,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3522691.67,
+            "endReal": 1301337.43
+          },
+          {
+            "startYear": 1948,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3817161.99,
+            "endReal": 1438350.58
+          },
+          {
+            "startYear": 1949,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3976310.45,
+            "endReal": 1415496.55
+          },
+          {
+            "startYear": 1950,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3559104.55,
+            "endReal": 1095109.78
+          },
+          {
+            "startYear": 1951,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3313081.7,
+            "endReal": 959757.71
+          },
+          {
+            "startYear": 1952,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 2961948.45,
+            "endReal": 835017.58
+          },
+          {
+            "startYear": 1953,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3116807.95,
+            "endReal": 852651.31
+          },
+          {
+            "startYear": 1954,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3639182.32,
+            "endReal": 966377.29
+          },
+          {
+            "startYear": 1955,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1931302.84,
+            "endReal": 489703.46
+          },
+          {
+            "startYear": 1956,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1311602.92,
+            "endReal": 321600.45
+          },
+          {
+            "startYear": 1957,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1821267.4,
+            "endReal": 454904.52
+          },
+          {
+            "startYear": 1958,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 2542612.62,
+            "endReal": 625738.14
+          },
+          {
+            "startYear": 1959,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1204850.9,
+            "endReal": 288964.3
+          },
+          {
+            "startYear": 1960,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1415881.9,
+            "endReal": 330110.52
+          },
+          {
+            "startYear": 1961,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1202599.24,
+            "endReal": 267843.33
+          },
+          {
+            "startYear": 1962,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 119139.91,
+            "endReal": 25918.73
+          },
+          {
+            "startYear": 1963,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 855813.37,
+            "endReal": 183345.13
+          },
+          {
+            "startYear": 1964,
+            "failIndex": 29,
+            "shortfallReal": 14423.36,
+            "endNominal": 0,
+            "endReal": 0
+          },
+          {
+            "startYear": 1965,
+            "failIndex": 26,
+            "shortfallReal": 156709.24,
+            "endNominal": 0,
+            "endReal": 0
+          },
+          {
+            "startYear": 1966,
+            "failIndex": 24,
+            "shortfallReal": 203703.7,
+            "endNominal": 0,
+            "endReal": 0
+          },
+          {
+            "startYear": 1967,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 136268.99,
+            "endReal": 28267.59
+          },
+          {
+            "startYear": 1968,
+            "failIndex": 27,
+            "shortfallReal": 112088.42,
+            "endNominal": 0,
+            "endReal": 0
+          },
+          {
+            "startYear": 1969,
+            "failIndex": 27,
+            "shortfallReal": 105299.7,
+            "endNominal": 0,
+            "endReal": 0
+          },
+          {
+            "startYear": 1970,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 2923715.04,
+            "endReal": 654924.71
+          },
+          {
+            "startYear": 1971,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 2660235.63,
+            "endReal": 608489.52
+          },
+          {
+            "startYear": 1972,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1517608.42,
+            "endReal": 352991.41
+          },
+          {
+            "startYear": 1973,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 766142.93,
+            "endReal": 179994.5
+          },
+          {
+            "startYear": 1974,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 4032835.85,
+            "endReal": 1010942.13
+          },
+          {
+            "startYear": 1975,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 9999661.53,
+            "endReal": 2727174.73
+          },
+          {
+            "startYear": 1976,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 7815235.82,
+            "endReal": 2203986.01
+          },
+          {
+            "startYear": 1977,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 6016606.16,
+            "endReal": 1735212.33
+          },
+          {
+            "startYear": 1978,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 8720860.91,
+            "endReal": 2578434.96
+          },
+          {
+            "startYear": 1979,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 9082907.43,
+            "endReal": 2924973.67
+          },
+          {
+            "startYear": 1980,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 9870850.17,
+            "endReal": 3505884.89
+          },
+          {
+            "startYear": 1981,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 10137763.03,
+            "endReal": 3991655.27
+          },
+          {
+            "startYear": 1982,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 12134994.85,
+            "endReal": 5054626.07
+          },
+          {
+            "startYear": 1983,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 9708131.63,
+            "endReal": 4126778.02
+          },
+          {
+            "startYear": 1984,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 9586831.67,
+            "endReal": 4167128.9
+          },
+          {
+            "startYear": 1985,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 9972600.3,
+            "endReal": 4472148.7
+          },
+          {
+            "startYear": 1986,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 7033978.76,
+            "endReal": 3250454.65
+          },
+          {
+            "startYear": 1987,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 5444092.08,
+            "endReal": 2491684.03
+          },
+          {
+            "startYear": 1988,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 6798951.39,
+            "endReal": 3182647.72
+          },
+          {
+            "startYear": 1989,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 5900304.33,
+            "endReal": 2829987.95
+          },
+          {
+            "startYear": 1990,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 5059883.01,
+            "endReal": 2482940.44
+          },
+          {
+            "startYear": 1991,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 6424833.46,
+            "endReal": 3300302.14
+          },
+          {
+            "startYear": 1992,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 5222485.58,
+            "endReal": 2583127.48
+          },
+          {
+            "startYear": 1993,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3997417.82,
+            "endReal": 1911185.52
+          },
+          {
+            "startYear": 1994,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3946501.59,
+            "endReal": 1875820.8
+          },
+          {
+            "startYear": 1995,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 5218034.24,
+            "endReal": 2475056.58
+          },
+          {
+            "startYear": 1996,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3630394.4,
+            "endReal": 1718698.52
+          }
+        ]
+      },
+      {
+        "stockBp": 7500,
+        "paths": 69,
+        "firstStartYear": 1928,
+        "lastStartYear": 1996,
+        "successPaths": 65,
+        "successBp": 9420,
+        "failures": [
+          {
+            "startYear": 1965,
+            "failIndex": 29,
+            "shortfallReal": 17881.33
+          },
+          {
+            "startYear": 1966,
+            "failIndex": 26,
+            "shortfallReal": 142871.79
+          },
+          {
+            "startYear": 1968,
+            "failIndex": 28,
+            "shortfallReal": 57007.81
+          },
+          {
+            "startYear": 1969,
+            "failIndex": 27,
+            "shortfallReal": 92165.01
+          }
+        ],
+        "endingReal": {
+          "p10": 278163.95,
+          "p50": 2410396.03,
+          "p90": 4719965.05,
+          "startYearOfEach": {
+            "p10": 1973,
+            "p50": 1941,
+            "p90": 1991
+          }
+        },
+        "samples": [
+          {
+            "startYear": 1928,
+            "endNominal": 2186257.39,
+            "cpiEnd": 1.641622,
+            "endReal": 1331766.93
+          },
+          {
+            "startYear": 1929,
+            "endNominal": 466954.35,
+            "cpiEnd": 1.690063,
+            "endReal": 276294.08
+          },
+          {
+            "startYear": 1966,
+            "endNominal": 0,
+            "cpiEnd": 4.827052,
+            "endReal": 0
+          },
+          {
+            "startYear": 1973,
+            "endNominal": 1183999.2,
+            "cpiEnd": 4.25648,
+            "endReal": 278163.95
+          },
+          {
+            "startYear": 1982,
+            "endNominal": 13690993.58,
+            "cpiEnd": 2.40077,
+            "endReal": 5702750.93
+          }
+        ],
+        "pathsDetail": [
+          {
+            "startYear": 1928,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 2186257.39,
+            "endReal": 1331766.93
+          },
+          {
+            "startYear": 1929,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 466954.35,
+            "endReal": 276294.08
+          },
+          {
+            "startYear": 1930,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1310169.85,
+            "endReal": 766492.01
+          },
+          {
+            "startYear": 1931,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3181013.55,
+            "endReal": 1718598.64
+          },
+          {
+            "startYear": 1932,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 10364703.69,
+            "endReal": 5044148.44
+          },
+          {
+            "startYear": 1933,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 10363329.06,
+            "endReal": 4465770.26
+          },
+          {
+            "startYear": 1934,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 6386639.31,
+            "endReal": 2728271.29
+          },
+          {
+            "startYear": 1935,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 7893346.81,
+            "endReal": 3390089.75
+          },
+          {
+            "startYear": 1936,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3987137.8,
+            "endReal": 1730266.61
+          },
+          {
+            "startYear": 1937,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1379915.61,
+            "endReal": 587198.13
+          },
+          {
+            "startYear": 1938,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 7352474.61,
+            "endReal": 3123174.19
+          },
+          {
+            "startYear": 1939,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 4533351.34,
+            "endReal": 1787799.01
+          },
+          {
+            "startYear": 1940,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 4679822.28,
+            "endReal": 1737863.28
+          },
+          {
+            "startYear": 1941,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 6803819.33,
+            "endReal": 2410396.03
+          },
+          {
+            "startYear": 1942,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 11670796.05,
+            "endReal": 4401393.17
+          },
+          {
+            "startYear": 1943,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 11903339.82,
+            "endReal": 4733329
+          },
+          {
+            "startYear": 1944,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 8431667.36,
+            "endReal": 3175563.76
+          },
+          {
+            "startYear": 1945,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 5668337.85,
+            "endReal": 1944053.05
+          },
+          {
+            "startYear": 1946,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 4598184.69,
+            "endReal": 1507872.63
+          },
+          {
+            "startYear": 1947,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 8194503.58,
+            "endReal": 3027177.87
+          },
+          {
+            "startYear": 1948,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 8210516.4,
+            "endReal": 3093817.09
+          },
+          {
+            "startYear": 1949,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 8567293.89,
+            "endReal": 3049805.86
+          },
+          {
+            "startYear": 1950,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 8086168.81,
+            "endReal": 2488053.51
+          },
+          {
+            "startYear": 1951,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 7618558.55,
+            "endReal": 2206999.69
+          },
+          {
+            "startYear": 1952,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 6185427.24,
+            "endReal": 1743764.49
+          },
+          {
+            "startYear": 1953,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 6300170.42,
+            "endReal": 1723509.65
+          },
+          {
+            "startYear": 1954,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 7859957.16,
+            "endReal": 2087195.26
+          },
+          {
+            "startYear": 1955,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 4326249.98,
+            "endReal": 1096969.13
+          },
+          {
+            "startYear": 1956,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3160633.37,
+            "endReal": 774976.26
+          },
+          {
+            "startYear": 1957,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3778248.44,
+            "endReal": 943706.72
+          },
+          {
+            "startYear": 1958,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 5488178.35,
+            "endReal": 1350643.22
+          },
+          {
+            "startYear": 1959,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 2779267.23,
+            "endReal": 666563
+          },
+          {
+            "startYear": 1960,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 2939455.57,
+            "endReal": 685329.2
+          },
+          {
+            "startYear": 1961,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3048367.71,
+            "endReal": 678933.54
+          },
+          {
+            "startYear": 1962,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1299569.74,
+            "endReal": 282719.69
+          },
+          {
+            "startYear": 1963,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 2979296.82,
+            "endReal": 638269.51
+          },
+          {
+            "startYear": 1964,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1242476.91,
+            "endReal": 263322.71
+          },
+          {
+            "startYear": 1965,
+            "failIndex": 29,
+            "shortfallReal": 17881.33,
+            "endNominal": 0,
+            "endReal": 0
+          },
+          {
+            "startYear": 1966,
+            "failIndex": 26,
+            "shortfallReal": 142871.79,
+            "endNominal": 0,
+            "endReal": 0
+          },
+          {
+            "startYear": 1967,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1758370.08,
+            "endReal": 364755.71
+          },
+          {
+            "startYear": 1968,
+            "failIndex": 28,
+            "shortfallReal": 57007.81,
+            "endNominal": 0,
+            "endReal": 0
+          },
+          {
+            "startYear": 1969,
+            "failIndex": 27,
+            "shortfallReal": 92165.01,
+            "endNominal": 0,
+            "endReal": 0
+          },
+          {
+            "startYear": 1970,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 4724540.98,
+            "endReal": 1058317.44
+          },
+          {
+            "startYear": 1971,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 5073812.33,
+            "endReal": 1160559.46
+          },
+          {
+            "startYear": 1972,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 3076682.93,
+            "endReal": 715627.72
+          },
+          {
+            "startYear": 1973,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 1183999.2,
+            "endReal": 278163.95
+          },
+          {
+            "startYear": 1974,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 6436095.76,
+            "endReal": 1613385.86
+          },
+          {
+            "startYear": 1975,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 16879760.16,
+            "endReal": 4603561.35
+          },
+          {
+            "startYear": 1976,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 11918401.97,
+            "endReal": 3361125.87
+          },
+          {
+            "startYear": 1977,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 9569405.72,
+            "endReal": 2759853.36
+          },
+          {
+            "startYear": 1978,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 13674534.66,
+            "endReal": 4043052.47
+          },
+          {
+            "startYear": 1979,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 11341308.45,
+            "endReal": 3652247.79
+          },
+          {
+            "startYear": 1980,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 12299013.12,
+            "endReal": 4368309.07
+          },
+          {
+            "startYear": 1981,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 11240172,
+            "endReal": 4425719.13
+          },
+          {
+            "startYear": 1982,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 13690993.58,
+            "endReal": 5702750.93
+          },
+          {
+            "startYear": 1983,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 11903614.17,
+            "endReal": 5060044.01
+          },
+          {
+            "startYear": 1984,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 12048559.14,
+            "endReal": 5237173.32
+          },
+          {
+            "startYear": 1985,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 13025565.42,
+            "endReal": 5841231.34
+          },
+          {
+            "startYear": 1986,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 9227810.75,
+            "endReal": 4264240.96
+          },
+          {
+            "startYear": 1987,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 7717393.16,
+            "endReal": 3532141.81
+          },
+          {
+            "startYear": 1988,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 9450001.8,
+            "endReal": 4423627.25
+          },
+          {
+            "startYear": 1989,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 7911504.4,
+            "endReal": 3794628.35
+          },
+          {
+            "startYear": 1990,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 6880295.35,
+            "endReal": 3376236.87
+          },
+          {
+            "startYear": 1991,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 9188549.45,
+            "endReal": 4719965.05
+          },
+          {
+            "startYear": 1992,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 7757055.62,
+            "endReal": 3836767.62
+          },
+          {
+            "startYear": 1993,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 6029600.26,
+            "endReal": 2882782.15
+          },
+          {
+            "startYear": 1994,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 6475878.18,
+            "endReal": 3078064.64
+          },
+          {
+            "startYear": 1995,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 8548155.52,
+            "endReal": 4054624.32
+          },
+          {
+            "startYear": 1996,
+            "failIndex": -1,
+            "shortfallReal": 0,
+            "endNominal": 6048544.98,
+            "endReal": 2863497.51
+          }
+        ]
+      }
+    ],
+    "otherMixes": [
+      {
+        "stockBp": 10000,
+        "paths": 69,
+        "successPaths": 64
+      },
+      {
+        "stockBp": 2500,
+        "paths": 69,
+        "successPaths": 51
+      },
+      {
+        "stockBp": 0,
+        "paths": 69,
+        "successPaths": 27
+      }
+    ]
+  },
+  "trinityConvention": {
+    "description": "Start years 1928 to 1966 (39 windows of 30 years ending by 1995). Each year the balance first earns the year's return, then 40,000 × the price level at that year's end is withdrawn; a window fails when a withdrawal exceeds the balance.",
+    "runs": [
+      {
+        "stockBp": 5000,
+        "startYears": [
+          1928,
+          1966
+        ],
+        "windows": 39,
+        "successCount": 37,
+        "successRate": 0.9487
+      },
+      {
+        "stockBp": 7500,
+        "startYears": [
+          1928,
+          1966
+        ],
+        "windows": 39,
+        "successCount": 38,
+        "successRate": 0.9744
+      },
+      {
+        "stockBp": 10000,
+        "startYears": [
+          1928,
+          1966
+        ],
+        "windows": 39,
+        "successCount": 37,
+        "successRate": 0.9487
+      },
+      {
+        "stockBp": 2500,
+        "startYears": [
+          1928,
+          1966
+        ],
+        "windows": 39,
+        "successCount": 28,
+        "successRate": 0.7179
+      },
+      {
+        "stockBp": 0,
+        "startYears": [
+          1928,
+          1966
+        ],
+        "windows": 39,
+        "successCount": 4,
+        "successRate": 0.1026
+      }
+    ],
+    "onAll69Windows": [
+      {
+        "stockBp": 5000,
+        "startYears": [
+          1928,
+          1996
+        ],
+        "windows": 69,
+        "successCount": 65,
+        "successRate": 0.942
+      },
+      {
+        "stockBp": 7500,
+        "startYears": [
+          1928,
+          1996
+        ],
+        "windows": 69,
+        "successCount": 68,
+        "successRate": 0.9855
+      }
+    ]
+  },
+  "path1966": [
+    {
+      "dataYear": 1966,
+      "startBalance": 1000000,
+      "need": 40000,
+      "shortfall": 0,
+      "portfolioReturn": -0.0353155,
+      "endBalance": 926097.12,
+      "inflation": 0.034591
+    },
+    {
+      "dataYear": 1967,
+      "startBalance": 926097.12,
+      "need": 41383.64,
+      "shortfall": 0,
+      "portfolioReturn": 0.11111199999999999,
+      "endBalance": 983015.76,
+      "inflation": 0.030395
+    },
+    {
+      "dataYear": 1968,
+      "startBalance": 983015.76,
+      "need": 42641.5,
+      "shortfall": 0,
+      "portfolioReturn": 0.0704475,
+      "endBalance": 1006621.28,
+      "inflation": 0.047198
+    },
+    {
+      "dataYear": 1969,
+      "startBalance": 1006621.28,
+      "need": 44654.09,
+      "shortfall": 0,
+      "portfolioReturn": -0.066277,
+      "endBalance": 898210.9,
+      "inflation": 0.061972
+    },
+    {
+      "dataYear": 1970,
+      "startBalance": 898210.9,
+      "need": 47421.39,
+      "shortfall": 0,
+      "portfolioReturn": 0.101579,
+      "endBalance": 937211.85,
+      "inflation": 0.055703
+    },
+    {
+      "dataYear": 1971,
+      "startBalance": 937211.85,
+      "need": 50062.91,
+      "shortfall": 0,
+      "portfolioReturn": 0.1200405,
+      "endBalance": 993642.75,
+      "inflation": 0.032663
+    },
+    {
+      "dataYear": 1972,
+      "startBalance": 993642.75,
+      "need": 51698.11,
+      "shortfall": 0,
+      "portfolioReturn": 0.10786899999999999,
+      "endBalance": 1043551.26,
+      "inflation": 0.034063
+    },
+    {
+      "dataYear": 1973,
+      "startBalance": 1043551.26,
+      "need": 53459.1,
+      "shortfall": 0,
+      "portfolioReturn": -0.0532465,
+      "endBalance": 937373.22,
+      "inflation": 0.087059
+    },
+    {
+      "dataYear": 1974,
+      "startBalance": 937373.22,
+      "need": 58113.2,
+      "shortfall": 0,
+      "portfolioReturn": -0.119566,
+      "endBalance": 774130.41,
+      "inflation": 0.123377
+    },
+    {
+      "dataYear": 1975,
+      "startBalance": 774130.41,
+      "need": 65283.03,
+      "shortfall": 0,
+      "portfolioReturn": 0.203002,
+      "endBalance": 852744.82,
+      "inflation": 0.069364
+    },
+    {
+      "dataYear": 1976,
+      "startBalance": 852744.82,
+      "need": 69811.32,
+      "shortfall": 0,
+      "portfolioReturn": 0.19907799999999998,
+      "endBalance": 938798.33,
+      "inflation": 0.048649
+    },
+    {
+      "dataYear": 1977,
+      "startBalance": 938798.33,
+      "need": 73207.58,
+      "shortfall": 0,
+      "portfolioReturn": -0.028448499999999998,
+      "endBalance": 840965.99,
+      "inflation": 0.06701
+    },
+    {
+      "dataYear": 1978,
+      "startBalance": 840965.99,
+      "need": 78113.21,
+      "shortfall": 0,
+      "portfolioReturn": 0.0286585,
+      "endBalance": 784715,
+      "inflation": 0.090177
+    },
+    {
+      "dataYear": 1979,
+      "startBalance": 784715,
+      "need": 85157.23,
+      "shortfall": 0,
+      "portfolioReturn": 0.095951,
+      "endBalance": 766681.03,
+      "inflation": 0.132939
+    },
+    {
+      "dataYear": 1980,
+      "startBalance": 766681.03,
+      "need": 96477.95,
+      "shortfall": 0,
+      "portfolioReturn": 0.1437275,
+      "endBalance": 766529.7,
+      "inflation": 0.125163
+    },
+    {
+      "dataYear": 1981,
+      "startBalance": 766529.7,
+      "need": 108553.42,
+      "shortfall": 0,
+      "portfolioReturn": 0.017483999999999996,
+      "endBalance": 669480.34,
+      "inflation": 0.089224
+    },
+    {
+      "dataYear": 1982,
+      "startBalance": 669480.34,
+      "need": 118238.99,
+      "shortfall": 0,
+      "portfolioReturn": 0.266168,
+      "endBalance": 697964.16,
+      "inflation": 0.038298
+    },
+    {
+      "dataYear": 1983,
+      "startBalance": 697964.16,
+      "need": 122767.3,
+      "shortfall": 0,
+      "portfolioReturn": 0.127687,
+      "endBalance": 648642.02,
+      "inflation": 0.03791
+    },
+    {
+      "dataYear": 1984,
+      "startBalance": 648642.02,
+      "need": 127421.41,
+      "shortfall": 0,
+      "portfolioReturn": 0.0993975,
+      "endBalance": 573028.64,
+      "inflation": 0.039487
+    },
+    {
+      "dataYear": 1985,
+      "startBalance": 573028.64,
+      "need": 132452.9,
+      "shortfall": 0,
+      "portfolioReturn": 0.284738,
+      "endBalance": 566024.39,
+      "inflation": 0.037987
+    },
+    {
+      "dataYear": 1986,
+      "startBalance": 566024.39,
+      "need": 137484.39,
+      "shortfall": 0,
+      "portfolioReturn": 0.213894,
+      "endBalance": 520202.13,
+      "inflation": 0.010979
+    },
+    {
+      "dataYear": 1987,
+      "startBalance": 520202.13,
+      "need": 138993.83,
+      "shortfall": 0,
+      "portfolioReturn": 0.004260999999999997,
+      "endBalance": 382832.63,
+      "inflation": 0.044344
+    },
+    {
+      "dataYear": 1988,
+      "startBalance": 382832.63,
+      "need": 145157.37,
+      "shortfall": 0,
+      "portfolioReturn": 0.123804,
+      "endBalance": 267100.41,
+      "inflation": 0.044194
+    },
+    {
+      "dataYear": 1989,
+      "startBalance": 267100.41,
+      "need": 151572.46,
+      "shortfall": 0,
+      "portfolioReturn": 0.245844,
+      "endBalance": 143929.8,
+      "inflation": 0.046473
+    },
+    {
+      "dataYear": 1990,
+      "startBalance": 143929.8,
+      "need": 158616.48,
+      "shortfall": 14686.68,
+      "portfolioReturn": 0.0158545,
+      "endBalance": 0,
+      "inflation": 0.061063
+    },
+    {
+      "dataYear": 1991,
+      "startBalance": 0,
+      "need": 168302.08,
+      "shortfall": 168302.08,
+      "portfolioReturn": 0.22619650000000002,
+      "endBalance": 0,
+      "inflation": 0.030643
+    },
+    {
+      "dataYear": 1992,
+      "startBalance": 0,
+      "need": 173459.36,
+      "shortfall": 173459.36,
+      "portfolioReturn": 0.0842765,
+      "endBalance": 0,
+      "inflation": 0.029007
+    },
+    {
+      "dataYear": 1993,
+      "startBalance": 0,
+      "need": 178490.9,
+      "shortfall": 178490.9,
+      "portfolioReturn": 0.12089049999999998,
+      "endBalance": 0,
+      "inflation": 0.027484
+    },
+    {
+      "dataYear": 1994,
+      "startBalance": 0,
+      "need": 183396.54,
+      "shortfall": 183396.54,
+      "portfolioReturn": -0.033554,
+      "endBalance": 0,
+      "inflation": 0.026749
+    },
+    {
+      "dataYear": 1995,
+      "startBalance": 0,
+      "need": 188302.22,
+      "shortfall": 188302.22,
+      "portfolioReturn": 0.30338,
+      "endBalance": 0,
+      "inflation": 0.025384
+    }
+  ]
+}
