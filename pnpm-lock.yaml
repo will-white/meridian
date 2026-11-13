@@ -163,6 +163,15 @@ importers:
         specifier: ^4.19.2
         version: 4.23.15
 
+  packages/retirement:
+    dependencies:
+      '@meridian/shared':
+        specifier: workspace:*
+        version: link:../shared
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+
   packages/shared:
     dependencies:
       zod:
