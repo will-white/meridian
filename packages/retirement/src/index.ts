@@ -67,7 +67,15 @@ export {
 } from "./mortality.js";
 export type { CompiledMortality, LifeTable, LifeTableId, LifeTables, MortalityPerson, MortalityPlan } from "./mortality.js";
 export type { EngineWarning } from "./warning.js";
+export { CASH_TOL } from "./constants.js";
+export { TRADE_FLOWS_ONLY, TRADE_FULL, createTradeResult, depositAtWeights, planTrades, tradeModeOf } from "./trades.js";
+export type { TradeMode, TradeResult } from "./trades.js";
 export { EngineInputError, EngineInvariantError, EngineRuntimeError } from "./errors.js";
 export type { EngineRuntimeCode } from "./errors.js";
 export { TAX_DATA_FIRST_YEAR, TaxDataError, fullRetirementAgeTable, listTaxRuleSets, loadTaxData, pendingLimits, taxDataStale } from "./tax/index.js";
 export type { TaxData, TaxDataErrorCode } from "./tax/index.js";
+export {
+  TR, PR, TI, TO, TAX_REC, PROG_REC, TAX_IN, TAX_OUT, taxOffset, progOffset,
+  compileTaxLaw, fillPathTables, federalTaxInto, effectiveMarginalRates, assertTaxInput, computeFederalTax, taxYearDetail, TaxInputError,
+} from "./tax/index.js";
+export type { CompiledTaxLaw, CompileTaxLawOptions, FillOptions, FederalTaxInput, FederalTaxResult, FilingStatusIndex, TaxInputErrorCode } from "./tax/index.js";
