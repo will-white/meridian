@@ -6,6 +6,7 @@ import { api, query } from "../lib/api.js";
 import { money, shortDate, titleCase } from "../lib/format.js";
 import { lastReconciliationText, positionsMatchText } from "../lib/investmentForms.js";
 import { linkableFeedAccounts, linkResultText } from "../lib/ledgerCorrections.js";
+import { balanceFieldLabel, isDebtType, owedText, parseManualBalance } from "../lib/accountForms.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
 import { FidelityBadge } from "../components/investments/FidelityBadge.js";
 import { useIsViewer } from "../components/investments/queries.js";
@@ -161,6 +162,48 @@ function CashFlowEditor({ account, accounts, pending, error, onSave, onClose }: 
   );
 }
 
+/**
+ * A manual account's balance on a day (audit a6-text-rules-accounts-03): a house revalued, a
+ * loan paid down. A card or a loan takes the amount owed (-05); the date is optional (today).
+ */
+function BalanceEditor({ account, pending, error, onSave, onClose }: { account: AccountView; pending: boolean; error: unknown; onSave: (body: { balanceCents: string; date?: string }) => void; onClose: () => void }) {
+  const [amount, setAmount] = useState(() => owedText(account.balanceCents, account.type));
+  const [date, setDate] = useState("");
+  const [clientError, setClientError] = useState<string | null>(null);
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    const parsed = parseManualBalance(amount, account.type);
+    if (!parsed.ok) return setClientError(parsed.error);
+    if (parsed.cents === null) return setClientError(`Enter the ${balanceFieldLabel(account.type).toLowerCase()}`);
+    setClientError(null);
+    onSave({ balanceCents: parsed.cents.toString(), ...(date ? { date } : {}) });
+  };
+  return (
+    <form className="acct-form" onSubmit={submit}>
+      <label>
+        {balanceFieldLabel(account.type)}
+        <input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} aria-label={`${account.name} ${balanceFieldLabel(account.type).toLowerCase()}`} />
+        {isDebtType(account.type) && <span className="muted small">What is owed, as a positive amount; it lowers net worth.</span>}
+      </label>
+      <label>
+        As of
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        <span className="muted small">Blank is today. An earlier date goes into the history; the account shows its latest balance.</span>
+      </label>
+      <span className="row acct-form-actions">
+        <button type="submit" disabled={pending}>
+          Save balance
+        </button>
+        <button type="button" className="secondary" onClick={onClose}>
+          Cancel
+        </button>
+      </span>
+      {clientError && <ErrorText error={new Error(clientError)} />}
+      <ErrorText error={error} />
+    </form>
+  );
+}
+
 export function AccountsPage() {
   const qc = useQueryClient();
   const viewer = useIsViewer();
@@ -186,7 +229,14 @@ export function AccountsPage() {
     onSuccess: () => {
       setNewName("");
       setNewBalance("");
-      void qc.invalidateQueries({ queryKey: ["accounts"] });
+      invalidate();
+    },
+  });
+  const recordBalance = useMutation({
+    mutationFn: ({ id, ...body }: { id: string; balanceCents: string; date?: string }) => api<AccountView>(`/accounts/${id}/balances`, { method: "POST", body }),
+    onSuccess: () => {
+      setBalanceEditing(null);
+      invalidate();
     },
   });
   // Audit a5-ingest-transfers-02: an account without a connection takes over the feed account the sync created for it.
@@ -204,6 +254,8 @@ export function AccountsPage() {
   const [newName, setNewName] = useState("");
   const [newType, setNewType] = useState<AccountView["type"]>("checking");
   const [newBalance, setNewBalance] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [balanceEditing, setBalanceEditing] = useState<string | null>(null);
 
   const all = accounts.data ?? [];
   const visible = all.filter((a) => showClosed || !a.closed);
@@ -301,7 +353,16 @@ export function AccountsPage() {
                           ))}
                         </select>
                       </td>
-                      <td className={`num ${a.balanceCents?.startsWith("-") ? "neg" : ""}`}>{money(a.balanceCents, a.currency)}</td>
+                      <td className={`num ${a.balanceCents?.startsWith("-") ? "neg" : ""}`}>
+                        {money(a.balanceCents, a.currency)}
+                        {!viewer && a.connectionName === null && !a.closed && (
+                          <div className="small">
+                            <button className="link small" onClick={() => setBalanceEditing(balanceEditing === a.id ? null : a.id)} aria-expanded={balanceEditing === a.id}>
+                              {balanceEditing === a.id ? "close" : "update balance"}
+                            </button>
+                          </div>
+                        )}
+                      </td>
                       <td className="num muted">{money(a.availableCents, a.currency)}</td>
                       <td className="muted">{shortDate(a.balanceDate)}</td>
                       <td>
@@ -335,6 +396,23 @@ export function AccountsPage() {
                         {a.closed && <Badge tone="neutral">closed</Badge>}
                       </td>
                     </tr>
+                    {balanceEditing === a.id && (
+                      <tr className="acct-editor">
+                        <td colSpan={10}>
+                          <BalanceEditor
+                            key={a.id}
+                            account={a}
+                            pending={recordBalance.isPending}
+                            error={recordBalance.error}
+                            onSave={(body) => recordBalance.mutate({ id: a.id, ...body })}
+                            onClose={() => {
+                              recordBalance.reset();
+                              setBalanceEditing(null);
+                            }}
+                          />
+                        </td>
+                      </tr>
+                    )}
                     {editing === a.id && (
                       <tr className="acct-editor">
                         <td colSpan={10}>
@@ -366,8 +444,11 @@ export function AccountsPage() {
           className="row wrap"
           onSubmit={(e) => {
             e.preventDefault();
-            const cents = newBalance.trim() ? String(Math.round(Number(newBalance) * 100)) : undefined;
-            create.mutate({ name: newName.trim(), type: newType, ...(cents !== undefined && !Number.isNaN(Number(cents)) ? { balanceCents: cents } : {}) });
+            // Integer cents by string math (audit a6-text-rules-accounts-09); a card or a loan takes the amount owed (-05).
+            const parsed = parseManualBalance(newBalance, newType);
+            if (!parsed.ok) return setCreateError(parsed.error);
+            setCreateError(null);
+            create.mutate({ name: newName.trim(), type: newType, ...(parsed.cents !== null ? { balanceCents: parsed.cents.toString() } : {}) });
           }}
         >
           <input placeholder="Name (e.g. House, Car loan, Cash)" value={newName} onChange={(e) => setNewName(e.target.value)} required />
@@ -378,11 +459,19 @@ export function AccountsPage() {
               </option>
             ))}
           </select>
-          <input placeholder="Balance (e.g. 12500.00)" value={newBalance} onChange={(e) => setNewBalance(e.target.value)} inputMode="decimal" />
+          <input
+            placeholder={isDebtType(newType) ? "Amount owed (e.g. 15000.00)" : "Balance (e.g. 12500.00)"}
+            aria-label={balanceFieldLabel(newType)}
+            value={newBalance}
+            onChange={(e) => setNewBalance(e.target.value)}
+            inputMode="decimal"
+          />
           <button type="submit" disabled={create.isPending}>
             Add
           </button>
         </form>
+        <p className="muted small">Houses, vehicles and loans start off budget, so they stay out of the cash-flow projection; the Budget column switches that.</p>
+        {createError && <ErrorText error={new Error(createError)} />}
         <ErrorText error={create.error} />
       </Card>
     </>

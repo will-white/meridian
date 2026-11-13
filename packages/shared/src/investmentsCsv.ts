@@ -1,5 +1,5 @@
 import { PositionsCsvMapping, TradesCsvMapping, type PositionsCsvMappingInput, type RowChoice, type TradeKind, type TradesCsvMappingInput } from "./api.js";
-import { parseCsvDate, parseLooseMoney, type ColumnRef, type CsvDateFormat, type MappingError } from "./csv.js";
+import { headerKey, parseCsvDate, parseLooseMoney, type ColumnRef, type CsvDateFormat, type MappingError } from "./csv.js";
 import { dayDiff, type IsoDate } from "./dates.js";
 import {
   amountMismatch,
@@ -52,9 +52,10 @@ const PENDING_RE = /^PENDING ACTIVITY/;
 
 function resolveColumn(ref: ColumnRef, headers: readonly string[] | undefined): number {
   if (typeof ref === "number") return ref;
-  if (!headers) throw new Error(`Column "${ref}" referenced by name, but the file has no header row`);
-  const idx = headers.findIndex((h) => h.trim().toLowerCase() === ref.trim().toLowerCase());
-  if (idx < 0) throw new Error(`Column "${ref}" not found in header`);
+  if (!headers) throw new Error(`Column "${sanitizeText(ref, 50)}" referenced by name, but the file has no header row`);
+  const key = headerKey(ref);
+  const idx = headers.findIndex((h) => headerKey(h) === key);
+  if (idx < 0) throw new Error(`Column "${sanitizeText(ref, 50)}" not found in header`);
   return idx;
 }
 

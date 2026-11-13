@@ -182,6 +182,7 @@ describe("previews (routes 23 and 24)", () => {
         indexing: [{ path: "standardDeduction", index: "cpi", round: "floor_increase" }],
         taxDrag: { us_stock: { dividendYieldBp: 130, qualifiedShareBp: 9500, interestSpreadBp: null, taxExemptShareBp: 0, gainDistributionRateBp: 0 } },
         notModelled: [{ id: "state_tax", label: "State income tax", effect: "Colorado tax is not included" }],
+        socialSecurityRules: [{ id: "cola", label: "COLA", status: "secondary" }],
         sources: [{ file: "tax/federal-2026.json", title: "Synthetic", url: "https://example.invalid/", retrieved: "2026-11-13", sha256: null }],
         disclaimer: "x",
       }),

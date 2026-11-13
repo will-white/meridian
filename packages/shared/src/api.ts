@@ -285,8 +285,14 @@ export type AccountView = z.infer<typeof AccountView>;
 export const LinkFeedAccountBody = z.object({ feedAccountId: z.string().uuid() });
 export const LinkFeedAccountResult = z.object({ merged: z.number().int(), moved: z.number().int(), dropped: z.number().int(), transfersPaired: z.number().int() });
 export type LinkFeedAccountResult = z.infer<typeof LinkFeedAccountResult>;
+/** An account's name: trimmed, then 1 to 100 characters (audit a6-text-rules-accounts-20: "   " is no name). */
+const AccountName = z.string().trim().min(1, "An account needs a name").max(100);
+/**
+ * Unknown keys are refused (400), so a field the route does not take (a balance, which has its
+ * own route) is never silently dropped (audit a6-text-rules-accounts-03).
+ */
 export const UpdateAccountBody = z.object({
-  name: z.string().min(1).max(100).optional(),
+  name: AccountName.optional(),
   type: AccountType.optional(),
   taxTreatment: TaxTreatment.optional(),
   onBudget: z.boolean().optional(),
@@ -299,12 +305,26 @@ export const UpdateAccountBody = z.object({
   lotMethod: LotMethod.optional(),
   cashInference: CashInference.optional(),
   investmentIncomeFeed: InvestmentIncomeFeed.optional(),
-});
+}).strict();
+/**
+ * `balanceCents` is signed like every balance: what a loan or a card owes is negative. A manual
+ * loan with a positive balance is refused (400 `debt_balance_positive`); the Accounts page asks
+ * for the amount owed and sends it negated (audit a6-text-rules-accounts-05).
+ */
 export const CreateManualAccountBody = z.object({
-  name: z.string().min(1).max(100),
+  name: AccountName,
   type: AccountType,
   taxTreatment: TaxTreatment.optional(),
   balanceCents: CentsInput.optional(),
+});
+/**
+ * `POST /api/accounts/:id/balances` (audit a6-text-rules-accounts-03): a manual balance for an
+ * account without a bank connection, on `date` (default the household's today). It is the
+ * account's balance when no later balance exists; an older one goes into the history only.
+ */
+export const RecordBalanceBody = z.object({
+  date: IsoDateInput.optional(),
+  balanceCents: CentsInput,
 });
 
 // ---- Categories, payees, tags ----
@@ -436,15 +456,32 @@ export const RuleView = z.object({
 });
 export type RuleView = z.infer<typeof RuleView>;
 export const ApplyScope = z.enum(["none", "uncategorized", "all"]);
+/** A rule's name; the server cuts a longer one (with "…") instead of refusing the rule (audit a6-text-rules-accounts-18). */
+export const RULE_NAME_MAX = 100;
+const RuleName = z
+  .string()
+  .max(1000)
+  .transform((v) => {
+    const name = v.trim();
+    return name.length > RULE_NAME_MAX ? `${name.slice(0, RULE_NAME_MAX - 1).trimEnd()}…` : name;
+  });
 export const CreateRuleBody = z.object({
-  name: z.string().max(100).optional(),
+  name: RuleName.optional(),
   conditions: RuleConditions,
   actions: RuleActions,
   /** Run the new rule over existing transactions right away. */
   applyTo: ApplyScope.default("uncategorized"),
+  /**
+   * Where the rule goes in the order (1 = first; the rules from there move down one). Default:
+   * last. A deleted rule is restored from its history at its old position with `applyTo: "none"`
+   * (audit a6-text-rules-accounts-13).
+   */
+  position: z.number().int().min(1).max(MAX_LIST_ITEMS).optional(),
+  /** Default true; a restored rule keeps the state it was deleted in. */
+  enabled: z.boolean().optional(),
 });
 export const UpdateRuleBody = z.object({
-  name: z.string().max(100).optional(),
+  name: RuleName.optional(),
   enabled: z.boolean().optional(),
   conditions: RuleConditions.optional(),
   actions: RuleActions.optional(),

@@ -42,3 +42,13 @@ describe("valueOverTimeOption", () => {
     expect(tooltip.formatter([])).toBe("");
   });
 });
+
+describe("value-over-time tooltip and feed text (a6-text-rules-accounts-01)", () => {
+  it("escapes an account name instead of inserting it as markup", () => {
+    const hostile = "Roth <meta http-equiv=refresh content=0;url=/api/health?";
+    const option = valueOverTimeOption({ dates: ["2026-10-12"], series: [{ key: "a", name: hostile, points: ["100"] }], theme });
+    const tooltip = option.tooltip as { formatter: (p: unknown) => string };
+    const html = tooltip.formatter([{ seriesIndex: 0, dataIndex: 0, seriesName: hostile, marker: "" }]);
+    expect(html).toBe("10/12/26<br/>Roth &lt;meta http-equiv=refresh content=0;url=/api/health?: <strong>$1.00</strong>");
+  });
+});

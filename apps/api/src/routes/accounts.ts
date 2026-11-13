@@ -12,7 +12,9 @@ import {
   holdingSnapshot,
   investmentTxn,
   linkFeedAccount,
+  manualBalanceProblem,
   rebuildLotsForAccounts,
+  recordManualBalance,
   requestValuation,
   setInvestmentIncomeFeed,
   writeAudit,
@@ -24,13 +26,13 @@ import {
   isInvestmentAccountType,
   LinkFeedAccountBody,
   LinkFeedAccountResult,
-  toIsoDate,
+  RecordBalanceBody,
   UpdateAccountBody,
   UuidParams,
 } from "@meridian/shared";
 import { badRequest, HttpError, notFound } from "../lib/errors.js";
 import { toAccountView } from "../views.js";
-import { auditContext, usePlanErrors } from "./plan.js";
+import { auditContext, serverToday, usePlanErrors } from "./plan.js";
 
 type UpdateBody = z.infer<typeof UpdateAccountBody>;
 type AccountPatch = Partial<typeof account.$inferInsert>;
@@ -140,16 +142,32 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
   r.post("/accounts", { schema: { body: CreateManualAccountBody, response: { 200: AccountView } } }, async (request) => {
     const taxTreatment = request.body.taxTreatment ?? defaultTaxTreatment[request.body.type];
     const balanceCents = request.body.balanceCents !== undefined ? BigInt(request.body.balanceCents) : null;
-    const today = toIsoDate(new Date());
+    const problem = balanceCents === null ? null : manualBalanceProblem(request.body.type, balanceCents);
+    if (problem) throw badRequest(problem, "debt_balance_positive");
+    // The household's day by the API clock (Phase 2 plan decision 16; audit a6-text-rules-accounts-14), not the machine's UTC date.
+    const today = await serverToday(app);
     const [row] = await app.db
       .insert(account)
-      // Investment-type accounts start off-budget (plan decision 15); the Accounts page offers a one-click move.
-      .values({ name: request.body.name.trim(), type: request.body.type, taxTreatment, onBudget: defaultOnBudget(request.body.type), balanceCents, balanceDate: balanceCents === null ? null : today })
+      // Investment types, assets and loans start off budget (plan decision 15, audit a6-text-rules-accounts-08); the Accounts page has the toggle.
+      .values({ name: request.body.name, type: request.body.type, taxTreatment, onBudget: defaultOnBudget(request.body.type), balanceCents, balanceDate: balanceCents === null ? null : today })
       .returning({ id: account.id });
     if (balanceCents !== null) {
       await app.db.insert(balanceSnapshot).values({ accountId: row!.id, date: today, balanceCents, source: "manual" }).onConflictDoNothing();
     }
     return (await list(row!.id))[0]!;
+  });
+
+  /**
+   * Audit a6-text-rules-accounts-03: a manual account's balance on a day (default today): a
+   * house revalued, a loan paid down. 409 `feed_account`, 400 `future_date`, 400 `debt_balance_positive`.
+   */
+  r.post("/accounts/:id/balances", { schema: { params: UuidParams, body: RecordBalanceBody, response: { 200: AccountView } } }, async (request) => {
+    const today = await serverToday(app);
+    await recordManualBalance(app.db, { accountId: request.params.id, date: request.body.date ?? today, balanceCents: BigInt(request.body.balanceCents), today }, auditContext(request));
+    const [recorded] = await app.db.select({ type: account.type }).from(account).where(eq(account.id, request.params.id));
+    // An investment account's value chain reads its balances.
+    if (recorded && isInvestmentAccountType(recorded.type)) await requestValuation(app.db, { reason: "setting", accountId: request.params.id });
+    return (await list(request.params.id))[0]!;
   });
 
   r.patch("/accounts/:id", { schema: { params: UuidParams, body: UpdateAccountBody, response: { 200: AccountView } } }, async (request) => {
@@ -171,7 +189,7 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     if (b.type !== undefined) await assertTypeChangeAllowed(app, current, b.type);
     await assertInvestmentSettingsAllowed(app, b.type ?? current.type, b);
     const patch: AccountPatch = { updatedAt: new Date(), ...(await cardSettingsPatch(app, current, b)) };
-    if (b.name !== undefined) patch.name = b.name.trim();
+    if (b.name !== undefined) patch.name = b.name;
     if (b.type !== undefined) {
       patch.type = b.type;
       // Changing the type re-derives the tax treatment unless one was given explicitly.

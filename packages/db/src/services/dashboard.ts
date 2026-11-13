@@ -190,13 +190,18 @@ interface LatestBalance {
   type: AccountType;
 }
 
-/** Latest balance_snapshot on/before `asOf` per open account (any source, computed rows included). */
-async function latestBalances(db: DbOrTx, asOf: IsoDate): Promise<Map<string, LatestBalance>> {
+/**
+ * Latest balance_snapshot on/before `asOf` per account (any source, computed rows included).
+ * `openOnly` leaves out the accounts the household closed: today's figure does, a past figure
+ * does not, because closing an account hides it from now on and does not change what the
+ * household was worth before (audit a6-text-rules-accounts-07).
+ */
+async function latestBalances(db: DbOrTx, asOf: IsoDate, openOnly: boolean): Promise<Map<string, LatestBalance>> {
   const rows = await db
     .selectDistinctOn([balanceSnapshot.accountId], { accountId: balanceSnapshot.accountId, balanceCents: balanceSnapshot.balanceCents, date: balanceSnapshot.date, type: account.type })
     .from(balanceSnapshot)
     .innerJoin(account, eq(account.id, balanceSnapshot.accountId))
-    .where(and(eq(account.closed, false), lte(balanceSnapshot.date, asOf)))
+    .where(and(openOnly ? eq(account.closed, false) : undefined, lte(balanceSnapshot.date, asOf)))
     .orderBy(balanceSnapshot.accountId, desc(balanceSnapshot.date));
   return new Map(rows.map((r) => [r.accountId, { balanceCents: r.balanceCents, date: r.date, type: r.type }]));
 }
@@ -225,15 +230,16 @@ export function netWorthBreakdown(current: ReadonlyMap<string, LatestBalance>): 
 }
 
 /**
- * Net worth from balance_snapshot over open accounts (liabilities are negative balances):
- * today's latest snapshots versus the latest on/before the same day twelve months earlier
- * (`addMonthsClamped`). Accounts without a snapshot that old contribute 0 and are named;
- * when no account has one, the year-ago figures are null.
+ * Net worth from balance_snapshot (liabilities are negative balances): today's latest
+ * snapshots of the open accounts versus the latest on/before the same day twelve months
+ * earlier (`addMonthsClamped`) of every account, closed ones included (audit
+ * a6-text-rules-accounts-07). Open accounts without a snapshot that old contribute 0 and are
+ * named; when no account has one, the year-ago figures are null.
  */
 export async function netWorth(db: DbOrTx, today: IsoDate): Promise<NetWorthBlock> {
   const yearAgoDate = addMonthsClamped(today, -12);
-  const current = await latestBalances(db, today);
-  const yearAgo = await latestBalances(db, yearAgoDate);
+  const current = await latestBalances(db, today, true);
+  const yearAgo = await latestBalances(db, yearAgoDate, false);
   const todayCents = sumValues(current);
   const breakdown = netWorthBreakdown(current);
   if (yearAgo.size === 0) return { asOf: today, todayCents, yearAgoDate, yearAgoCents: null, changeCents: null, newAccounts: [], breakdown };

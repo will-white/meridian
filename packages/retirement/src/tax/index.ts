@@ -2,12 +2,38 @@
 
 export { TaxDataError, LAW_PATHS, loadTaxData, validateTaxData, rawTaxData, fractionValue } from "./taxData.js";
 export type { TaxData, TaxDataErrorCode, RawTaxData, LawPath, LawChange, LawChangeOp, IndexingRule } from "./taxData.js";
-export { fraMonths, survivorFraMonths } from "./socialSecurity.js";
-export { TAX_DATA_FIRST_YEAR, listTaxRuleSets, fullRetirementAgeTable, taxDataStale, pendingLimits } from "./rulesView.js";
+export {
+  fraMonths, survivorFraMonths, compileSsRules, defaultSsRules, floorDime, floorDollar, roundCola, retirementFactor, spousalFactor, survivorFactor,
+  compileSsPlan, ssPersonInputs, resetSsState, monthlyPayment, socialSecurityYear, socialSecurityYearMonthLoop, socialSecurityParts,
+  socialSecurityPreview, socialSecurityPreviewView, SS_RULES, ssRuleVerification,
+} from "./socialSecurity.js";
+export type {
+  SsRules, SsMode, SsPersonInput, SsPerson, SsPlan, SsCompileWarning, SsPreview, SsPreviewPerson, SsPreviewClaimAge, SsRule, SsRuleVerification,
+} from "./socialSecurity.js";
+export {
+  TAX_DATA_FIRST_YEAR, listTaxRuleSets, fullRetirementAgeTable, taxDataStale, pendingLimits, buildRulesView, federalTaxPreview,
+} from "./rulesView.js";
+export {
+  contributionLimit, contributionLimitsInto, employeeDeferralLimit, annualAdditionsLimit, iraLimit, hsaLimit, hsaMonthsBefore65,
+} from "./contributionLimits.js";
+export type { ContributionLimitKind } from "./contributionLimits.js";
+export { employeePayrollTax, employeePayrollTaxInto } from "./payroll.js";
+export {
+  TAX_DRAG_CLASSES, BLEND_STOCK, BLEND_BOND, compileTaxDrag, assetClassMapRows, blendTaxDrag, compileAccountTaxDrag, taxableYieldsInto,
+} from "./taxDrag.js";
+export type { TaxDragOverrides } from "./taxDrag.js";
+export {
+  PATH_WARNING_CODES, PATH_WARNING_SLOTS, resetPathWarnings, noteWarning, createWarningTotals, addPathWarnings, mergeWarningTotals, warningMessages,
+} from "./warnings.js";
+export type { PathWarningCode, WarningTotals } from "./warnings.js";
+export { NOT_MODELLED } from "./notModelled.js";
+export type { NotModelledEntry, NotModelledId } from "./notModelled.js";
+export { TAX_FUNCTIONS } from "./functions.js";
+export type { TaxFunctions } from "./functions.js";
 export {
   TR, PR, TI, TO, RB, RW, HW, SS, SO, WN, TAX_REC, PROG_REC, TAX_IN, TAX_IN_DOLLAR_SLOTS, TAX_OUT, RB_REC, RW_REC, HW_REC, SS_REC, SO_REC, WN_REC,
-  N_BRACKETS,
-  STATUS_SINGLE, STATUS_MFJ, taxOffset, progOffset,
+  N_BRACKETS, TD, TD_REC, AD, AD_REC, TY, TY_REC, PT, PT_REC, CL, CL_REC, INTEREST_NONE, INTEREST_PRIOR_BILL_PLUS_SPREAD, INTEREST_BILL_RETURN,
+  STATUS_SINGLE, STATUS_MFJ, taxOffset, progOffset, accountDragOffset,
 } from "./layout.js";
 export type { FilingStatusIndex } from "./layout.js";
 export {

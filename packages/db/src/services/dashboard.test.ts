@@ -166,7 +166,7 @@ const ZERO_BREAKDOWN = { investmentsCents: 0n, investmentsAsOf: null, cashCents:
     await t.db.update(recurring).set({ anchorDay: 5, nextDueDate: "2026-11-05" }).where(eq(recurring.id, S.recurring.netflix));
   });
 
-  it("net worth: clamped year-ago date, closed accounts excluded, null when nothing that old exists", async () => {
+  it("net worth: clamped year-ago date, closed accounts out of today's figure only, null when nothing that old exists", async () => {
     // Before any snapshot a year earlier than 2025-10: today's sum is 0 and the change is unknown.
     expect(await netWorth(t.db, "2025-09-01")).toEqual({ asOf: "2025-09-01", todayCents: 0n, yearAgoDate: "2024-09-01", yearAgoCents: null, changeCents: null, newAccounts: [], breakdown: ZERO_BREAKDOWN });
     // 2028-02-29 → 2027-02-28.
@@ -174,7 +174,9 @@ const ZERO_BREAKDOWN = { investmentsCents: 0n, investmentsAsOf: null, cashCents:
     // The day before the seed's current snapshots: both sums read the 2025 rows; Visa is in neither.
     expect(await netWorth(t.db, "2026-10-12")).toEqual({ asOf: "2026-10-12", todayCents: 350000n, yearAgoDate: "2025-10-12", yearAgoCents: 350000n, changeCents: 0n, newAccounts: [], breakdown: { ...ZERO_BREAKDOWN, cashCents: 350000n } });
 
-    // A closed account's snapshots never count; a year-old Visa snapshot removes it from newAccounts.
+    // A closed account is left out of today's figure but counts a year ago, when it was open (audit
+    // a6-text-rules-accounts-07: closing an account does not rewrite the past); a year-old Visa
+    // snapshot removes it from newAccounts.
     const [closed] = await t.db
       .insert(account)
       .values({ name: "Old Card", type: "credit", taxTreatment: "none", closed: true })
@@ -184,13 +186,14 @@ const ZERO_BREAKDOWN = { investmentsCents: 0n, investmentsAsOf: null, cashCents:
       { accountId: closed!.id, date: "2025-10-13", balanceCents: -99999n, source: "manual" },
       { accountId: S.accounts.visa, date: "2025-10-13", balanceCents: -10000n, source: "manual" },
     ]);
-    expect(await netWorth(t.db, today)).toEqual({ asOf: today, todayCents: 575000n, yearAgoDate: "2025-10-13", yearAgoCents: 340000n, changeCents: 235000n, newAccounts: [], breakdown: { ...ZERO_BREAKDOWN, cashCents: 620000n, debtCents: -45000n } });
+    // A year ago: 350,000 − 10,000 (Visa) − 99,999 (Old Card) = 240,001; change 575,000 − 240,001 = 334,999.
+    expect(await netWorth(t.db, today)).toEqual({ asOf: today, todayCents: 575000n, yearAgoDate: "2025-10-13", yearAgoCents: 240001n, changeCents: 334999n, newAccounts: [], breakdown: { ...ZERO_BREAKDOWN, cashCents: 620000n, debtCents: -45000n } });
     // A snapshot dated the day after the year-ago date does not count for a year ago.
     await t.db
       .update(balanceSnapshot)
       .set({ date: "2025-10-14" })
       .where(and(eq(balanceSnapshot.accountId, S.accounts.visa), eq(balanceSnapshot.date, "2025-10-13")));
-    expect(await netWorth(t.db, today)).toMatchObject({ yearAgoCents: 350000n, changeCents: 225000n, newAccounts: [{ id: S.accounts.visa, name: "Visa" }] });
+    expect(await netWorth(t.db, today)).toMatchObject({ yearAgoCents: 250001n, changeCents: 324999n, newAccounts: [{ id: S.accounts.visa, name: "Visa" }] });
     await t.db.delete(balanceSnapshot).where(and(eq(balanceSnapshot.accountId, S.accounts.visa), eq(balanceSnapshot.date, "2025-10-14")));
     await t.db.delete(account).where(eq(account.id, closed!.id));
   });
