@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "staleInflation": 0.025,
+  "indexing": [
+    { "path": "ordinary.thresholds", "index": "cpi", "round": "floor_increase", "step": { "single": 25, "mfj": 50 } },
+    { "path": "standardDeduction", "index": "cpi", "round": "floor_increase", "step": { "single": 50, "mfj": 100 } },
+    { "path": "additionalAged", "index": "cpi", "round": "floor_increase", "step": { "single": 50, "mfj": 50 } },
+    { "path": "capitalGains.zeroRateMax", "index": "cpi", "round": "floor_increase", "step": { "single": 25, "mfj": 50 } },
+    { "path": "capitalGains.fifteenRateMax", "index": "cpi", "round": "floor_increase", "step": { "single": 50, "mfj": 50 } },
+    { "path": "contributionLimits.employeeDeferral", "index": "cpi", "round": "floor_increase", "step": 500 },
+    { "path": "contributionLimits.catchUp50", "index": "cpi", "round": "floor_increase", "step": 500 },
+    { "path": "contributionLimits.catchUp60to63", "index": "cpi", "round": "floor_increase", "step": 500 },
+    { "path": "contributionLimits.annualAdditions", "index": "cpi", "round": "floor_increase", "step": 1000 },
+    { "path": "contributionLimits.ira", "index": "cpi", "round": "floor_increase", "step": 500 },
+    { "path": "contributionLimits.iraCatchUp50", "index": "cpi", "round": "floor_increase", "step": 100 },
+    { "path": "contributionLimits.hsaSelf", "index": "cpi", "round": "nearest", "step": 50 },
+    { "path": "contributionLimits.hsaFamily", "index": "cpi", "round": "nearest", "step": 50 },
+    { "path": "payroll.oasdiWageBase", "index": "wage", "round": "nearest", "step": 300 },
+    { "path": "socialSecurity.earningsTestUnderFra", "index": "wage", "round": "nearest", "step": 120 },
+    { "path": "socialSecurity.earningsTestFraYear", "index": "wage", "round": "nearest", "step": 120 }
+  ],
+  "lawChanges": {
+    "senior_deduction_sunset": {
+      "label": "Senior deduction ends after 2028",
+      "illustrative": false,
+      "description": "P.L. 119-21 allows the $6,000 deduction for taxable years 2025 through 2028.",
+      "ops": [{ "op": "setValue", "path": "seniorDeduction.amountPerPerson", "value": 0, "fromYear": 2029, "dollars": "nominal" }]
+    },
+    "ss_trust_fund_shortfall": {
+      "label": "Social Security pays 78% of scheduled benefits from 2033",
+      "illustrative": true,
+      "description": "The 2026 Trustees Report projects the retirement trust fund's reserves run out in late 2032, after which income covers 78% of benefits.",
+      "ops": [{ "op": "scaleSocialSecurity", "fromYear": 2033, "factor": 0.78 }]
+    },
+    "ordinary_rates_plus_2pts_2031": {
+      "label": "Every ordinary rate 2 points higher from 2031",
+      "illustrative": true,
+      "description": "A what-if, not a forecast.",
+      "ops": [{ "op": "shiftOrdinaryRates", "fromYear": 2031, "delta": 0.02 }]
+    }
+  },
+  "ruleSets": [
+    { "id": "current_law", "label": "Current law as enacted", "lawChanges": ["senior_deduction_sunset"] },
+    { "id": "senior_deduction_permanent", "label": "Senior deduction made permanent", "lawChanges": [] },
+    {
+      "id": "ss_shortfall_2033",
+      "label": "Current law, Social Security at 78% from 2033",
+      "lawChanges": ["senior_deduction_sunset", "ss_trust_fund_shortfall"]
+    },
+    {
+      "id": "rates_plus_2pts_2031",
+      "label": "Current law, ordinary rates 2 points higher from 2031",
+      "lawChanges": ["senior_deduction_sunset", "ordinary_rates_plus_2pts_2031"]
+    }
+  ],
+  "sources": [
+    {
+      "title": "Rev. Proc. 2025-32",
+      "url": "https://www.irs.gov/pub/irs-drop/rp-25-32.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": "e9ada115fb43a4af5ea326ca91edd40ab0bf29b9be01d2c13d7b8fa96214635b",
+      "section": "4.01, 4.03, 4.14 (the 2026 tables the steps were read from)"
+    },
+    {
+      "title": "Rev. Proc. 2026-35",
+      "url": "https://www.irs.gov/pub/irs-drop/rp-26-35.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": "87b383c6ce6e616fd006a61f5eed46fe67099b9c23fb1e1c42ff5359474513b8",
+      "section": "3.01, 3.03, 3.15 (the 2027 tables the steps were read from)"
+    },
+    {
+      "title": "Rev. Proc. 2022-38",
+      "url": "https://www.irs.gov/pub/irs-drop/rp-22-38.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": "6c20f8a6c9a3bdf4251fcf50dbf2e2382abc8cbeb1e5e2d3eecdc38b2cbf6bbf",
+      "section": "3.01, 3.03, 3.15 (2023): single thresholds 1 to 5 are exact halves of the joint ones; single 37% threshold 578,125 and single 0% gains maximum 44,625 are multiples of 25, not 50",
+      "note": "The rounding steps are the Code's (§ 1(f)(7), § 1(j), § 63(c)(4), § 223(g), Social Security Act § 230 and § 203(f)(8)); the Code text was not fetched. The published tables of 2023 to 2027 are consistent with every step listed (checked from these five revenue procedures on 2026-11-13)."
+    },
+    {
+      "title": "Rev. Proc. 2023-34",
+      "url": "https://www.irs.gov/pub/irs-drop/rp-23-34.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": "544ba41c7ba64f77da521e0d174a7b7394dc72b5c7c73d10adb19952d5aaae57",
+      "section": "3.01, 3.03, 3.15 (2024): single 0% gains maximum 47,025 (a multiple of 25); single thresholds 1 to 5 are halves of the joint ones",
+      "note": "Table 3 as published prints 'the excess over $191,150' for the bracket over $191,950 (a typographical error in the document; the threshold is 191,950 in every other place)."
+    },
+    {
+      "title": "Rev. Proc. 2024-40",
+      "url": "https://www.irs.gov/pub/irs-drop/rp-24-40.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": "4de9db6b6662b5c305a59100a027051628823b42fd5817ea4e383ad4c302af1f",
+      "section": "2.01, 2.03, 2.15 (2025): single thresholds 1 to 5 are halves of the joint ones"
+    },
+    {
+      "title": "IRS Fact Sheet FS-2025-03, Working Families Tax Cuts: tax deductions for working Americans and seniors",
+      "url": "https://www.irs.gov/newsroom/working-families-tax-cuts-tax-deductions-for-working-americans-and-seniors",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Deduction for Seniors: effective for 2025 through 2028 (the senior_deduction_sunset law change)",
+      "note": "Web page."
+    },
+    {
+      "title": "2026 OASDI Trustees Report, section II.E (Conclusion)",
+      "url": "https://www.ssa.gov/OACT/TR/2026/II_E_conclu.html",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "OASI reserves depleted in the fourth quarter of 2032; continuing income then pays 78% of scheduled benefits (the illustrative ss_trust_fund_shortfall law change)",
+      "note": "www.ssa.gov refuses automated requests. Secondary, by web search on 2026-11-13: the report as quoted by the search results, CRS In Focus IF13256 ('Social Security: Selected Findings of the 2026 Annual Report') and Fox Business ('Social Security has less than 10 years before reserves are exhausted') agree."
+    }
+  ]
+}

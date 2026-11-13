@@ -2,5 +2,96 @@
   "dataVersion": "2026.11.0",
   "firstTaxYear": 2026,
   "lastPublishedYear": 2027,
-  "files": []
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "b312cc86276e9582b47b7b2014c470e8d46115c683cf41a5d031790b37ded364",
+      "retrieved": "2026-11-13",
+      "description": "The annual refresh runbook and the rules for editing this directory (not data)"
+    },
+    {
+      "path": "us-annual-returns.csv",
+      "sha256": "ded29a465fec10fd2877b7f3cbe91c86e1133b336623f4de62ce510a44965e8c",
+      "sourceUrl": "https://pages.stern.nyu.edu/~adamodar/pc/datasets/histretSP.xlsx",
+      "retrieved": "2026-11-13",
+      "description": "US annual returns 1928-2025: S&P 500 with dividends, 10-year Treasury bond, 3-month bill, CPI-U inflation (Damodaran, sheet 'Returns by year')"
+    },
+    {
+      "path": "us-annual-returns.meta.json",
+      "sha256": "96acd82e6eb3565933238371f5677c849b37767cc100b185b8e2d8f6971c35d6",
+      "sourceUrl": "https://pages.stern.nyu.edu/~adamodar/pc/datasets/histretSP.xlsx",
+      "retrieved": "2026-11-13",
+      "description": "Provenance and extraction recipe of us-annual-returns.csv"
+    },
+    {
+      "path": "irs-2010cm-life-table.csv",
+      "sha256": "3ba08d9b67a2ff1c465b177563c8c6364eb99427c1ceda1cd05fd4b529b5a978",
+      "sourceUrl": "https://www.irs.gov/pub/irs-tege/table-2010cm-final.xlsx",
+      "retrieved": "2026-11-13",
+      "description": "IRS Table 2010CM l_x, ages 0-110, unisex: the fallback mortality table"
+    },
+    {
+      "path": "irs-2010cm-life-table.meta.json",
+      "sha256": "89ad437b470dbd5f302ef83f2ba7189c1b33093ced0d3231641214e8d9faa592",
+      "sourceUrl": "https://www.irs.gov/pub/irs-tege/table-2010cm-final.xlsx",
+      "retrieved": "2026-11-13",
+      "description": "Provenance and extraction recipe of irs-2010cm-life-table.csv"
+    },
+    {
+      "path": "tax/federal-2026.json",
+      "sha256": "f7ecd24bde7fb5fadfb049c8bec28e68c0a8ef220f8b2ef9f79ef09e76925ac1",
+      "sourceUrl": "https://www.irs.gov/pub/irs-drop/rp-25-32.pdf",
+      "retrieved": "2026-11-13",
+      "description": "Tax year 2026: Rev. Proc. 2025-32, Notice 2025-67, Rev. Proc. 2025-19, statutory amounts, SSA program amounts"
+    },
+    {
+      "path": "tax/federal-2027.json",
+      "sha256": "b42acce8121c9b4b94d224b8c62cf8e9634019243699ce6049b917fc1efade15",
+      "sourceUrl": "https://www.irs.gov/pub/irs-drop/rp-26-35.pdf",
+      "retrieved": "2026-11-13",
+      "description": "Tax year 2027: Rev. Proc. 2026-35, Rev. Proc. 2026-24; six plan limits pending; SSA program amounts"
+    },
+    {
+      "path": "tax/rules.json",
+      "sha256": "f6dafce78d0581766d7270df1c98cbe6ce4b1a78e3ea4240a530d3d4a34e91a4",
+      "sourceUrl": "https://www.irs.gov/pub/irs-drop/rp-25-32.pdf",
+      "retrieved": "2026-11-13",
+      "description": "Indexing steps after 2027, law changes, rule sets, the stale-data inflation"
+    },
+    {
+      "path": "ss/rules.json",
+      "sha256": "96343110f4ef06d7aa7617b087a5045d206068cb2d113f178e012db6906a6369",
+      "sourceUrl": "https://www.ssa.gov/OP_Home/handbook/handbook.07/handbook-0724.html",
+      "retrieved": "2026-11-13",
+      "description": "Social Security full retirement ages, reduction and credit fractions, survivor constants, COLA history 2017-2025, with a verification mark per figure"
+    },
+    {
+      "path": "rmd/uniform-lifetime.json",
+      "sha256": "f1db37aa12b0e0743323c1d1de74223761f0e03bbe2cfc6f0f9926849f17dd52",
+      "sourceUrl": "https://www.irs.gov/pub/irs-pdf/p590b.pdf",
+      "retrieved": "2026-11-13",
+      "description": "Pub. 590-B (2025) Appendix B Table III (Uniform Lifetime) and the RMD start ages"
+    },
+    {
+      "path": "rmd/joint-life.json",
+      "sha256": "bd8af7bf76d6d97c5e822834def6975ce09e7821c39917bc32faf5f247ee5350",
+      "sourceUrl": "https://www.irs.gov/pub/irs-pdf/p590b.pdf",
+      "retrieved": "2026-11-13",
+      "description": "Pub. 590-B (2025) Appendix B Table II (Joint and Last Survivor), 101 x 101, ages 20-120"
+    },
+    {
+      "path": "rmd/joint-life.meta.json",
+      "sha256": "405c29670a61adc247c3eae8e5180fa4a65211fb2f0b3044b9dd9242b5093b10",
+      "sourceUrl": "https://www.irs.gov/pub/irs-pdf/p590b.pdf",
+      "retrieved": "2026-11-13",
+      "description": "Provenance of rmd/joint-life.json"
+    },
+    {
+      "path": "taxable/tax-drag.json",
+      "sha256": "f4960e2e6c80e6d0a56a7fe148bd2f1a3c6ce749a9348289db0d8a48b9c844dc",
+      "sourceUrl": "https://www.irs.gov/pub/irs-pdf/p551.pdf",
+      "retrieved": "2026-11-13",
+      "description": "Taxable-account yield assumptions by asset class (assumptions) and basis shares at the first death (Pub. 551)"
+    }
+  ]
 }

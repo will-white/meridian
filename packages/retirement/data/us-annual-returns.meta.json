@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "file": "us-annual-returns.csv",
+  "description": "US annual returns 1928 to 2025: S&P 500 with dividends, 10-year Treasury bond, 3-month Treasury bill, CPI-U inflation; simple annual rates as fractions",
+  "provenance": "re-extracted on 2026-11-13 from histretSP.xlsx; the CSV reproduces the SHA-256 pinned by seams §8 D2 byte for byte",
+  "sources": [
+    {
+      "title": "Aswath Damodaran, Historical Returns on Stocks, Bonds and Bills: 1928-2025 (histretSP.xlsx)",
+      "url": "https://pages.stern.nyu.edu/~adamodar/pc/datasets/histretSP.xlsx",
+      "retrieved": "2026-11-13",
+      "sha256": "d7245bc8b09cd56cab5505188fe4aaddf6e0385b969310f33a4918019c321196",
+      "section": "sheet 'Returns by year', header row 20, data rows 21 to 118",
+      "note": "Equal to the pinned SHA-256: the workbook has not changed since the design's retrieval on 2026-11-10."
+    },
+    {
+      "title": "Aswath Damodaran, Historical Returns on Stocks, Bonds and Bills: 1928-2025 (histretSP.xls)",
+      "url": "https://pages.stern.nyu.edu/~adamodar/pc/datasets/histretSP.xls",
+      "retrieved": "2026-11-13",
+      "sha256": "28b8110916a15a4dcc11c87c6422510704608ddedcdfa67a1298abdc22e49c69",
+      "section": "the same workbook in the older format",
+      "note": "Equal to the pinned SHA-256. Not read: the build environment has no .xls reader; the .xlsx gives the pinned CSV."
+    }
+  ],
+  "extraction": {
+    "sheet": "Returns by year",
+    "rows": "21-118",
+    "columns": {
+      "year": "A (Year)",
+      "stocks": "B (S&P 500 (includes dividends))",
+      "bonds": "E (US T. Bond (10-year))",
+      "bills": "D (3-month T.Bill)",
+      "inflation": "U (Inflation Rate)"
+    },
+    "format": "%d,%.6f,%.6f,%.6f,%.6f; header year,stocks,bonds,bills,inflation; LF line endings; trailing newline",
+    "never": "the sheet 'Nominal vs Real Data', whose bill column differs in 42 years and inflation column in 73 at six decimals (its 1966 inflation is 3.36%, against 3.4591% here)"
+  },
+  "definitions": "From the workbook's sheet 'Explanations and FAQ': stocks = dividends plus price change of the S&P 500 over the start level; bonds = the coupon promised at the prior year-end 10-year yield plus the price change of a constant-maturity 10-year bond; bills = the average 3-month rate over the year; inflation = the change in the CPI for all urban consumers, not seasonally adjusted (FRED).",
+  "notes": [
+    "The HTML page shows 17.78% for the 2025 S&P 500 return; the workbook holds 0.177237, which is used (seams §9 item 12).",
+    "The workbook is replaced every January. A new workbook is a data-version bump with new expected values in data.test.ts; if it cannot be re-extracted, the committed CSV stays and this file says 'extract of 2026-11-13, not re-fetched'."
+  ]
+}

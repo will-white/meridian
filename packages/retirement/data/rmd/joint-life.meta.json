@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "file": "rmd/joint-life.json",
+  "table": "Joint Life and Last Survivor Expectancy (Pub. 590-B Appendix B, Table II)",
+  "sources": [
+    {
+      "title": "Publication 590-B (2025), Distributions from Individual Retirement Arrangements (IRAs)",
+      "url": "https://www.irs.gov/pub/irs-pdf/p590b.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": "d18a592e55ce56d43953dc338272ece3984565792d6dca06989a6ca8121f7360",
+      "section": "Appendix B, Table II (Joint Life and Last Survivor Expectancy)",
+      "note": "Parsed from the publication's text (pdftotext -layout): the printed cells were read per page and the square completed by symmetry; every cell printed in both orders agreed (1,021 pairs). The file reproduces byte for byte the copy pinned by seams §8 D10 (60,575 bytes, SHA-256 bd8af7bf...5350), whose layout carries no sources block, so the sources live here."
+    }
+  ],
+  "checks": {
+    "cells": 10201,
+    "sum": "368500.6",
+    "symmetric": true,
+    "rowsNonIncreasing": true,
+    "uniformIdentityExceptions": [
+      112
+    ]
+  }
+}

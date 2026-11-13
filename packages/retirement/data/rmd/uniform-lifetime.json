@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "table": "Uniform Lifetime (Pub. 590-B Appendix B, Table III)",
+  "startAge": [[1950, 72], [1959, 73], [9999, 75]],
+  "jointTableSpouseGapYears": 10,
+  "firstAge": 72,
+  "lastAge": 120,
+  "divisors": [
+    27.4, 26.5, 25.5, 24.6, 23.7, 22.9, 22.0, 21.1, 20.2, 19.4, 18.5, 17.7, 16.8, 16.0, 15.2, 14.4, 13.7,
+    12.9, 12.2, 11.5, 10.8, 10.1, 9.5, 8.9, 8.4, 7.8, 7.3, 6.8, 6.4, 6.0, 5.6, 5.2, 4.9, 4.6,
+    4.3, 4.1, 3.9, 3.7, 3.5, 3.4, 3.3, 3.1, 3.0, 2.9, 2.8, 2.7, 2.5, 2.3, 2.0
+  ],
+  "sources": [
+    {
+      "title": "Publication 590-B (2025), Distributions from Individual Retirement Arrangements (IRAs)",
+      "url": "https://www.irs.gov/pub/irs-pdf/p590b.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": "d18a592e55ce56d43953dc338272ece3984565792d6dca06989a6ca8121f7360",
+      "section": "Appendix B, Table III (Uniform Lifetime)"
+    },
+    {
+      "title": "IRS Retirement plan and IRA required minimum distributions FAQs",
+      "url": "https://www.irs.gov/retirement-plans/retirement-plan-and-ira-required-minimum-distributions-faqs",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "RMDs start with the year the owner reaches 73 (tax years 2023 and later), on the prior 31 December balance",
+      "note": "Web page, last reviewed 2026-01-29. Primary for start age 73 (and 72 for owners born 1950 or earlier, who reached 72 before 2023)."
+    },
+    {
+      "title": "Proposed regulations on the SECURE 2.0 RMD changes (2024), as reported",
+      "url": "https://www.plansponsor.com/irs-proposes-regulations-for-changes-to-secure-2-0-rmds/",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "applicable age 73 for people born in 1959 and 75 for people born in 1960 or later",
+      "note": "Secondary, by web search on 2026-11-13: PlanSponsor and Mercer ('IRS finalizes SECURE 1.0 RMD rule changes, proposes 2.0 changes', https://www.mercer.com/insights/law-and-policy/irs-finalizes-secure-1-0-rmd-rule-changes-proposes-2-0-changes/) agree; the 1959 rule is in proposed regulations (July 2024), not yet confirmed as final. Seams §9 item 4."
+    }
+  ]
+}

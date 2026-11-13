@@ -13,3 +13,5 @@ export { detExp, detLog, detPow, powInt } from "./detmath.js";
 export { selfTest } from "./selftest.js";
 export { EngineInputError, EngineInvariantError, EngineRuntimeError } from "./errors.js";
 export type { EngineRuntimeCode } from "./errors.js";
+export { TAX_DATA_FIRST_YEAR, TaxDataError, fullRetirementAgeTable, listTaxRuleSets, loadTaxData, pendingLimits, taxDataStale } from "./tax/index.js";
+export type { TaxData, TaxDataErrorCode } from "./tax/index.js";
