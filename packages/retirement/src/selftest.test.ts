@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { detExp, detLog } from "./detmath.js";
 import { EngineRuntimeError } from "./errors.js";
+import { invNorm, threefry2x32 } from "./rng.js";
 import { float64Bits, selfTest } from "./selftest.js";
 
 describe("T46 self-test", () => {
@@ -27,6 +28,17 @@ describe("T46 self-test", () => {
   it("a square root one unit off is caught too", () => {
     const off = (x: number) => (x === 2 ? 1.4142135623730954 : Math.sqrt(x));
     expect(() => selfTest({ detExp, detLog, sqrt: off })).toThrow(/Math\.sqrt\(2\)/);
+  });
+
+  it("T46 step 12: a Threefry that skips the last key injection, or an inverse normal one unit off, is caught", () => {
+    const broken = (k0: number, k1: number, c0: number, c1: number, out: Uint32Array) => {
+      threefry2x32(k0, k1, c0, c1, out);
+      out[0] = (out[0]! ^ 1) >>> 0;
+    };
+    expect(() => selfTest({ detExp, detLog, sqrt: Math.sqrt, threefry2x32: broken })).toThrow(/threefry2x32 of counter 00000000 00000000/);
+    const offByOne = (u: number) => (u === 0.975 ? 1.9599639845400538 : invNorm(u));
+    expect(() => selfTest({ detExp, detLog, sqrt: Math.sqrt, invNorm: offByOne })).toThrow(/invNorm\(0\.975\)/);
+    expect(() => selfTest({ detExp, detLog, sqrt: Math.sqrt, invNorm, threefry2x32 })).not.toThrow();
   });
 
   it("float64Bits reads the IEEE 754 pattern big-endian", () => {
