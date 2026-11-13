@@ -217,6 +217,8 @@ describe.skipIf(!TEST_DATABASE_URL)("scheduleDueSyncs after a sync has failed", 
       db,
       config,
       client: {
+        // The suites' Bridge (the default list is the real Bridge's hosts).
+        allowedHosts: ["bridge.example.test"],
         fetch: (async () => {
           requests++;
           return bridgeStatus === 200 ? new Response(JSON.stringify({ errors: [], errlist: [], accounts: [] }), { status: 200 }) : new Response("", { status: bridgeStatus });

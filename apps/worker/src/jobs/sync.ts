@@ -1,8 +1,8 @@
 import { eq } from "drizzle-orm";
-import { applyAccountSet, connection, enqueueJob, importLog, requestPriceRefresh, type ConnectionError, type HoldingsStats, type JobRow } from "@meridian/db";
-import { addDays, decryptSecret, highWaterMarkAfterSync, syncWindowStart, toIsoDate, type IsoDate, type SyncWindowConfig } from "@meridian/shared";
+import { applyAccountSet, connection, enqueueJob, importLog, readHouseholdToday, requestPriceRefresh, type ConnectionError, type HoldingsStats, type JobRow } from "@meridian/db";
+import { addDays, decryptSecret, errorMessageText, highWaterMarkAfterSync, jsonbSafe, syncWindowStart, type IsoDate, type SyncWindowConfig } from "@meridian/shared";
 import { priceConfigOf } from "../env.js";
-import { fetchAccounts, SimplefinError } from "../simplefin/client.js";
+import { fetchAccounts, readAccounts, SimplefinError } from "../simplefin/client.js";
 import type { JobContext } from "./context.js";
 
 export interface SyncOutcome {
@@ -52,6 +52,13 @@ export function syncGapNotice(previous: IsoDate | null, windowStart: IsoDate, co
  * whether it worked or not, records `last_attempt_at`, which is what the scheduler spaces
  * syncs from; a refusal that retrying cannot fix (403, 402) also pauses scheduled syncs, and
  * a failed run empties `last_errors`, which described the response before it.
+ *
+ * Audit batch a4-sync-parse: the response is stored before it is read, whatever its shape
+ * (one that is not JSON as `{ notJson }`), with NUL characters and unpaired surrogates made
+ * safe for jsonb; it is read one account and one transaction at a time, so an entry that
+ * cannot be read is skipped and reported instead of failing the sync. "Today" (the window,
+ * the mark, a pending item's date) is the household's day. Error text is sanitized and
+ * bounded before it is stored for display.
  */
 export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutcome> {
   const connectionId = String(job.payload["connectionId"] ?? "");
@@ -61,7 +68,8 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
   if (conn.type !== "simplefin" || !conn.accessUrlEnc) throw new Error(`connection ${connectionId} has no access URL`);
   if (conn.status === "disabled") throw new Error(`connection ${connectionId} is disabled`);
 
-  const today = toIsoDate(ctx.now());
+  // Phase 2 plan decision 16: worker jobs compute today in the household's time zone.
+  const today = await readHouseholdToday(ctx.db, ctx.now());
   const fullResync = job.payload["fullResync"] === true;
   // A full resync asks for the whole first-sync window; the mark itself is kept until the response is in.
   const windowStart = balancesOnly ? undefined : syncWindowStart(fullResync ? null : conn.syncedThrough, today, ctx.config);
@@ -76,10 +84,12 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
     if (windowStart) query.startDate = windowStart;
     const result = await fetchAccounts(accessUrl, query, ctx.client);
 
-    // Raw payload first, so a crash while applying never loses the data.
-    await ctx.db.update(importLog).set({ rawPayload: result.raw as Record<string, unknown> }).where(eq(importLog.id, importLogId));
+    // Raw payload first, before it is read, so neither a body of an unexpected shape nor a crash while applying loses the data.
+    const raw = jsonbSafe(result.raw);
+    await ctx.db.update(importLog).set({ rawPayload: raw }).where(eq(importLog.id, importLogId));
+    const read = readAccounts(raw);
 
-    const applyOptions: Parameters<typeof applyAccountSet>[1] = { connectionId, importLogId, accountSet: result.set, balancesOnly, now: ctx.now() };
+    const applyOptions: Parameters<typeof applyAccountSet>[1] = { connectionId, importLogId, accountSet: read.set, readProblems: read.problems, balancesOnly, now: ctx.now() };
     if (windowStart) applyOptions.windowStart = windowStart;
     const applied = await applyAccountSet(ctx.db, applyOptions);
 
@@ -153,10 +163,14 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
     if (windowStart) outcome.windowStart = windowStart;
     return outcome;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = errorMessageText(err);
     const status = err instanceof SimplefinError && err.kind === "forbidden" ? "auth_required" : "error";
     // 403 and 402 do not get better by asking again: the schedule stops until a sync started by hand succeeds.
-    const paused = err instanceof SimplefinError && err.permanent;
+    const paused = err instanceof SimplefinError && err.pausesSchedule;
+    // A body the client could not read (not JSON) is kept like any other response.
+    if (err instanceof SimplefinError && err.raw !== undefined) {
+      await ctx.db.update(importLog).set({ rawPayload: jsonbSafe(err.raw) }).where(eq(importLog.id, importLogId));
+    }
     await ctx.db
       .update(connection)
       .set({

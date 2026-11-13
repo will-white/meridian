@@ -98,3 +98,50 @@ describe.skipIf(!TEST_DATABASE_URL)("connections: sync state and the full resync
     expect(on.json()).toMatchObject({ status: "ok", syncPaused: false, lastAttemptAt: "2026-10-13T06:00:00.000Z" });
   });
 });
+
+/**
+ * Audit a4-sync-parse-06: a setup token whose claim failed for a reason that passes (the
+ * Bridge down for a few minutes) is still stored; Sync now must queue the claim again
+ * instead of answering that there is no access URL.
+ */
+describe.skipIf(!TEST_DATABASE_URL)("connections: a setup token that could not be claimed yet", () => {
+  let t: TestApp;
+  beforeAll(async () => {
+    t = await createTestApp();
+    await signInOwner(t);
+  });
+  afterAll(async () => {
+    await t?.cleanup();
+  });
+
+  it("Sync now queues the claim again while the token is stored and there is no access URL", async () => {
+    const [row] = await t.db.db
+      .insert(connection)
+      .values({
+        type: "simplefin",
+        name: "Bank",
+        status: "error",
+        claimTokenEnc: await encryptSecret(btoa("https://bridge.example.test/simplefin/claim/tok"), t.config.secretsKey),
+        lastError: "The setup token could not be claimed yet: Claim failed with HTTP 503. Press Sync now to try again.",
+      })
+      .returning({ id: connection.id });
+    for (const payload of [{}, { fullResync: true }]) {
+      const res = await t.call({ method: "POST", url: `/api/connections/${row!.id}/sync`, payload });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ type: "simplefin.claim", status: "queued", payload: { connectionId: row!.id } });
+    }
+    expect(await t.db.db.select().from(job).where(eq(job.type, "simplefin.claim"))).toHaveLength(1);
+    const [after] = await t.db.db.select().from(connection).where(eq(connection.id, row!.id));
+    expect(after!.status).toBe("claiming");
+  });
+
+  it("says what the household can do when there is neither a token nor an access URL", async () => {
+    const [row] = await t.db.db.insert(connection).values({ type: "simplefin", name: "Refused", status: "error" }).returning({ id: connection.id });
+    const res = await t.call({ method: "POST", url: `/api/connections/${row!.id}/sync`, payload: {} });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({
+      code: "no_access_url",
+      error: "This connection has no access URL: its setup token was refused or used up. Remove the connection and add it again with a new setup token from the SimpleFIN Bridge.",
+    });
+  });
+});

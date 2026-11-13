@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { parsePriceProviderId, type PriceProviderId } from "@meridian/shared";
+import { DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_SIMPLEFIN_HOSTS } from "./simplefin/client.js";
 
 /** SECRETS_KEY from the environment, or from a Docker secret file named by SECRETS_KEY_FILE. */
 export function readSecretsKey(env: NodeJS.ProcessEnv = process.env): string {
@@ -39,6 +40,29 @@ function int(value: string | undefined, fallback: number): number {
 function intInRange(value: string | undefined, min: number, max: number, fallback: number): number {
   const n = Number(value);
   return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
+}
+
+/**
+ * `SIMPLEFIN_ALLOWED_HOSTS`: the hosts a setup token's claim URL and an access URL may name,
+ * comma or space separated (audit a4-sync-parse-15). Unset or empty: the SimpleFIN Bridge's
+ * own hosts. Only host names or addresses, no scheme, port or path; boot fails otherwise.
+ */
+export function readSimplefinAllowedHosts(env: NodeJS.ProcessEnv = process.env): string[] {
+  const raw = env["SIMPLEFIN_ALLOWED_HOSTS"]?.trim();
+  if (!raw) return [...DEFAULT_SIMPLEFIN_HOSTS];
+  const hosts = raw.split(/[\s,]+/).filter(Boolean).map((h) => h.toLowerCase());
+  for (const host of hosts) {
+    if (!/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$|^\[[0-9a-f:.]+\]$/.test(host)) {
+      throw new Error(`SIMPLEFIN_ALLOWED_HOSTS: "${host}" is not a host name; list host names only (no https://, port or path), for example bridge.simplefin.org`);
+    }
+  }
+  return hosts;
+}
+
+/** `SIMPLEFIN_MAX_RESPONSE_MB`: the largest account-set response the worker reads, in megabytes (default 50). */
+export function readSimplefinMaxResponseBytes(env: NodeJS.ProcessEnv = process.env): number {
+  const mb = Number(env["SIMPLEFIN_MAX_RESPONSE_MB"]);
+  return Number.isFinite(mb) && mb > 0 ? Math.floor(mb * 1_000_000) : DEFAULT_MAX_RESPONSE_BYTES;
 }
 
 // ---- Price feed (prices design §6.4; plan decision 10) ----
@@ -109,6 +133,10 @@ export interface WorkerConfig {
   overlapDays: number;
   /** Outbound request timeout. */
   requestTimeoutMs: number;
+  /** Hosts SimpleFIN requests may go to (`SIMPLEFIN_ALLOWED_HOSTS`). loadConfig always sets it; the client's default is the Bridge's hosts. */
+  simplefinAllowedHosts?: readonly string[];
+  /** The largest account-set response read (`SIMPLEFIN_MAX_RESPONSE_MB`). loadConfig always sets it. */
+  simplefinMaxResponseBytes?: number;
   /**
    * The daily tick (recurring detection, income feed, month close) runs once per UTC day at
    * or after this hour (0..23). loadConfig always sets it; a hand-built config without it
@@ -168,6 +196,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     initialWindowDays: int(env["SIMPLEFIN_INITIAL_WINDOW_DAYS"], 93),
     overlapDays: int(env["SIMPLEFIN_OVERLAP_DAYS"], 7),
     requestTimeoutMs: int(env["SIMPLEFIN_TIMEOUT_MS"], 60_000),
+    simplefinAllowedHosts: readSimplefinAllowedHosts(env),
+    simplefinMaxResponseBytes: readSimplefinMaxResponseBytes(env),
     detectHourUtc: intInRange(env["DETECT_HOUR_UTC"], 0, 23, DEFAULT_DETECT_HOUR_UTC),
     prices: loadPriceConfig(env),
   };

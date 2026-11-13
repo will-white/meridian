@@ -2,7 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import {
   defaultTaxTreatment,
   isInvestmentAccountType,
-  parseDecimalToCents,
+  parseSimplefinAmount,
   sanitizeText,
   unixToIsoDate,
   type AccountType,
@@ -38,15 +38,30 @@ export function guessAccountType(name: string): AccountType {
 export interface UpsertAccountResult {
   id: string;
   created: boolean;
+  /** The feed's balance could not be read (`parseSimplefinAmount`): the last known balance was kept and no balance row written. */
+  balanceUnreadable: boolean;
+  /** The available balance could not be read: the stored one was kept (null on a new account). */
+  availableUnreadable: boolean;
+  /** How many of the two amounts had digits below a cent and were rounded. */
+  rounded: number;
 }
 
-/** Create or refresh the account row for a SimpleFIN account and record today's balance. */
+/**
+ * Create or refresh the account row for a SimpleFIN account and record today's balance. A
+ * balance that cannot be read (audit a4-sync-parse-01) leaves the account's last known one
+ * in place, and writes no balance row, instead of failing the sync; a new account is created
+ * without one.
+ */
 export async function upsertSimplefinAccount(tx: DbOrTx, connectionId: string, sf: SimplefinAccount): Promise<UpsertAccountResult> {
   const name = sanitizeText(sf.name, 100) || "Account";
   const institution = sanitizeText(sf.org.name ?? sf.org.domain ?? "", 100) || null;
-  const balanceCents = parseDecimalToCents(sf.balance);
-  const availableCents = sf["available-balance"] ? parseDecimalToCents(sf["available-balance"]) : null;
+  const balance = parseSimplefinAmount(sf.balance);
+  const available = sf["available-balance"] === undefined ? null : parseSimplefinAmount(sf["available-balance"]);
+  const rounded = (balance?.rounded ? 1 : 0) + (available?.rounded ? 1 : 0);
+  const balanceCents = balance?.cents ?? null;
+  const availableCents = available?.cents ?? null;
   const balanceDate = unixToIsoDate(sf["balance-date"]);
+  const currency = sanitizeText(sf.currency, 10) || "USD";
 
   const [existing] = await tx
     .select({ id: account.id })
@@ -57,10 +72,13 @@ export async function upsertSimplefinAccount(tx: DbOrTx, connectionId: string, s
   let created = false;
   if (existing) {
     id = existing.id;
-    await tx
-      .update(account)
-      .set({ institution, currency: sanitizeText(sf.currency, 10) || "USD", balanceCents, availableCents, balanceDate, updatedAt: new Date() })
-      .where(eq(account.id, id));
+    const patch: Partial<typeof account.$inferInsert> = { institution, currency, updatedAt: new Date() };
+    if (balance) {
+      patch.balanceCents = balance.cents;
+      patch.balanceDate = balanceDate;
+      if (available !== undefined) patch.availableCents = availableCents;
+    }
+    await tx.update(account).set(patch).where(eq(account.id, id));
   } else {
     const type = guessAccountType(name);
     const [inserted] = await tx
@@ -72,16 +90,18 @@ export async function upsertSimplefinAccount(tx: DbOrTx, connectionId: string, s
         institution,
         type,
         taxTreatment: defaultTaxTreatment[type],
-        currency: sanitizeText(sf.currency, 10) || "USD",
+        currency,
         onBudget: defaultOnBudget(type),
         balanceCents,
-        availableCents,
-        balanceDate,
+        availableCents: balance ? availableCents : null,
+        balanceDate: balance ? balanceDate : null,
       })
       .returning({ id: account.id });
     id = inserted!.id;
     created = true;
   }
+  const result: UpsertAccountResult = { id, created, balanceUnreadable: balance === undefined, availableUnreadable: available === undefined, rounded };
+  if (!balance) return result;
 
   // Phase 3 (plan decision 14, seams C41): the balance row follows the snapshot precedence
   // manual > csv > simplefin > computed (the rank `writeReportedBalance` in holdings.ts applies),
@@ -89,12 +109,12 @@ export async function upsertSimplefinAccount(tx: DbOrTx, connectionId: string, s
   // the next sync; a feed row refreshes only a feed or computed row.
   await tx
     .insert(balanceSnapshot)
-    .values({ accountId: id, date: balanceDate, balanceCents, availableCents, source: "simplefin" })
+    .values({ accountId: id, date: balanceDate, balanceCents: balance.cents, availableCents, source: "simplefin" })
     .onConflictDoUpdate({
       target: [balanceSnapshot.accountId, balanceSnapshot.date],
-      set: { balanceCents, availableCents, source: "simplefin" },
+      set: { balanceCents: balance.cents, availableCents, source: "simplefin" },
       setWhere: sql`(case ${balanceSnapshot.source} when 'manual' then 3 when 'csv' then 2 when 'simplefin' then 1 else 0 end) <= 1`,
     });
 
-  return { id, created };
+  return result;
 }

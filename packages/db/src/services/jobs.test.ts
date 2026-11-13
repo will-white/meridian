@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { job } from "../schema/index.js";
+import { connection, importLog, job } from "../schema/index.js";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "../test/db.js";
 import { claimNextJob, completeJob, enqueueJob, failJob, requeueStaleJobs } from "./jobs.js";
 
@@ -75,8 +75,47 @@ describe.skipIf(!TEST_DATABASE_URL)("job queue", () => {
     const j = await enqueueJob(t.db, "rules.run", {});
     await claimNextJob(t.db, "w2");
     await t.db.update(job).set({ startedAt: new Date(Date.now() - 2 * 3600_000) }).where(eq(job.id, j.id));
-    expect(await requeueStaleJobs(t.db, 30)).toBe(1);
+    expect(await requeueStaleJobs(t.db, 30)).toEqual({ requeued: 1, failed: 0 });
     const [row] = await t.db.select().from(job).where(eq(job.id, j.id));
     expect(row!.status).toBe("queued");
+    await completeJob(t.db, j.id);
+  });
+
+  it("a4-sync-parse-07: a job a dead worker left behind is failed once its attempts are spent, else retried after the backoff", async () => {
+    const [conn] = await t.db.insert(connection).values({ type: "simplefin", name: "Bank", status: "ok" }).returning({ id: connection.id });
+    const connectionId = conn!.id;
+    const twoHoursAgo = new Date(Date.now() - 2 * 3600_000);
+    // The worker ran out of memory on the third and last attempt of this sync; its import log row is still open.
+    const spent = await enqueueJob(t.db, "simplefin.sync", { connectionId }, { maxAttempts: 3 });
+    await t.db.update(job).set({ status: "running", attempts: 3, startedAt: twoHoursAgo, runAt: twoHoursAgo }).where(eq(job.id, spent.id));
+    const [openLog] = await t.db.insert(importLog).values({ connectionId, kind: "simplefin.sync", startedAt: new Date(twoHoursAgo.getTime() + 1000) }).returning({ id: importLog.id });
+    // And on the first attempt of another job.
+    const first = await enqueueJob(t.db, "rules.run", {}, { maxAttempts: 3 });
+    await t.db.update(job).set({ status: "running", attempts: 1, startedAt: twoHoursAgo, runAt: twoHoursAgo }).where(eq(job.id, first.id));
+
+    const before = Date.now();
+    expect(await requeueStaleJobs(t.db, 30)).toEqual({ requeued: 1, failed: 1 });
+    const [failed] = await t.db.select().from(job).where(eq(job.id, spent.id));
+    expect(failed).toMatchObject({ status: "failed", attempts: 3, lockedBy: null });
+    expect(failed!.lastError).toMatch(/^The worker stopped before this job finished/);
+    expect(failed!.finishedAt).not.toBeNull();
+    // Nothing claims it again.
+    expect(await claimNextJob(t.db, "w3")).toBeUndefined();
+
+    // The other waits the same backoff as a failed attempt (2 minutes after attempt 1) instead of running at once.
+    const [retried] = await t.db.select().from(job).where(eq(job.id, first.id));
+    expect(retried!.status).toBe("queued");
+    expect(retried!.runAt.getTime()).toBeGreaterThanOrEqual(before + 2 * 60_000 - 1000);
+    expect(retried!.runAt.getTime()).toBeLessThanOrEqual(Date.now() + 2 * 60_000 + 1000);
+
+    // The sync's open import log row is closed, and the connection records the attempt, so the scheduler spaces the next one from it.
+    const [log] = await t.db.select().from(importLog).where(eq(importLog.id, openLog!.id));
+    expect(log).toMatchObject({ status: "error" });
+    expect(log!.message).toMatch(/^The worker stopped before this job finished/);
+    const [after] = await t.db.select().from(connection).where(eq(connection.id, connectionId));
+    expect(after).toMatchObject({ status: "error", lastErrors: [] });
+    expect(after!.lastAttemptAt!.getTime()).toBeGreaterThanOrEqual(before - 1000);
+    expect(after!.lastError).toMatch(/^The worker stopped before this job finished/);
+    await completeJob(t.db, first.id);
   });
 });

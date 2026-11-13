@@ -48,6 +48,8 @@ describe.skipIf(!TEST_DATABASE_URL)("claim and sync jobs end to end", () => {
       db: t.db,
       config,
       client: {
+        // The suites' Bridge (the default list is the real Bridge's hosts).
+        allowedHosts: ["bridge.example.test"],
         fetch: (async (input: string | URL | Request, init?: RequestInit) => {
           requests.push(new URL(String(input)));
           return nextResponse(init ?? {});
@@ -236,6 +238,8 @@ describe.skipIf(!TEST_DATABASE_URL)("sync with holdings in extra", () => {
       db,
       config,
       client: {
+        // The suites' Bridge (the default list is the real Bridge's hosts).
+        allowedHosts: ["bridge.example.test"],
         fetch: (async (input: string | URL | Request) => {
           const url = new URL(String(input));
           // One fake covers both feeds: the Bridge answers with the account set, Tiingo with an empty CSV (no bars).
@@ -336,7 +340,7 @@ describe.skipIf(!TEST_DATABASE_URL)("sync with holdings in extra", () => {
     accountSet = renderAccountSet({
       start: START,
       asOf: DAY2,
-      brokerage: { extra: { holdings }, balance: "3275.34", transactions: [{ id: "BRK-DIV-1", posted: unix(DAY2), amount: "12.34", description: "DIVIDEND VTI", transaction_date: unix(DAY2, 0), pending: false }] },
+      brokerage: { extra: { holdings }, balance: "3275.34", transactions: [{ id: "BRK-DIV-1", posted: unix(DAY2), amount: "12.34", description: "DIVIDEND VTI", transacted_at: unix(DAY2, 0), pending: false }] },
     });
     await enqueueJob(db, "simplefin.sync", { connectionId });
     // The sync, the recurring run and the income feed (no fetch: no security was created).
@@ -408,6 +412,8 @@ describe.skipIf(!TEST_DATABASE_URL)("sync high-water mark", () => {
       db: t.db,
       config,
       client: {
+        // The suites' Bridge (the default list is the real Bridge's hosts).
+        allowedHosts: ["bridge.example.test"],
         fetch: (async (input: string | URL | Request) => {
           const url = new URL(String(input));
           requests.push(url);
@@ -525,5 +531,214 @@ describe.skipIf(!TEST_DATABASE_URL)("sync high-water mark", () => {
     expect(after.lastError).toMatch(/402/);
     expect(after.lastSyncAt).toEqual(before.lastSyncAt);
     expect(after.lastAttemptAt).toEqual(new Date("2026-10-22T12:00:00Z"));
+  });
+});
+
+/**
+ * Audit batch a4-sync-parse: what an odd response, or an odd value in one, does to a sync.
+ * The clock is 2026-11-01T01:00Z, which is 19:00 on Oct 31 in the household's zone.
+ */
+describe.skipIf(!TEST_DATABASE_URL)("sync of odd responses (a4-sync-parse)", () => {
+  let t: TestDb;
+  let ctx: JobContext;
+  let connectionId: string;
+  const secretsKey = generateSecretsKey();
+  const now = new Date("2026-11-01T01:00:00Z");
+  const requests: URL[] = [];
+  let respond: (url: URL, init: RequestInit) => Response = () => new Response("", { status: 500 });
+  const config: WorkerConfig = { databaseUrl: "unused", secretsKey, workerId: "test-worker", syncIntervalHours: 6, pollIntervalMs: 10, initialWindowDays: 93, overlapDays: 7, requestTimeoutMs: 5000 };
+  const unix = (date: IsoDate, hour = 12) => Math.floor(isoDateToUtcMs(date) / 1000) + hour * 3600;
+  const checking = (transactions: unknown[], extra: Record<string, unknown> = {}) => ({
+    org: { name: "First Example Bank" },
+    id: "CHK",
+    name: "Everyday Checking",
+    currency: "USD",
+    balance: "100.00",
+    "balance-date": unix("2026-10-31", 6),
+    transactions,
+    ...extra,
+  });
+  const posted = (id: string, amount: string, description = "KING SOOPERS") => ({ id, posted: unix("2026-10-30"), amount, description });
+  const conn = async () => (await t.db.select().from(connection).where(eq(connection.id, connectionId)))[0]!;
+  const lastLog = async () => (await t.db.select().from(importLog).where(eq(importLog.connectionId, connectionId)).orderBy(desc(importLog.startedAt), desc(importLog.id)))[0]!;
+  const sync = async () => {
+    requests.length = 0;
+    await enqueueJob(t.db, "simplefin.sync", { connectionId });
+    await drainQueue(ctx);
+  };
+  const ids = async () => (await t.db.select({ ext: transaction.externalId }).from(transaction).orderBy(asc(transaction.externalId))).map((r) => r.ext);
+
+  beforeAll(async () => {
+    t = await createTestDb();
+    ctx = {
+      db: t.db,
+      config,
+      client: {
+        allowedHosts: ["bridge.example.test"],
+        fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+          const url = new URL(String(input));
+          requests.push(url);
+          return respond(url, init ?? {});
+        }) as typeof fetch,
+      },
+      now: () => now,
+      log: { info: () => {}, warn: () => {}, error: () => {} },
+    };
+    const [row] = await t.db.insert(connection).values({ type: "simplefin", name: "Bank", status: "ok", accessUrlEnc: await encryptSecret(ACCESS, secretsKey) }).returning({ id: connection.id });
+    connectionId = row!.id;
+  });
+  afterAll(async () => {
+    await t?.cleanup();
+  });
+
+  it("a4-sync-parse-08: the window and the mark are the household's day, not the UTC day", async () => {
+    respond = () => new Response(JSON.stringify({ errors: [], accounts: [checking([posted("C1", "-1.00"), { id: "P1", posted: 0, amount: "-2.00", description: "HOLD", pending: true }])] }));
+    await sync();
+    // 93 days before 2026-10-31 is 2026-07-30.
+    expect(requests[0]!.searchParams.get("start-date")).toBe(String(isoDateToUtcMs("2026-07-30") / 1000));
+    expect(await conn()).toMatchObject({ status: "ok", syncedThrough: "2026-10-31" });
+    const [hold] = await t.db.select({ date: transaction.date }).from(transaction).where(eq(transaction.externalId, "P1"));
+    expect(hold!.date).toBe("2026-10-31");
+  });
+
+  it("a4-sync-parse-02: a response that is not JSON, or not an account set, is kept in the import log", async () => {
+    respond = () => new Response("<html>Bridge maintenance</html>", { status: 200 });
+    await sync();
+    let log = await lastLog();
+    expect(log).toMatchObject({ status: "error", message: "SimpleFIN returned a response that is not JSON", rawPayload: { notJson: "<html>Bridge maintenance</html>" } });
+
+    respond = () => new Response(JSON.stringify({ errors: [], accounts: { CHK: { balance: "1.00" } } }));
+    await sync();
+    log = await lastLog();
+    expect(log).toMatchObject({ status: "error", message: "SimpleFIN response did not match protocol v2: accounts: expected a list", rawPayload: { errors: [], accounts: { CHK: { balance: "1.00" } } } });
+    expect((await conn()).lastError).toBe("SimpleFIN response did not match protocol v2: accounts: expected a list");
+  });
+
+  it("a4-sync-parse-03: holdings keyed by symbol, null text and an account that cannot be read do not stop the other accounts", async () => {
+    const brokerage = {
+      org: { name: "Example Brokerage" },
+      id: "BRK",
+      name: "Individual Brokerage",
+      currency: "USD",
+      balance: "500.00",
+      "balance-date": unix("2026-10-31", 6),
+      transactions: [{ id: "B1", posted: unix("2026-10-30"), amount: "-1.00", description: null, payee: null }],
+      holdings: { VTI: { shares: "2", market_value: "500.00" } },
+      extra: null,
+    };
+    const broken = { org: { name: "Card Bank" }, id: "CARD", name: "Sapphire Visa", currency: "USD", balance: "1.00", transactions: [] };
+    respond = () => new Response(JSON.stringify({ errors: [], errlist: [], accounts: [checking([posted("C6", "-6.00")]), brokerage, broken] }));
+    await sync();
+    // The hold P1 is gone from this response: the checking account was read in full, so it dropped off.
+    expect(await ids()).toEqual(["B1", "C1", "C6"]);
+    const log = await lastLog();
+    expect(log.status).toBe("ok");
+    expect(log.stats).toMatchObject({ holdingsAccounts: 1, holdingsPositions: 1 });
+    const c = await conn();
+    expect(c.lastErrors).toEqual([{ code: "account.unreadable", message: "Sapphire Visa: the account could not be read and was skipped (balance-date: Required)", accountId: "CARD" }]);
+    expect(c.lastError).toBeNull();
+    // A new account (BRK) clears the mark, so the next sync asks for its history.
+    expect(c.syncedThrough).toBeNull();
+    // An account none of whose transactions arrived holds the mark, as act.failed does; once it is readable the mark moves.
+    await sync();
+    expect((await conn()).syncedThrough).toBeNull();
+    respond = () => new Response(JSON.stringify({ errors: [], errlist: [], accounts: [checking([posted("C6", "-6.00")]), brokerage] }));
+    await sync();
+    expect(await conn()).toMatchObject({ syncedThrough: "2026-10-31", lastErrors: [] });
+  });
+
+  it("a4-sync-parse-05: NUL characters in a description, a payee, an errlist message and an id leave the sync working and the payload kept", async () => {
+    const nul = String.fromCharCode(0);
+    respond = () =>
+      new Response(
+        JSON.stringify({
+          errors: [`maintenance${nul}tonight`],
+          errlist: [{ code: "act.missingdata", msg: `partial${nul}data`, account_id: "CHK" }],
+          accounts: [checking([{ ...posted(`N${nul}1`, "-3.00", `ACME${nul}STORE`), payee: `Acme${nul}` }])],
+        }),
+      );
+    await sync();
+    const log = await lastLog();
+    expect(log.status).toBe("ok");
+    const raw = log.rawPayload as { accounts: Array<{ transactions: Array<{ id: string; description: string; payee: string }> }> };
+    expect(raw.accounts[0]!.transactions[0]).toMatchObject({ id: "N\uFFFD1", description: "ACME\uFFFDSTORE", payee: "Acme\uFFFD" });
+    const [row] = await t.db.select().from(transaction).where(eq(transaction.externalId, "N\uFFFD1"));
+    expect(row).toMatchObject({ amountCents: -300n, rawDescription: "ACME\uFFFDSTORE" });
+    expect((await conn()).lastErrors).toEqual([
+      { code: "act.missingdata", message: "The Bridge returned incomplete data for this account. It will retry on the next sync. (partial\uFFFDdata)", accountId: "CHK" },
+      { code: "error", message: "maintenance\uFFFDtonight" },
+    ]);
+  });
+
+  it("a4-sync-parse-11: a long junk amount never reaches the error text, and stored error text is sanitized and bounded", async () => {
+    const junk = `<b>${"x".repeat(5000)}</b>`;
+    respond = () => new Response(JSON.stringify({ errors: [], accounts: [checking([posted("J1", junk), posted("J2", "-4.00")])] }));
+    await sync();
+    const c = await conn();
+    expect(c.status).toBe("ok");
+    expect(c.lastError).toBeNull();
+    expect(c.lastErrors).toEqual([{ code: "amount.unreadable", message: "Everyday Checking: 1 transaction was skipped because its amount could not be read", accountId: "CHK" }]);
+    expect(await ids()).toContain("J2");
+    // The raw payload keeps the value as sent; nothing shown for display quotes it.
+    const { rawPayload: _raw, ...shown } = await lastLog();
+    expect(JSON.stringify(shown, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v))).not.toContain("xxxxxxxxxx");
+
+    // A database error quotes the value it refused: the job's error is sanitized and bounded before it is stored.
+    const [bad] = await t.db.insert(job).values({ type: "simplefin.sync", payload: { connectionId: junk }, maxAttempts: 1 }).returning({ id: job.id });
+    await drainQueue(ctx);
+    const [failed] = await t.db.select().from(job).where(eq(job.id, bad!.id));
+    expect(failed!.status).toBe("failed");
+    expect(failed!.lastError!.length).toBeLessThanOrEqual(300);
+    expect(failed!.lastError).not.toContain("<b>");
+  });
+});
+
+/** Audit a4-sync-parse-06: a setup token whose claim failed for a reason that passes can still be claimed. */
+describe.skipIf(!TEST_DATABASE_URL)("claim after a transient failure (a4-sync-parse-06)", () => {
+  let t: TestDb;
+  let ctx: JobContext;
+  const secretsKey = generateSecretsKey();
+  let bridgeStatus = 503;
+  const config: WorkerConfig = { databaseUrl: "unused", secretsKey, workerId: "test-worker", syncIntervalHours: 6, pollIntervalMs: 10, initialWindowDays: 93, overlapDays: 7, requestTimeoutMs: 5000 };
+
+  beforeAll(async () => {
+    t = await createTestDb();
+    ctx = {
+      db: t.db,
+      config,
+      client: {
+        allowedHosts: ["bridge.example.test"],
+        fetch: (async (_input: string | URL | Request, init?: RequestInit) =>
+          bridgeStatus !== 200 ? new Response("", { status: bridgeStatus }) : init?.method === "POST" ? new Response(ACCESS) : new Response(JSON.stringify({ errors: [], accounts: [] }))) as typeof fetch,
+      },
+      now: () => new Date("2026-10-13T12:00:00Z"),
+      log: { info: () => {}, warn: () => {}, error: () => {} },
+    };
+  });
+  afterAll(async () => {
+    await t?.cleanup();
+  });
+
+  it("keeps the token through three failed attempts, says to press Sync now, and claims it when queued again", async () => {
+    const claimTokenEnc = await encryptSecret(btoa("https://bridge.example.test/simplefin/claim/tok"), secretsKey);
+    const [conn] = await t.db.insert(connection).values({ type: "simplefin", name: "Bank", status: "claiming", claimTokenEnc }).returning();
+    const [claim] = await t.db.insert(job).values({ type: "simplefin.claim", payload: { connectionId: conn!.id } }).returning();
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await t.db.update(job).set({ runAt: new Date(Date.now() - 1000) }).where(eq(job.id, claim!.id));
+      await drainQueue(ctx);
+    }
+    const [spent] = await t.db.select().from(job).where(eq(job.id, claim!.id));
+    expect(spent).toMatchObject({ status: "failed", attempts: 3 });
+    const [after] = await t.db.select().from(connection).where(eq(connection.id, conn!.id));
+    expect(after).toMatchObject({ status: "error", accessUrlEnc: null, lastError: "The setup token could not be claimed yet: Claim failed with HTTP 503. Press Sync now to try again." });
+    expect(after!.claimTokenEnc).toBe(conn!.claimTokenEnc);
+
+    // What Sync now queues for such a connection (the API test covers the route): the claim, which now works.
+    bridgeStatus = 200;
+    await enqueueJob(t.db, "simplefin.claim", { connectionId: conn!.id }, { dedupe: true });
+    await drainQueue(ctx);
+    const [claimed] = await t.db.select().from(connection).where(eq(connection.id, conn!.id));
+    expect(claimed).toMatchObject({ status: "ok", claimTokenEnc: null, lastError: null });
+    expect(claimed!.accessUrlEnc).not.toBeNull();
   });
 });
