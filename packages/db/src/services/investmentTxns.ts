@@ -24,6 +24,7 @@ import { PlanError, writeAudit, type AuditContext } from "./audit.js";
 import { qtyFromDb, qtyToDb } from "./decimalDb.js";
 import { loadInvestmentAccount, type InvestmentAccountRow } from "./holdings.js";
 import { ingestTransactions, type IncomingTransaction } from "./ingest.js";
+import { unfeedReinvestedDividends } from "./investmentIncome.js";
 import { enqueueJob } from "./jobs.js";
 import { listLotPicks, rebuildLotsForAccounts, validateLotPicks, writeLotPicks, type LotPickInputRecord, type LotPickRecord } from "./lots.js";
 import { resolvePayee } from "./payees.js";
@@ -747,6 +748,8 @@ export async function createInvestmentTxn(db: Db, input: CreateInvestmentTxnInpu
     const pickRows = validatedPicks.length > 0 ? await writeLotPicks(tx, id, validatedPicks) : [];
     for (const w of written) await settleLedgerSide(tx, w.row, w.acct, memo);
     const rebuilt = await rebuildLotsForAccounts(tx, written.map((w) => w.row.accountId));
+    // A reinvest row says the dividend of its date bought shares: it is no longer fed to the plan.
+    if (shape.type === "reinvest") await unfeedReinvestedDividends(tx, [input.accountId]);
     for (const w of written) {
       const fresh = await requireTxn(tx, w.row.id);
       await writeAudit(tx, { ...ctx, entity: "investment_txn", entityId: fresh.id, action: "create", before: null, after: investmentTxnAuditJson(fresh, fresh.id === id ? pickRows : []) });
@@ -958,6 +961,15 @@ export async function updateInvestmentTxn(db: Db, id: string, patch: UpdateInves
       .where(eq(investmentTxn.id, id));
     if (row.counterpartyAccountId) accounts.add(row.counterpartyAccountId);
     const rebuilt = await rebuildLotsForAccounts(tx, [...accounts]);
+    // A row that is (or was) a reinvest, or a dividend moved onto a reinvest's date, changes what the
+    // feed owes: a newly reinvested dividend leaves the plan now, one no longer reinvested is fed
+    // again by the next feed pass.
+    if (row.type === "reinvest" || merged.type === "reinvest" || merged.type === "dividend") {
+      await unfeedReinvestedDividends(tx, [row.accountId]);
+      if ((row.type === "reinvest" || merged.type === "reinvest") && (await incomeFeedOf(tx, row.accountId)) !== "off") {
+        await enqueueJob(tx, "investments.income_feed", { reason: "manual", dedupeKey: "investments.income_feed" }, { dedupe: true });
+      }
+    }
     const after = await requireTxn(tx, id);
     const picksAfter = (await listLotPicks(tx, [id])).get(id) ?? [];
     await writeAudit(tx, { ...ctx, entity: "investment_txn", entityId: id, action: "update", before, after: investmentTxnAuditJson(after, picksAfter) });
@@ -995,6 +1007,13 @@ export async function deleteInvestmentTxn(db: Db, id: string, opts: { deleteGrou
       await tx.delete(investmentTxn).where(eq(investmentTxn.id, r.id));
     }
     const rebuilt = await rebuildLotsForAccounts(tx, [...accounts]);
+    // A deleted reinvest row leaves its dividend paid in cash: the next feed pass feeds it again.
+    for (const r of rows) {
+      if (r.type === "reinvest" && (await incomeFeedOf(tx, r.accountId)) !== "off") {
+        await enqueueJob(tx, "investments.income_feed", { reason: "manual", dedupeKey: "investments.income_feed" }, { dedupe: true });
+        break;
+      }
+    }
     return { deleted: rows.length, rebuildWarnings: rebuilt.warnings };
   });
 }
@@ -1315,6 +1334,7 @@ export async function upsertInvestmentTxns(tx: DbOrTx, input: UpsertInvestmentTx
   if (result.created + result.updated + picksCleared + result.transfersPaired + unpairedGroups.size > 0) {
     touched.add(input.accountId);
     const rebuilt = await rebuildLotsForAccounts(tx, [...touched]);
+    await unfeedReinvestedDividends(tx, [...touched]);
     result.lotsRebuilt = rebuilt.accountIds.length;
     result.touchedAccounts = rebuilt.accountIds;
     result.rebuildWarnings = rebuilt.warnings;

@@ -218,6 +218,7 @@ export function PortfolioPage() {
                 </div>
                 {option && <EChart option={option} height={300} label={`Portfolio value from ${shortDate(s.from)} to ${shortDate(s.to)}`} />}
                 <p className="muted small inv-chart-note">
+                  {range?.capped ? `From ${shortDate(range.from)}: at most ten years are charted. ` : ""}
                   {step === "week" ? "Weekly points. " : step === "month" ? "Monthly points. " : ""}
                   {anyPartial ? "Partial: on some days not every account had a value; gaps are days without one. " : "Gaps are days without a value."}
                   {series.isFetching ? " updating…" : ""}

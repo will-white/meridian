@@ -534,6 +534,8 @@ export interface ValuationSeriesQueryInput {
   today: IsoDate;
   now: Date;
   accountIds?: readonly string[];
+  /** Closed accounts too (views design D21); without it a closed account in `accountIds` is 400. */
+  includeClosed?: boolean;
   step?: SeriesStep;
 }
 
@@ -552,7 +554,7 @@ export async function valuationSeries(db: DbOrTx, q: ValuationSeriesQueryInput):
   if (q.to < q.from) throw new PlanError(400, "validation", `to ${q.to} is before from ${q.from}`);
   if (q.to > q.today) throw new PlanError(400, "validation", `to ${q.to} is after today ${q.today}`);
   if (dayDiff(q.from, q.to) > MAX_SERIES_DAYS) throw new PlanError(400, "validation", `A series covers at most ${MAX_SERIES_DAYS} days`);
-  const ids = await investmentAccountIds(db, q.accountIds);
+  const ids = await investmentAccountIds(db, q.accountIds, q.includeClosed ? { includeClosed: true } : {});
   const input = await loadValuationInput(db, { accountIds: ids, from: q.from, to: q.to, now: q.now });
   let series;
   try {

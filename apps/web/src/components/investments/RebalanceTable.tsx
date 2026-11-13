@@ -1,7 +1,7 @@
 import { Fragment } from "react";
 import type { RebalanceView } from "@meridian/shared";
 import { money } from "../../lib/format.js";
-import { assetClassLabel, bpToPpInput, formatQuantity, groupTrades, signedMoney, taxTreatmentLabel, tradeSentence } from "../../lib/investments.js";
+import { assetClassLabel, bpToPpInput, formatQuantity, groupTrades, signedMoney, taxTreatmentLabel, tradeNote, tradeSentence } from "../../lib/investments.js";
 import { Badge } from "../ui.js";
 
 const ACTION_LABELS = { sell: "Sell", buy: "Buy", use_cash: "Use cash", hold_cash: "Hold cash" } as const;
@@ -10,8 +10,8 @@ const ACTION_LABELS = { sell: "Sell", buy: "Buy", use_cash: "Use cash", hold_cas
  * The deterministic rebalance suggestion (plan decision 16) as a table
  * grouped by account in the order the server generated it: account rank
  * (tax-advantaged first), sells before buys. Each row is the trade sentence
- * plus the class, the approximate share count, the estimated gain on a
- * taxable sell and the server's note. Below: the residual the suggestion
+ * plus the class, the approximate share count and the server's note (on a
+ * taxable sell, its estimated-gain sentence, toned as a warning). Below: the residual the suggestion
  * could not place, the trades left out under the minimum, and the footer
  * reminding that nothing is executed.
  */
@@ -67,10 +67,7 @@ export function RebalanceTable({ rebalance, blendedTickers }: { rebalance: Rebal
                       <td className="num">{money(t.amountCents)}</td>
                       <td className="num muted">{t.approxQuantity ? `${formatQuantity(t.approxQuantity, 4)} @ ${formatQuantity(t.price, 2)}` : "—"}</td>
                       <td className="muted small">
-                        {t.estimatedGainCents !== null && (
-                          <span className={BigInt(t.estimatedGainCents) > 0n ? "tone-warn" : ""}>may realize about {signedMoney(t.estimatedGainCents)} of gains; the lots view shows which lots. </span>
-                        )}
-                        {t.note}
+                        <span className={tradeNote(t).tone === "warn" ? "tone-warn" : ""}>{tradeNote(t).text}</span>
                       </td>
                     </tr>
                   ))}

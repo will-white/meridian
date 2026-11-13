@@ -658,7 +658,7 @@ describe("Valuation", () => {
       partial: true,
       missing: [],
       priceStatus: "current",
-      dayChange: { ...dayChange, cents: "40038", bp: 57, partial: true, excluded: [{ accountId: U2, reason: "balance_only" }] },
+      dayChange: { ...dayChange, cents: "40038", bp: 57, partial: true, excluded: [{ accountId: U2, reason: "balance_only" }], carriedPrior: null },
       periodChange: { ...changeSummary, period: "1w", newAccounts: [{ id: U3, name: "HSA", openingCents: "200000" }] },
       accounts: [accountValuation],
     };
@@ -756,7 +756,7 @@ describe("Investment views", () => {
       asOf: "2026-10-13",
       period: { kind: "1y", from: "2025-10-13", to: "2026-10-13", days: 365, partial: false, note: null },
       totalCents: "452520000",
-      dayChange: { ...dayChange, cents: "3600000", bp: 80, partial: false, excluded: [] },
+      dayChange: { ...dayChange, cents: "3600000", bp: 80, partial: false, excluded: [], carriedPrior: { date: "2026-09-09", sources: ["implied"] } },
       periodChange: changeSummary,
       accounts: [
         {
@@ -846,8 +846,8 @@ describe("Investment views", () => {
           gainBp: null,
           expenseRatioPpm: 300,
           accounts: [
-            { ...accountRef, kind: "position", quantity: "40", valueCents: "1250000", costBasisCents: "1160000", basisSource: "lots", gainCents: "90000", lotCount: 2, unknownBasisQuantity: "0", snapshotDate: "2026-10-13", snapshotSource: "simplefin", priceSource: "provider", dollarOnly: false },
-            { ...accountRef, accountId: U3, fidelity: "positions", kind: "position", quantity: "20", valueCents: "625000", costBasisCents: null, basisSource: null, gainCents: null, lotCount: null, unknownBasisQuantity: null, snapshotDate: "2026-10-09", snapshotSource: "csv", priceSource: "statement", dollarOnly: false },
+            { ...accountRef, kind: "position", lineName: "VTI", inferred: false, quantity: "40", valueCents: "1250000", costBasisCents: "1160000", basisSource: "lots", gainCents: "90000", lotCount: 2, unknownBasisQuantity: "0", snapshotDate: "2026-10-13", snapshotSource: "simplefin", priceSource: "provider", dollarOnly: false },
+            { ...accountRef, accountId: U3, fidelity: "positions", kind: "position", lineName: "VTI", inferred: false, quantity: "20", valueCents: "625000", costBasisCents: null, basisSource: null, gainCents: null, lotCount: null, unknownBasisQuantity: null, snapshotDate: "2026-10-09", snapshotSource: "csv", priceSource: "statement", dollarOnly: false },
           ],
         },
       ],
@@ -857,6 +857,34 @@ describe("Investment views", () => {
       accountWarnings: [],
       warnings: [],
     });
+  });
+  it("HoldingsView carries an inferred-cash row without a cash security, and its inferred sub-rows (audit b6-03, b6-12)", () => {
+    const cashRow = {
+      securityId: null,
+      ticker: null,
+      name: "Cash (USD)",
+      type: "cash",
+      assetClass: "cash",
+      splits: [],
+      needsReview: false,
+      quantity: "1702",
+      price: "1",
+      priceDate: null,
+      priceSource: "cash",
+      priceStatus: "cash",
+      priceStale: false,
+      valueCents: "170200",
+      weightBp: 376,
+      costBasisCents: "170200",
+      coverage: "full",
+      gainCents: "0",
+      gainBp: 0,
+      expenseRatioPpm: null,
+      accounts: [{ ...accountRef, kind: "cash_plug", lineName: "Cash (from balance)", inferred: true, quantity: null, valueCents: "170200", costBasisCents: "170200", basisSource: null, gainCents: "0", lotCount: null, unknownBasisQuantity: null, snapshotDate: "2026-10-13", snapshotSource: "simplefin", priceSource: "cash", dollarOnly: false }],
+    };
+    const view = { today: "2026-10-14", asOf: "2026-10-13", totalCents: "170200", holdingsCents: "0", cashCents: "0", residualCents: "170200", rows: [cashRow], weightedExpenseRatio: { ppm: 0, coveredBp: 10000, annualCostCents: "0" }, concentration: [], excludedAccounts: [], accountWarnings: [], warnings: [] };
+    roundTrip(HoldingsView, view);
+    bad(HoldingsView, { ...view, rows: [{ ...cashRow, accounts: [{ ...cashRow.accounts[0], inferred: undefined }] }] });
   });
   it("PerformanceView round-trips the presentation block", () => {
     const block = {

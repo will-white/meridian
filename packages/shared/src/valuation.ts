@@ -979,6 +979,31 @@ export interface PortfolioDayChange {
   partial: boolean;
   excluded: Array<{ accountId: string; reason: DayChangeReason }>;
   accounts: AccountDayChange[];
+  /**
+   * Set when an included line moved from a prior close older than `prior` (no close on the prior
+   * trading day, so the latest earlier one was carried, e.g. a month-old statement's implied
+   * price) to a newer close: the oldest such close's date and the sources of the carried closes,
+   * so the view can say what the change is measured from (prices design §3.9: "the view labels
+   * the prior"). A stale line priced with the same row on both days moved nothing and does not
+   * count. Null otherwise.
+   */
+  carriedPrior: { date: IsoDate; sources: ValuationPriceSource[] } | null;
+}
+
+/** The oldest prior close older than `prior` among the included accounts' lines, with the carried closes' sources. */
+function carriedPriorOf(accounts: readonly AccountDayChange[], prior: IsoDate): PortfolioDayChange["carriedPrior"] {
+  let date: IsoDate | null = null;
+  const sources = new Set<ValuationPriceSource>();
+  for (const a of accounts) {
+    if (a.cents === null) continue;
+    for (const l of a.lines) {
+      // Only a line that moved across the gap: a stale line priced with the same old row on both days moved nothing.
+      if (l.priorPrice === null || l.priorPrice.date >= prior || l.asOfPrice === null || l.asOfPrice.date <= l.priorPrice.date) continue;
+      sources.add(l.priorPrice.source);
+      if (date === null || l.priorPrice.date < date) date = l.priorPrice.date;
+    }
+  }
+  return date === null ? null : { date, sources: [...sources].sort() };
 }
 
 function pricePoint(row: ValuationPrice): PricePoint {
@@ -1051,6 +1076,7 @@ export function dayChange(input: ValuationInput, accountIds: readonly string[], 
       partial: accountIds.length > 0,
       excluded,
       accounts: valuations.map((v) => ({ accountId: v.accountId, cents: null, asOf: null, prior: null, reason: reasonFor(v), lines: [] })),
+      carriedPrior: null,
     };
   }
   const prior = previousTradingDay(asOf);
@@ -1076,6 +1102,7 @@ export function dayChange(input: ValuationInput, accountIds: readonly string[], 
     partial: excluded.length > 0,
     excluded,
     accounts,
+    carriedPrior: carriedPriorOf(accounts, prior),
   };
 }
 

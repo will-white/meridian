@@ -45,7 +45,15 @@ import {
   targetsSumBp,
   tradeSentence,
   valuationDescription,
+  canEditSecurityClass,
+  cashStatText,
+  holdingLineLabel,
+  holdingRowKey,
+  investmentAccountOptions,
+  showAccountFilter,
+  tradeNote,
 } from "./investments.js";
+import { dayDiff, MAX_SERIES_DAYS } from "@meridian/shared";
 
 describe("formatBp / formatPp / formatPpm / formatRate", () => {
   it("renders basis points with one decimal by default (seed allocation: 5970/1907/1745/376)", () => {
@@ -271,10 +279,10 @@ describe("URL parameters and the chart range", () => {
     expect(autoSeriesStep("2025-09-08", "2026-10-13")).toBe("day");
     expect(autoSeriesStep("2025-09-07", "2026-10-13")).toBe("week");
     expect(autoSeriesStep("2021-10-13", "2026-10-13")).toBe("month");
-    expect(chartRange("2026-10-13", { from: "2025-10-13" })).toEqual({ from: "2025-10-13", to: "2026-10-13" });
-    expect(chartRange("2026-10-13", null)).toEqual({ from: "2026-09-13", to: "2026-10-13" });
-    expect(chartRange("2026-03-01", null)).toEqual({ from: "2026-01-30", to: "2026-03-01" });
-    expect(chartRange("2026-10-13", { from: "2026-10-13" })).toEqual({ from: "2026-10-12", to: "2026-10-13" });
+    expect(chartRange("2026-10-13", { from: "2025-10-13" })).toEqual({ from: "2025-10-13", to: "2026-10-13", capped: false });
+    expect(chartRange("2026-10-13", null)).toEqual({ from: "2026-09-13", to: "2026-10-13", capped: false });
+    expect(chartRange("2026-03-01", null)).toEqual({ from: "2026-01-30", to: "2026-03-01", capped: false });
+    expect(chartRange("2026-10-13", { from: "2026-10-13" })).toEqual({ from: "2026-10-12", to: "2026-10-13", capped: false });
   });
 });
 
@@ -422,11 +430,32 @@ describe("why did it change", () => {
     expect(attributionTotals({ summary: { ...summary, changeCents: null }, holdings: [], residualEffectCents: "310000" }).balanced).toBe(true);
   });
   it("offers the day and the period windows only when each is a real span", () => {
-    const portfolio = { asOf: "2026-10-13", dayChange: { cents: "32000", bp: 119, asOf: "2026-10-13", prior: "2026-10-12", reason: null, partial: false, excluded: [] } };
-    expect(changeWindows(portfolio, { period: { ...summary, from: "2025-10-13" } })).toEqual({ day: { from: "2026-10-12", to: "2026-10-13" }, period: { from: "2025-10-13", to: "2026-10-13" } });
+    const portfolio = { asOf: "2026-10-13", dayChange: { cents: "32000", bp: 119, asOf: "2026-10-13", prior: "2026-10-12", reason: null, partial: false, excluded: [], carriedPrior: null } };
+    expect(changeWindows(portfolio, { period: { ...summary, from: "2025-10-13" } })).toEqual({ day: { from: "2026-10-12", to: "2026-10-13", note: null }, period: { from: "2025-10-13", to: "2026-10-13", note: null } });
     expect(changeWindows({ ...portfolio, dayChange: { ...portfolio.dayChange, prior: null } }, { period: null })).toEqual({ day: null, period: null });
     expect(changeWindows(portfolio, { period: { ...summary, from: "2026-10-13" } }).period).toBeNull();
-    expect(changeWindows({ ...portfolio, asOf: null }, { period: null }).day).toBeNull();
+    expect(changeWindows({ ...portfolio, dayChange: { ...portfolio.dayChange, asOf: null } }, { period: null }).day).toBeNull();
+  });
+  it("b6-09: the day window ends at the close the day change was measured at, and says so while prices lag the as-of date", () => {
+    // Prices through 10-13, the page as of 11-12: the row's day change is 10-12 → 10-13 on the 11-12 holdings.
+    const lagging = { asOf: "2026-11-12", dayChange: { cents: "33250", bp: 124, asOf: "2026-10-13", prior: "2026-10-12", reason: null, partial: false, excluded: [], carriedPrior: null } };
+    expect(changeWindows(lagging, { period: null }).day).toEqual({
+      from: "2026-10-12",
+      to: "2026-10-13",
+      note: "The latest close is 10/13/26: this explains the account from the 10/12/26 close to it; the day change prices the 11/12/26 holdings at those closes.",
+    });
+  });
+  it("b6-05: a period longer than five years is explained over its last five years, with a note", () => {
+    const portfolio = { asOf: "2026-11-12", dayChange: { cents: null, bp: null, asOf: null, prior: null, reason: "no_prices", partial: true, excluded: [], carriedPrior: null } };
+    expect(changeWindows(portfolio, { period: { ...summary, from: "2014-03-01", to: "2026-11-12" } }).period).toEqual({
+      from: "2021-11-12",
+      to: "2026-11-12",
+      note: "The last five years of the period (from 11/12/21): a change is explained over at most five years.",
+    });
+    // Exactly five years is accepted as it is.
+    expect(changeWindows(portfolio, { period: { ...summary, from: "2021-11-12", to: "2026-11-12" } }).period).toEqual({ from: "2021-11-12", to: "2026-11-12", note: null });
+    // A leap day: 2019-02-28 + 60 months is 2024-02-28 < 2024-02-29, so the window starts 2019-03-01 (the route's own rule).
+    expect(changeWindows(portfolio, { period: { ...summary, from: "2010-01-01", to: "2024-02-29" } }).period?.from).toBe("2019-03-01");
   });
   it("words the balance-only line and the from → to cells", () => {
     expect(marketOrUnknownText({ growthCents: "310000" })).toBe("market or unknown: +$3,100.00");
@@ -435,5 +464,58 @@ describe("why did it change", () => {
     expect(fromToText("310", "312.5", (v) => formatQuantity(v, 4))).toBe("310 → 312.5");
     expect(fromToText(null, "40", (v) => v)).toBe("— → 40");
     expect(fromToText(null, null, (v) => v)).toBe("—");
+  });
+});
+
+describe("audit b6: holdings, income filter, rebalance notes and the chart range", () => {
+  it("b6-05: the chart range never asks the series route for more than MAX_SERIES_DAYS", () => {
+    // An All period from 2014-03-01 to 2026-11-12 (4,639 days): the chart starts 3,660 days back, as the Portfolio's note says.
+    expect(chartRange("2026-11-12", { from: "2014-03-01" })).toEqual({ from: "2016-11-04", to: "2026-11-12", capped: true });
+    expect(dayDiff(chartRange("2026-11-12", { from: "2014-03-01" }).from, "2026-11-12")).toBe(MAX_SERIES_DAYS);
+  });
+  it("b6-08: a day change measured from a carried close names the close it is measured from", () => {
+    expect(dayChangeSentence({ cents: "33000", bp: 185, prior: "2026-10-08", reason: null, carriedPrior: { date: "2026-09-09", sources: ["implied"] } })).toBe("+$330.00 (+1.85%) since 09/09/26 (implied prices; no close on 10/08/26)");
+    expect(dayChangeSentence({ cents: "36000", bp: 80, prior: "2026-10-12", reason: null, carriedPrior: null })).toBe("+$360.00 (+0.80%) since 10/12/26");
+  });
+  it("b6-12: sub-row labels tell reported cash from inferred cash, and the Cash stat says which is which", () => {
+    expect(holdingLineLabel({ kind: "position", inferred: false })).toBeNull();
+    expect(holdingLineLabel({ kind: "cash", inferred: false })).toBe("reported");
+    expect(holdingLineLabel({ kind: "cash", inferred: true })).toBe("from trades (since the last balance)");
+    expect(holdingLineLabel({ kind: "cash_plug", inferred: true })).toBe("unlisted (balance − positions)");
+    expect(holdingLineLabel({ kind: "carried_flows", inferred: true })).toBe("transfers since the last balance");
+    // The seed: 270.00 reported in R, 1,432.00 inferred in B.
+    expect(cashStatText("27000", "143200")).toEqual({ totalCents: "170200", sub: "$270.00 reported · + $1,432.00 inferred (not in the positions list)" });
+    // After a buy on the lots basis: the trades' cash takes B below zero.
+    expect(cashStatText("27000", "-13050")).toEqual({ totalCents: "13950", sub: "$270.00 reported · − $130.50 inferred (not in the positions list)" });
+    expect(cashStatText("27000", "0")).toEqual({ totalCents: "27000", sub: null });
+  });
+  it("b6-16 and b6-03: no class editor on the cash row (with or without a cash security); a key for the inferred-cash row", () => {
+    expect(canEditSecurityClass({ securityId: "c", type: "cash" }, false)).toBe(false);
+    expect(canEditSecurityClass({ securityId: null, type: "cash" }, false)).toBe(false);
+    expect(canEditSecurityClass({ securityId: "v", type: "etf" }, false)).toBe(true);
+    expect(canEditSecurityClass({ securityId: "v", type: "etf" }, true)).toBe(false);
+    expect(holdingRowKey({ securityId: "v" })).toBe("v");
+    expect(holdingRowKey({ securityId: null })).toBe("inferred-cash");
+  });
+  it("b6-11: the account filter lists the household's investment accounts, and stays while one is chosen", () => {
+    const accounts = [
+      { id: "b", name: "Vanguard Brokerage", type: "brokerage" as const, closed: false },
+      { id: "r", name: "Fidelity Roth IRA", type: "roth" as const, closed: false },
+      { id: "c", name: "Checking", type: "checking" as const, closed: false },
+      { id: "o", name: "Old 401(k)", type: "401k" as const, closed: true },
+    ];
+    expect(investmentAccountOptions(accounts).map((a) => a.id)).toEqual(["b", "r"]);
+    // The filtered response lists one account; the options do not depend on it.
+    expect(investmentAccountOptions(accounts, "r").map((a) => a.id)).toEqual(["b", "r"]);
+    expect(investmentAccountOptions(accounts, "o").map((a) => a.id)).toEqual(["b", "r", "o"]);
+    expect(showAccountFilter(investmentAccountOptions(accounts), "")).toBe(true);
+    expect(showAccountFilter([{ id: "b" }], "")).toBe(false);
+    expect(showAccountFilter([{ id: "b" }], "b")).toBe(true);
+  });
+  it("b6-13: a taxable sell's note is the server's sentence once, toned when a gain may be realized", () => {
+    const note = "may realize about $978.16 of gains; the lots view shows which lots";
+    expect(tradeNote({ note, estimatedGainCents: "97816" })).toEqual({ text: note, tone: "warn" });
+    expect(tradeNote({ note: "may realize about -$12.00 of gains; the lots view shows which lots", estimatedGainCents: "-1200" }).tone).toBe("");
+    expect(tradeNote({ note: null, estimatedGainCents: null })).toEqual({ text: null, tone: "" });
   });
 });

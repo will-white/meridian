@@ -4,6 +4,8 @@ import {
   addMonthsClamped,
   dayChange,
   dayDiff,
+  FIXED8_SCALE,
+  formatFixed8,
   MAX_SERIES_DAYS,
   mulToCents,
   periodChange,
@@ -642,7 +644,10 @@ export interface RebalanceLineInput {
   assetClass: AssetClass;
   splits: SecuritySplitRecord[];
   valueCents: bigint;
+  /** The gain on the known-basis lots (`holdingCostBasis`); null when no basis is known. */
   unrealizedGainCents: bigint | null;
+  /** Shares of the line with no known basis (not in `unrealizedGainCents`); null when there are none. */
+  unknownBasisQuantity?: Fixed8 | null;
   kind: LineKind;
 }
 
@@ -702,6 +707,7 @@ interface TradableLine {
   assetClass: AssetClass;
   valueCents: bigint;
   unrealizedGainCents: bigint | null;
+  unknownBasisQuantity: Fixed8 | null;
   isCash: boolean;
 }
 
@@ -758,10 +764,10 @@ export function suggestRebalance(input: RebalanceInput): RebalanceRecord | null 
           cash += l.valueCents;
           hasCash = true;
         } else if (l.splits.length === 0 && l.securityId !== null) {
-          lines.push({ securityId: l.securityId, ticker: l.ticker, name: l.name, assetClass: l.assetClass, valueCents: l.valueCents, unrealizedGainCents: l.unrealizedGainCents, isCash: false });
+          lines.push({ securityId: l.securityId, ticker: l.ticker, name: l.name, assetClass: l.assetClass, valueCents: l.valueCents, unrealizedGainCents: l.unrealizedGainCents, unknownBasisQuantity: l.unknownBasisQuantity ?? null, isCash: false });
         }
       }
-      if (hasCash && cash > 0n) lines.push({ securityId: null, ticker: null, name: "Cash", assetClass: "cash", valueCents: cash, unrealizedGainCents: 0n, isCash: true });
+      if (hasCash && cash > 0n) lines.push({ securityId: null, ticker: null, name: "Cash", assetClass: "cash", valueCents: cash, unrealizedGainCents: 0n, unknownBasisQuantity: null, isCash: true });
       lines.sort(compareLinesDesc);
       return { ...a, tradable: lines };
     })
@@ -816,7 +822,8 @@ export function suggestRebalance(input: RebalanceInput): RebalanceRecord | null 
         let note: string | null = null;
         if (a.taxTreatment === "taxable" && line.unrealizedGainCents !== null && line.valueCents > 0n) {
           estimatedGainCents = truncDiv(line.unrealizedGainCents * take, line.valueCents);
-          note = `may realize about ${formatDollars(estimatedGainCents)} of gains; the lots view shows which lots`;
+          const unknown = line.unknownBasisQuantity !== null && line.unknownBasisQuantity > 0n ? ` (not counting ${formatFixed8(line.unknownBasisQuantity)} sh whose basis is unknown)` : "";
+          note = `may realize about ${formatDollars(estimatedGainCents)} of gains${unknown}; the lots view shows which lots`;
         }
         trades.push({ ...head, action: "sell", assetClass: c, securityId: line.securityId, ticker: line.ticker, inAccount: true, amountCents: take, ...approx(take, input.prices.get(line.securityId!)), estimatedGainCents, note });
       }
@@ -969,7 +976,8 @@ export function rebalanceInputOf(ctx: InvestmentContext, lines: readonly Classif
             assetClass: l.assetClass,
             splits: l.splits,
             valueCents: l.valueCents,
-            unrealizedGainCents: basis && basis.costBasisCents !== null ? l.valueCents - basis.costBasisCents : null,
+            unrealizedGainCents: basis?.gainCents ?? null,
+            unknownBasisQuantity: basis?.partial ? basis.unknownBasisQuantity : null,
             kind: l.kind,
           };
         }),
@@ -989,17 +997,43 @@ export function rebalanceInputOf(ctx: InvestmentContext, lines: readonly Classif
 const SOURCE_RANK: Record<HoldingPriceSource, number> = { manual: 5, provider: 4, implied: 3, txn: 2, statement: 1, cash: 0 };
 
 export interface CoveredBasis {
+  /** Σ basis of the known-basis lots (or the statement's basis, or the cash's value); null when none is known. */
   costBasisCents: bigint | null;
   basisSource: "lots" | "statement" | null;
+  /**
+   * The value of the shares `costBasisCents` covers: the line's value, less the value of its
+   * unknown-basis shares (a transfer in without a basis) at the line's price. Null when no basis
+   * is known, or when a line without a share count or price cannot be split.
+   */
+  coveredValueCents: bigint | null;
+  /** `coveredValueCents − costBasisCents`: the gain on the known lots only (lots design D12, §3.14). */
   gainCents: bigint | null;
+  /** Some of the line's shares have no known basis (they are not in the covered value or the gain). */
+  partial: boolean;
   lotCount: number | null;
   unknownBasisQuantity: Fixed8 | null;
+}
+
+const NO_BASIS: CoveredBasis = { costBasisCents: null, basisSource: null, coveredValueCents: null, gainCents: null, partial: false, lotCount: null, unknownBasisQuantity: null };
+
+/**
+ * The value of a line's known-basis shares: all of it without unknown-basis shares; else the value
+ * less `mulToCents(unknown, price)` (the unknown part capped at the line's quantity), or null when
+ * the line has no share count or price to split it by.
+ */
+export function knownBasisValue(line: Pick<ViewLine, "valueCents" | "quantity" | "price">, unknownBasisQuantity: Fixed8): bigint | null {
+  if (unknownBasisQuantity <= 0n) return line.valueCents;
+  if (line.quantity === null || line.price === null || line.quantity <= 0n) return null;
+  const unknown = unknownBasisQuantity < line.quantity ? unknownBasisQuantity : line.quantity;
+  return line.valueCents - mulToCents(unknown, line.price);
 }
 
 /**
  * Cost basis per line (`${accountId}|${securityId}`): the lot engine's for accounts with trades
  * (shown even when the lots disagree with the statement, with a `lots_mismatch` warning), else
- * the statement's reported basis; cash and synthetic lines cost what they are worth.
+ * the statement's reported basis; cash and synthetic lines cost what they are worth. The engine's
+ * basis covers its known lots only, so shares that arrived without a basis are left out of the
+ * covered value and the gain (audit decision A11) rather than counted as gain.
  */
 export function holdingCostBasis(ctx: InvestmentContext): Map<string, CoveredBasis> {
   const out = new Map<string, CoveredBasis>();
@@ -1010,23 +1044,27 @@ export function holdingCostBasis(ctx: InvestmentContext): Map<string, CoveredBas
       const k = lineKey(l);
       const meta = l.securityId ? ctx.securities.get(l.securityId) : undefined;
       if (l.kind !== "position" || meta === undefined || meta.type === "cash") {
-        out.set(k, { costBasisCents: l.valueCents, basisSource: null, gainCents: 0n, lotCount: null, unknownBasisQuantity: null });
+        out.set(k, { ...NO_BASIS, costBasisCents: l.valueCents, coveredValueCents: l.valueCents, gainCents: 0n });
         continue;
       }
       const engine = a.fidelityRecord?.lastTradeDate ? ctx.engineHoldings.get(k) : undefined;
       if (engine) {
+        const unknown = engine.unknownBasisQuantity;
+        const coveredValueCents = engine.costBasisCents === null ? null : knownBasisValue(l, unknown);
         out.set(k, {
           costBasisCents: engine.costBasisCents,
           basisSource: "lots",
-          gainCents: engine.costBasisCents === null ? null : l.valueCents - engine.costBasisCents,
+          coveredValueCents,
+          gainCents: engine.costBasisCents === null || coveredValueCents === null ? null : coveredValueCents - engine.costBasisCents,
+          partial: engine.costBasisCents !== null && unknown > 0n,
           lotCount: engine.lotCount,
-          unknownBasisQuantity: engine.unknownBasisQuantity,
+          unknownBasisQuantity: unknown,
         });
         continue;
       }
       const statement = reported.get(k);
-      if (statement !== undefined) out.set(k, { costBasisCents: statement, basisSource: "statement", gainCents: l.valueCents - statement, lotCount: null, unknownBasisQuantity: null });
-      else out.set(k, { costBasisCents: null, basisSource: null, gainCents: null, lotCount: null, unknownBasisQuantity: null });
+      if (statement !== undefined) out.set(k, { ...NO_BASIS, costBasisCents: statement, basisSource: "statement", coveredValueCents: l.valueCents, gainCents: l.valueCents - statement });
+      else out.set(k, NO_BASIS);
     }
   }
   return out;
@@ -1034,6 +1072,10 @@ export function holdingCostBasis(ctx: InvestmentContext): Map<string, CoveredBas
 
 export interface HoldingAccountRecord extends AccountRefRecord {
   kind: LineKind;
+  /** The line's own name: the security's, or an inferred line's ("Cash (from balance)", "Cash (from trades)", "Transfers since …"). */
+  lineName: string;
+  /** An inferred cash line (no security: the plug, the trades' cash, the carried transfers), not a reported position. */
+  inferred: boolean;
   quantity: Fixed8 | null;
   valueCents: bigint;
   costBasisCents: bigint | null;
@@ -1048,7 +1090,8 @@ export interface HoldingAccountRecord extends AccountRefRecord {
 }
 
 export interface HoldingRowRecord {
-  securityId: string;
+  /** Null only for the inferred-cash row of a household that has no cash security yet. */
+  securityId: string | null;
   ticker: string | null;
   name: string;
   type: SecurityType;
@@ -1075,6 +1118,7 @@ export interface ConcentrationWarningRecord {
   level: ConcentrationLevel;
   securityId: string;
   ticker: string | null;
+  /** The row's share of the holdings' gross value (negative cash left out). */
   weightBp: number;
   thresholdBp: number;
   message: string;
@@ -1118,6 +1162,12 @@ export async function getHoldings(db: DbOrTx, q: HoldingsQueryInput): Promise<Ho
   return holdingsOf(ctx, q.accountId !== undefined ? new Set([q.accountId]) : undefined);
 }
 
+/** The group key of the inferred cash lines when the household has no cash security yet. */
+const INFERRED_CASH_ROW = "#inferred-cash";
+
+/** The row the inferred cash joins when no cash security exists (the imports area creates one only when a source reports cash). */
+const INFERRED_CASH_META: SecurityMeta = { id: INFERRED_CASH_ROW, ticker: null, name: "Cash (USD)", type: "cash", assetClass: "cash", expenseRatioPpm: null, needsReview: false, splits: [] };
+
 export function holdingsOf(ctx: InvestmentContext, accountIds?: ReadonlySet<string>): HoldingsRecord {
   const lines = classifiedLines(ctx, accountIds);
   const basis = holdingCostBasis(ctx);
@@ -1131,14 +1181,15 @@ export function holdingsOf(ctx: InvestmentContext, accountIds?: ReadonlySet<stri
       holdingsCents += l.valueCents;
       if (l.kind === "cash") cashCents += l.valueCents;
     } else residualCents += l.valueCents;
-    const rowId = l.securityId ?? ctx.cashSecurityId;
-    if (rowId === null) continue;
+    // Inferred cash joins the cash security's row (views design §3.4, §3.8), or a row of its own
+    // when the household has none yet, so the rows always sum to the total (D4).
+    const rowId = l.securityId ?? ctx.cashSecurityId ?? INFERRED_CASH_ROW;
     groups.set(rowId, [...(groups.get(rowId) ?? []), l]);
   }
 
   const rows: HoldingRowRecord[] = [];
-  for (const [securityId, group] of groups) {
-    const meta = ctx.securities.get(securityId);
+  for (const [groupId, group] of groups) {
+    const meta = groupId === INFERRED_CASH_ROW ? INFERRED_CASH_META : ctx.securities.get(groupId);
     if (!meta) continue;
     let quantity: Fixed8 | null = 0n;
     let anyQuantity = false;
@@ -1147,6 +1198,7 @@ export function holdingsOf(ctx: InvestmentContext, accountIds?: ReadonlySet<stri
     let coveredValue = 0n;
     let coveredCost = 0n;
     let coveredCount = 0;
+    let partlyCovered = false;
     const accounts: HoldingAccountRecord[] = [];
     for (const l of group) {
       valueCents += l.valueCents;
@@ -1157,15 +1209,19 @@ export function holdingsOf(ctx: InvestmentContext, accountIds?: ReadonlySet<stri
       }
       if (l.securityId !== null && (best === undefined || (l.priceDate ?? "") > (best.priceDate ?? "") || ((l.priceDate ?? "") === (best.priceDate ?? "") && SOURCE_RANK[l.priceSource ?? "cash"] > SOURCE_RANK[best.priceSource ?? "cash"]))) best = l;
       const acct = ctx.accounts.find((a) => a.id === l.accountId)!;
-      const b = basis.get(lineKey(l)) ?? { costBasisCents: null, basisSource: null, gainCents: null, lotCount: null, unknownBasisQuantity: null };
-      if (b.costBasisCents !== null) {
-        coveredValue += l.valueCents;
+      const b = basis.get(lineKey(l)) ?? NO_BASIS;
+      // A sub-row counts toward the row's basis only with the value its basis covers (D10, §3.8).
+      if (b.costBasisCents !== null && b.coveredValueCents !== null) {
+        coveredValue += b.coveredValueCents;
         coveredCost += b.costBasisCents;
         coveredCount++;
+        if (b.partial) partlyCovered = true;
       }
       accounts.push({
         ...acct.ref,
         kind: l.kind,
+        lineName: l.name,
+        inferred: l.securityId === null,
         quantity: l.quantity,
         valueCents: l.valueCents,
         costBasisCents: b.costBasisCents,
@@ -1180,17 +1236,19 @@ export function holdingsOf(ctx: InvestmentContext, accountIds?: ReadonlySet<stri
       });
     }
     accounts.sort((a, b) => (a.valueCents !== b.valueCents ? (a.valueCents > b.valueCents ? -1 : 1) : a.accountName < b.accountName ? -1 : 1));
-    const coverage: CostCoverage = coveredCount === 0 ? "none" : coveredCount === group.length ? "full" : "partial";
+    const coverage: CostCoverage = coveredCount === 0 ? "none" : coveredCount === group.length && !partlyCovered ? "full" : "partial";
+    // Cash is a dollar a unit: the row's quantity is its whole value, inferred lines included.
+    const rowQuantity = meta.type === "cash" ? valueCents * 1_000_000n : anyQuantity ? quantity : null;
     rows.push({
-      securityId,
+      securityId: groupId === INFERRED_CASH_ROW ? null : groupId,
       ticker: meta.ticker,
       name: meta.name,
       type: meta.type,
       assetClass: meta.assetClass,
       splits: meta.splits,
       needsReview: meta.needsReview,
-      quantity: anyQuantity ? quantity : null,
-      price: best?.price ?? null,
+      quantity: rowQuantity,
+      price: meta.type === "cash" ? FIXED8_SCALE : (best?.price ?? null),
       priceDate: best?.priceDate ?? null,
       priceSource: best?.priceSource ?? "cash",
       priceStatus: best?.priceStatus ?? "cash",
@@ -1207,27 +1265,38 @@ export function holdingsOf(ctx: InvestmentContext, accountIds?: ReadonlySet<stri
   }
   rows.sort((a, b) => (a.valueCents !== b.valueCents ? (a.valueCents > b.valueCents ? -1 : 1) : (a.ticker ?? a.name) < (b.ticker ?? b.name) ? -1 : 1));
 
-  const weighted = ppmWeighted(rows.map((r) => ({ valueCents: r.valueCents, ppm: r.expenseRatioPpm, type: r.type })));
+  // The expense ratio and concentration weigh what is held: a negative cash row (a margin debit,
+  // audit decision A1) is left out of both, so neither can exceed what the holdings themselves say.
+  const held = rows.filter((r) => r.valueCents > 0n);
+  const grossCents = held.reduce((acc, r) => acc + r.valueCents, 0n);
+  const weighted = ppmWeighted(held.map((r) => ({ valueCents: r.valueCents, ppm: r.expenseRatioPpm, type: r.type })));
+  const selected = ctx.accounts.filter((a) => !accountIds || accountIds.has(a.id));
+  const scope = accountIds === undefined ? "your portfolio" : selected.length === 1 ? selected[0]!.name : "the selected accounts";
   const concentration: ConcentrationWarningRecord[] = [];
-  for (const r of rows) {
-    if (r.weightBp === null) continue;
-    if (r.type === "stock" && r.weightBp >= CONCENTRATION_WARN_BP) {
-      const bad = r.weightBp >= CONCENTRATION_BAD_BP;
+  for (const r of held) {
+    const weightBp = bp(r.valueCents, grossCents);
+    if (weightBp === null || r.securityId === null) continue;
+    if (r.type === "stock" && weightBp >= CONCENTRATION_WARN_BP) {
+      const bad = weightBp >= CONCENTRATION_BAD_BP;
       concentration.push({
         level: bad ? "bad" : "warn",
         securityId: r.securityId,
         ticker: r.ticker,
-        weightBp: r.weightBp,
+        weightBp,
         thresholdBp: bad ? CONCENTRATION_BAD_BP : CONCENTRATION_WARN_BP,
-        message: `${r.ticker ?? r.name} is ${formatBp(r.weightBp)} of your portfolio (individual stock; flagged above ${bad ? "25" : "10"}%)`,
+        message: `${r.ticker ?? r.name} is ${formatBp(weightBp)} of ${scope} (individual stock; flagged above ${bad ? "25" : "10"}%)`,
       });
-    } else if ((r.type === "etf" || r.type === "fund") && r.weightBp >= CONCENTRATION_FUND_BP) {
-      concentration.push({ level: "info", securityId: r.securityId, ticker: r.ticker, weightBp: r.weightBp, thresholdBp: CONCENTRATION_FUND_BP, message: `${r.ticker ?? r.name} is ${formatBp(r.weightBp)} of your portfolio: most of the portfolio is one fund; fine for a total-market fund` });
+    } else if ((r.type === "etf" || r.type === "fund") && weightBp >= CONCENTRATION_FUND_BP) {
+      concentration.push({
+        level: "info",
+        securityId: r.securityId,
+        ticker: r.ticker,
+        weightBp,
+        thresholdBp: CONCENTRATION_FUND_BP,
+        message: `${r.ticker ?? r.name} is ${formatBp(weightBp)} of ${scope}: most of ${accountIds === undefined ? "the portfolio" : "it"} is one fund; fine for a total-market fund`,
+      });
     }
   }
-  const selected = ctx.accounts.filter((a) => !accountIds || accountIds.has(a.id));
-  const warnings: string[] = [];
-  if (residualCents !== 0n && ctx.cashSecurityId === null) warnings.push("Inferred cash has no cash security row yet; it is counted in residualCents only");
   return {
     today: ctx.today,
     asOf: ctx.asOf,
@@ -1240,7 +1309,7 @@ export function holdingsOf(ctx: InvestmentContext, accountIds?: ReadonlySet<stri
     concentration,
     excludedAccounts: selected.filter((a) => !a.classified).map((a) => ({ ...a.ref, cents: a.valuation.valueCents })),
     accountWarnings: selected.flatMap((a) => a.warnings),
-    warnings,
+    warnings: [],
   };
 }
 
@@ -1384,7 +1453,7 @@ export async function getPortfolio(db: DbOrTx, q: PortfolioQueryInput): Promise<
     warnings.push(`The value series starts ${seriesFrom}; at most ${MAX_SERIES_DAYS} days are charted`);
   }
   const weekly = dayDiff(seriesFrom, asOf) > 400;
-  const series = await valuationSeries(db, { from: seriesFrom, to: asOf, today: q.today, now: q.now, accountIds: ids, step: weekly ? "week" : "day" });
+  const series = await valuationSeries(db, { from: seriesFrom, to: asOf, today: q.today, now: q.now, accountIds: ids, ...(q.includeClosed ? { includeClosed: true } : {}), step: weekly ? "week" : "day" });
   const seriesRecord: ValueSeriesRecord = {
     dates: series.dates,
     step: weekly ? 7 : 1,

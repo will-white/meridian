@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, gte, inArray, lte, ne, notExists, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, lte, min, ne, notExists, sql } from "drizzle-orm";
 import {
   addDays,
   addMonthsClamped,
@@ -7,6 +7,7 @@ import {
   incomeByMonth,
   isInvestmentAccountType,
   monthKey,
+  monthRange,
   periodStart,
   truncDiv,
   type IncomeKind,
@@ -165,9 +166,11 @@ export async function loadIncomeRows(db: DbOrTx, accounts: readonly IncomeAccoun
   const rows: IncomeRowRecord[] = txnRows.map((r) => {
     const acct = byId.get(r.accountId)!;
     const kind: IncomeKind = r.type === "interest" || (r.securityType !== null && INTEREST_SECURITY_TYPES.has(r.securityType)) ? "interest" : "dividend";
+    const isReinvested = r.type === "dividend" && reinvested.has(reinvestKey(r.accountId, r.securityId, r.date));
     let linkStatus: LinkStatus;
     if (r.ledgerTransactionId !== null && r.ledgerSource !== null) linkStatus = r.ledgerSource === "investment" ? "created" : "linked";
-    else linkStatus = acct.investmentIncomeFeed === "off" ? "not_fed" : "awaiting";
+    // A reinvested dividend is never fed (no cash arrived), so it is not awaiting anything.
+    else linkStatus = acct.investmentIncomeFeed === "off" || isReinvested ? "not_fed" : "awaiting";
     return {
       id: r.id,
       date: r.date,
@@ -178,7 +181,7 @@ export async function loadIncomeRows(db: DbOrTx, accounts: readonly IncomeAccoun
       ticker: r.ticker,
       kind,
       cents: r.amountCents,
-      reinvested: r.type === "dividend" && reinvested.has(reinvestKey(r.accountId, r.securityId, r.date)),
+      reinvested: isReinvested,
       source: "investment_txn",
       ledgerTransactionId: r.ledgerTransactionId,
       linkStatus,
@@ -222,6 +225,30 @@ export async function loadIncomeRows(db: DbOrTx, accounts: readonly IncomeAccoun
     }
   }
   return rows.sort(compareRows);
+}
+
+/**
+ * The earliest income row of `accounts` (a dividend or interest row, or a ledger row in the feed
+ * category), or null. The Income view's `all` starts the day before it when that is earlier than
+ * the first value: an activity export can predate the first statement (audit decision A14).
+ */
+export async function firstIncomeDate(db: DbOrTx, accountIds: readonly string[], feedCategoryId: string | null): Promise<IsoDate | null> {
+  const ids = [...new Set(accountIds)];
+  if (ids.length === 0) return null;
+  const [txn] = await db
+    .select({ first: min(investmentTxn.date) })
+    .from(investmentTxn)
+    .where(and(inArray(investmentTxn.accountId, ids), inArray(investmentTxn.type, ["dividend", "interest"])));
+  let first: IsoDate | null = txn?.first ?? null;
+  if (feedCategoryId !== null) {
+    const [ledger] = await db
+      .select({ first: min(transaction.date) })
+      .from(transaction)
+      .where(and(inArray(transaction.accountId, ids), eq(transaction.categoryId, feedCategoryId), eq(transaction.isTransfer, false), eq(transaction.pending, false), ne(transaction.source, "investment")));
+    const l = ledger?.first ?? null;
+    if (l !== null && (first === null || l < first)) first = l;
+  }
+  return first;
 }
 
 // ---- The view ----
@@ -304,8 +331,16 @@ export async function getInvestmentIncome(db: DbOrTx, q: IncomeQueryInput): Prom
   const ids = accounts.map((a) => a.id);
   const fidelities = await accountFidelities(db, ids);
   const firsts = await firstDataDates(db, ids, fidelities);
-  const period = periodBounds(q.period ?? "ytd", asOf, earliestDataDate(firsts), { from: q.from ?? null, to: q.to ?? null, today: q.today });
   const feed = await feedCategory(db);
+  // Income is not bound to the first value: `all` covers every income row (rows are read in
+  // (from, to], so it starts the day before the first one), and `partial` compares with the
+  // earlier of the first value and the first income row.
+  const kind = q.period ?? "ytd";
+  const earliestData = earliestDataDate(firsts);
+  const firstIncome = await firstIncomeDate(db, ids, feed.id);
+  const beforeFirstIncome = firstIncome === null ? null : addDays(firstIncome, -1);
+  const earliest = kind === "all" ? (beforeFirstIncome !== null && (earliestData === null || beforeFirstIncome < earliestData) ? beforeFirstIncome : earliestData) : firstIncome !== null && (earliestData === null || firstIncome < earliestData) ? firstIncome : earliestData;
+  const period = periodBounds(kind, asOf, earliest, { from: q.from ?? null, to: q.to ?? null, today: q.today });
   const warnings: string[] = [];
 
   const infos: IncomeAccountInfo[] = accounts.map((a) => ({ id: a.id, name: a.name, investmentIncomeFeed: a.investmentIncomeFeed }));
@@ -342,6 +377,9 @@ export async function getInvestmentIncome(db: DbOrTx, q: IncomeQueryInput): Prom
     row.securities.set(secKey, sec);
     row.accounts.set(r.accountId, (row.accounts.get(r.accountId) ?? 0n) + r.cents);
   }
+  // Every month of the period is listed, months without income as zeros, so the chart and the
+  // table show the gaps (views design §5).
+  if (period && period.from < period.to) for (const m of monthRange(monthKey(addDays(period.from, 1)), monthKey(period.to))) monthOf(m);
   const monthList: IncomeMonthRecord[] = [...months.values()]
     .sort((a, b) => (a.month < b.month ? -1 : 1))
     .map((m) => ({
@@ -505,11 +543,44 @@ async function deleteStaleSyntheticRows(tx: DbOrTx, accountId: string): Promise<
   return deleted.length;
 }
 
+/**
+ * Delete the unlocked synthetic rows of dividends that were reinvested: a `reinvest` row for the
+ * same account, security and date says no cash arrived, so the dividend is not plan income
+ * (views design D15, plan decision 13; audit decision A12). The link clears by `ON DELETE SET
+ * NULL`. A bank row linked to such a dividend is the owner's and is left alone, as is a synthetic
+ * row whose category the owner locked. Called by every feed pass and by the investment-transaction
+ * writers, so a reinvest row recorded after its dividend was fed takes the row out at once.
+ */
+export async function unfeedReinvestedDividends(tx: DbOrTx, accountIds: readonly string[]): Promise<number> {
+  const ids = [...new Set(accountIds)];
+  if (ids.length === 0) return 0;
+  const deleted = await tx
+    .delete(transaction)
+    .where(
+      and(
+        inArray(transaction.accountId, ids),
+        eq(transaction.source, "investment"),
+        eq(transaction.categoryLocked, false),
+        sql`exists (
+          select 1 from ${investmentTxn} d
+          where d.ledger_transaction_id = ${transaction.id}
+            and d.type = 'dividend'
+            and exists (
+              select 1 from ${investmentTxn} r
+              where r.account_id = d.account_id and r.type = 'reinvest' and r.date = d.date and r.security_id is not distinct from d.security_id
+            )
+        )`,
+      ),
+    )
+    .returning({ id: transaction.id });
+  return deleted.length;
+}
+
 /** One account's feed pass (the caller owns the transaction). */
 export async function feedAccount(tx: DbOrTx, acct: { id: string; investmentIncomeFeed: InvestmentIncomeFeed }, feedCategoryId: string, now: Date = new Date()): Promise<IncomeFeedCounts> {
   const counts = zeroCounts();
   if (acct.investmentIncomeFeed === "off") return counts;
-  counts.deleted = await deleteStaleSyntheticRows(tx, acct.id);
+  counts.deleted = (await deleteStaleSyntheticRows(tx, acct.id)) + (await unfeedReinvestedDividends(tx, [acct.id]));
   const reinvested = await loadReinvestKeys(tx, [acct.id], null, null);
   const candidates = await tx
     .select({

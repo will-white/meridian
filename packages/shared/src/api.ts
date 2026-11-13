@@ -1982,6 +1982,8 @@ export const PortfolioDayChangeView = DayChangeView.extend({
   /** True when any selected account was excluded. */
   partial: z.boolean(),
   excluded: z.array(z.object({ accountId: z.string().uuid(), reason: z.string() })),
+  /** The oldest prior close the change is measured from when it is older than `prior` (carried: no close that day), with the carried closes' sources; else null (audit decision A16). */
+  carriedPrior: z.object({ date: IsoDateString, sources: z.array(HoldingPriceSource) }).nullable(),
 });
 export const StalestPriceView = z.object({ securityId: z.string().uuid(), priceDate: IsoDateString, tradingDaysBehind: z.number().int() });
 /** An investment account valued on a date by the one chain (`valueAccountOn`, plan decision 8). */
@@ -2230,7 +2232,7 @@ export const PortfolioAccountView = AccountRef.merge(ValuationRef).extend({
   holdingsCount: z.number().int(),
   /** Reported cash lines. */
   cashCents: CentsString.nullable(),
-  /** The `cash_plug` and `carried_flows` lines ("Cash (from balance)"). */
+  /** The inferred cash lines (no security): the balance plug "Cash (from balance)", carried transfers and the lots basis' "Cash (from trades)". */
   residualCents: CentsString.nullable(),
   closed: z.boolean(),
   investmentIncomeFeed: InvestmentIncomeFeed,
@@ -2334,6 +2336,10 @@ export const AllocationView = z.object({
 export const HoldingsQuery = AsOfQuery.extend({ accountId: z.string().uuid().optional() });
 export const HoldingAccountView = AccountRef.extend({
   kind: LineKind,
+  /** The line's name: the security's, or an inferred line's ("Cash (from balance)", "Cash (from trades)", "Transfers since …"). */
+  lineName: z.string(),
+  /** An inferred cash line (no security: the balance plug, the trades' cash, carried transfers), not a reported position. */
+  inferred: z.boolean(),
   quantity: Fixed8String.nullable(),
   valueCents: CentsString,
   costBasisCents: CentsString.nullable(),
@@ -2348,6 +2354,9 @@ export const HoldingAccountView = AccountRef.extend({
 });
 /** One security across accounts (plan decision 16). */
 export const HoldingRowView = SecurityRef.extend({
+  /** Null only for the inferred-cash row of a household that has no cash security yet (audit decision A13). */
+  securityId: z.string().uuid().nullable(),
+  /** For cash, the whole value in units (a dollar a unit), inferred lines included. */
   quantity: Fixed8String.nullable(),
   price: Fixed8String.nullable(),
   priceDate: IsoDateString.nullable(),
@@ -2368,6 +2377,7 @@ export const ConcentrationWarningView = z.object({
   level: ConcentrationLevel,
   securityId: z.string().uuid(),
   ticker: z.string().nullable(),
+  /** Of the holdings' gross value (a negative cash row left out); equals the row's weight without one. */
   weightBp: BpInt,
   thresholdBp: BpInt,
   message: z.string(),
@@ -2379,7 +2389,7 @@ export const HoldingsView = z.object({
   totalCents: CentsString,
   holdingsCents: CentsString,
   cashCents: CentsString,
-  /** The `cash_plug` and `carried_flows` lines ("Cash (from balance)"). */
+  /** The inferred cash lines (no security): the balance plug "Cash (from balance)", carried transfers and the lots basis' "Cash (from trades)". */
   residualCents: CentsString,
   rows: z.array(HoldingRowView),
   weightedExpenseRatio: WeightedExpenseRatioView,

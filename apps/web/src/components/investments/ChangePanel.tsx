@@ -15,7 +15,9 @@ type WindowKind = "day" | "period";
 /**
  * "Why did it change" (views design §3.9, plan decision 12): the Portfolio
  * row's change attributed through GET /investments/accounts/:id/changes for
- * the day (prior close → as-of) or the period: per holding the price effect
+ * the day (the prior close → the close the day change was measured at) or
+ * the period (its last five years when longer; the window's note says so):
+ * per holding the price effect
  * (`mulToCents(qFrom, pTo) − vFrom`) and the quantity effect (the rest of the
  * holding's Δ), the "cash & other" residual line, the external flows with
  * links, the income rows, and the uncategorized-rows note linking to the
@@ -57,6 +59,7 @@ export function ChangePanel({ account, windows, today }: { account: Pick<Portfol
         {c && <span className={changeTone(c.summary.changeCents)}>{changeSentence(c.summary)}</span>}
         {c?.summary.growthReason && <span className="muted small">{growthReasonText(c.summary.growthReason)}</span>}
       </div>
+      {w?.note && <p className="muted small pf-why-note">{w.note}</p>}
       <ErrorText error={changes.error} />
       {w === null && <p className="muted small">Nothing to explain yet: the day needs a prior close and the period a value at its start.</p>}
       {w !== null && !c && changes.isLoading && <p className="muted small">Attributing…</p>}

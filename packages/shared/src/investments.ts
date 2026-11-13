@@ -11,6 +11,7 @@ import {
   type ReturnFailureReason,
   type SecurityType,
 } from "./enums.js";
+import type { EngineWarning } from "./lots.js";
 import { addMonthsClamped } from "./months.js";
 import { sanitizeText } from "./sanitize.js";
 
@@ -259,6 +260,78 @@ export function periodStart(period: InvestmentPeriod, end: IsoDate, opts: Period
       return opts.earliest ?? null;
     case "custom":
       return opts.from ?? null;
+  }
+}
+
+// ---- Readable engine warnings ----
+
+function centsText(cents: bigint): string {
+  const abs = cents < 0n ? -cents : cents;
+  return `${cents < 0n ? "-" : ""}$${(abs / 100n).toLocaleString("en-US")}.${(abs % 100n).toString().padStart(2, "0")}`;
+}
+
+/**
+ * An engine warning as a sentence for the owner (views design §3.12 and §5: "warnings as the
+ * engine area's readable strings"): what happened, to which security and when, and what to do
+ * where there is something to do. `securityName` names a security id (its ticker or name); an
+ * unknown id reads "a security". The failure reasons that are also warning codes read as
+ * `returnReasonText` does. Audit decision A15.
+ */
+export function engineWarningSentence(w: EngineWarning, securityName: (securityId: string) => string | null = () => null): string {
+  const text = warningSentence(w, securityName);
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function warningSentence(w: EngineWarning, securityName: (securityId: string) => string | null): string {
+  const sec = w.securityId !== undefined ? (securityName(w.securityId) ?? "a security") : "a security";
+  const on = w.date !== undefined ? ` on ${w.date}` : "";
+  const qty = w.quantity !== undefined ? formatFixed8(w.quantity < 0n ? -w.quantity : w.quantity) : null;
+  switch (w.code) {
+    case "bad_quantity":
+      return `A ${sec} transaction${on} has no usable share quantity and was left out of the lots; correct its quantity.`;
+    case "buy_amount_sign":
+      return `A purchase of ${sec}${on} is recorded as money coming in${w.diffCents !== undefined ? ` (${centsText(w.diffCents)})` : ""}; it was counted as paid. Check the sign of its amount.`;
+    case "amount_missing":
+      return `A ${sec} trade${on} has no amount and no price to work one out; it was counted as $0.00.`;
+    case "amount_mismatch":
+      return `A ${sec} trade's amount differs from shares × price${w.diffCents !== undefined ? ` by ${centsText(w.diffCents)}` : ""}; the amount was used.`;
+    case "basis_unknown":
+      return `${qty !== null ? `${qty} shares of ${sec}` : `Shares of ${sec}`} arrived without a cost basis; their gain is unknown until the basis is entered on the transfer.`;
+    case "needs_lot_pick":
+      return `A sale of ${sec} names no lots; the oldest lots were used (first in, first out).`;
+    case "pick_unavailable":
+      return `A sale of ${sec} picks a lot that is not open on its date; the oldest lots were used instead.`;
+    case "pick_exceeds_lot":
+      return `A sale of ${sec} takes more from a lot than the lot holds; only what it holds was taken.`;
+    case "pick_exceeds_sale":
+      return `The lots picked for a sale of ${sec} add up to more than the sale; the extra was ignored.`;
+    case "oversell":
+      return `A sale of ${sec}${on} is larger than the shares held${qty !== null ? ` by ${qty}` : ""}; the trade history is missing a purchase or a transfer in.`;
+    case "cash_transfer_in_txns":
+      return `A cash transfer${on} is in the trade history; it counts as a contribution or withdrawal, not a trade.`;
+    case "price_from_txn":
+      return `${sec} has no market close${on}; a trade's price was used.`;
+    case "stale_price":
+      return `${sec} is valued${on} with an older close${w.priceDate !== undefined ? ` (${w.priceDate})` : ""}.`;
+    case "no_price":
+      return `${sec} has no price on or before ${w.date ?? "the date"}; it is left out of the value.`;
+    case "securities_flow_unpriced":
+      return `Shares of ${sec} moved in or out${on} without a price to value the move; the move is counted at $0.00.`;
+    case "valuation_carried":
+      return `No value is recorded${on}; the latest earlier statement or balance was carried to it.`;
+    case "flow_before_first_valuation":
+      return `A transfer${on} came before the account's first value and is counted in its opening value.`;
+    case "position_mismatch":
+      return `The trade history gives ${w.lotsQuantity !== undefined ? formatFixed8(w.lotsQuantity) : "a different number of"} shares of ${sec}, the ${w.date ?? "latest"} statement ${w.snapshotQuantity !== undefined ? formatFixed8(w.snapshotQuantity) : "another number"}; the statement's shares are used until the trades explain it.`;
+    case "multiple_roots":
+      return "More than one rate fits these cash flows; the money-weighted return shown is one of them.";
+    case "statement_mismatch":
+      return `The value on ${w.date ?? "the statement date"} differs from the statement${w.diffCents !== undefined ? ` by ${centsText(w.diffCents)}` : ""}; reconcile the account.`;
+    case "zero_denominator":
+    case "negative_capital":
+    case "no_benchmark_price":
+    case "no_valuations":
+      return returnReasonText(w.code, w.date ?? null);
   }
 }
 

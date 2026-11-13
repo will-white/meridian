@@ -67,7 +67,7 @@ describe.skipIf(!TEST_DATABASE_URL)("investment view routes", () => {
     const { res, view } = await get<PortfolioView>(`/api/investments/portfolio?today=${TODAY}&period=1y`);
     expect(view).toMatchObject({ today: TODAY, asOf: "2026-10-13", totalCents: "4525200", fidelityCounts: { balance_only: 0, positions: 1, full_history: 1 } });
     expect(view.period).toEqual({ kind: "1y", from: "2025-10-13", to: "2026-10-13", days: 365, partial: false, note: null });
-    expect(view.dayChange).toEqual({ cents: "36000", asOf: "2026-10-13", prior: "2026-10-12", reason: null, bp: 80, partial: false, excluded: [] });
+    expect(view.dayChange).toEqual({ cents: "36000", asOf: "2026-10-13", prior: "2026-10-12", reason: null, bp: 80, partial: false, excluded: [], carriedPrior: null });
     expect(view.periodChange).toEqual({
       from: "2025-10-13",
       to: "2026-10-13",
@@ -394,14 +394,20 @@ describe.skipIf(!TEST_DATABASE_URL)("investment view routes", () => {
     const { view } = await get<IncomeView>(`/api/investments/income?today=${TODAY}`);
     expect(view).toMatchObject({ today: TODAY, asOf: "2026-10-13", trailing12mCents: "32435", yieldBp: 71, rowsTruncated: false, warnings: [] });
     expect(view.period).toEqual({ kind: "ytd", from: "2025-12-31", to: "2026-10-13", days: 286, partial: false, note: null });
+    // Every month of the period, months without income as zeros (audit b6-15).
     expect(view.months.map((m) => [m.month, m.dividendsCents, m.interestCents, m.feesCents, m.reinvestedCents, m.totalCents])).toEqual([
+      ["2026-01", "0", "0", "0", "0", "0"],
+      ["2026-02", "0", "0", "0", "0", "0"],
       ["2026-03", "8360", "0", "0", "0", "8360"],
+      ["2026-04", "0", "0", "0", "0", "0"],
+      ["2026-05", "0", "0", "0", "0", "0"],
       ["2026-06", "4720", "0", "0", "0", "4720"],
+      ["2026-07", "0", "0", "0", "0", "0"],
       ["2026-08", "2890", "0", "0", "0", "2890"],
       ["2026-09", "13775", "410", "0", "0", "14185"],
       ["2026-10", "2280", "0", "0", "0", "2280"],
     ]);
-    expect(view.months[3]!.bySecurity.map((s) => [s.ticker, s.cents])).toEqual([
+    expect(view.months.find((m) => m.month === "2026-09")!.bySecurity.map((s) => [s.ticker, s.cents])).toEqual([
       ["VTI", "7365"],
       ["VXUS", "4150"],
       ["BND", "2260"],

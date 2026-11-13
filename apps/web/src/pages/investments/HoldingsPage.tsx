@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
-import { isInvestmentAccountType, parseFixed8 } from "@meridian/shared";
+import { parseFixed8 } from "@meridian/shared";
 import type { AccountView, BasisSource, HoldingRowView, HoldingsView } from "@meridian/shared";
 import { api, query } from "../../lib/api.js";
 import { money, shortDate, titleCase } from "../../lib/format.js";
@@ -9,15 +9,19 @@ import { localToday } from "../../lib/plan.js";
 import {
   asOfFromParams,
   assetClassLabel,
+  canEditSecurityClass,
+  cashStatText,
   changeTone,
   concentrationTone,
   coverageLabel,
   formatBp,
   formatPpm,
   formatQuantity,
+  holdingLineLabel,
+  holdingRowKey,
+  investmentAccountOptions,
   priceSourceLabel,
   signedMoney,
-  unlistedCashText,
   splitLabel,
 } from "../../lib/investments.js";
 import { Badge, Card, Empty, ErrorText } from "../../components/ui.js";
@@ -57,7 +61,7 @@ export function HoldingsPage() {
   });
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api<AccountView[]>("/accounts"), staleTime: INVESTMENTS_STALE_MS });
   const h = holdings.data;
-  const investmentAccounts = useMemo(() => (accounts.data ?? []).filter((a) => isInvestmentAccountType(a.type) && !a.closed), [accounts.data]);
+  const investmentAccounts = useMemo(() => investmentAccountOptions(accounts.data ?? []), [accounts.data]);
 
   const selectAccount = (id: string) =>
     setSearchParams(
@@ -79,6 +83,7 @@ export function HoldingsPage() {
 
   const noAccounts = h ? h.rows.length === 0 && h.excludedAccounts.length === 0 && investmentAccounts.length === 0 && accounts.data !== undefined : false;
   const coveredBp = h?.weightedExpenseRatio.coveredBp ?? null;
+  const cashStat = h ? cashStatText(h.cashCents, h.residualCents) : null;
 
   return (
     <>
@@ -135,8 +140,8 @@ export function HoldingsPage() {
               </div>
               <div className="inv-stat">
                 <span className="k">Cash</span>
-                <span className="v">{money(h.cashCents)}</span>
-                {unlistedCashText(h.residualCents) !== null && <span className="sub">{unlistedCashText(h.residualCents, "from balance (not in the positions list)")}</span>}
+                <span className="v">{money(cashStat!.totalCents)}</span>
+                {cashStat!.sub !== null && <span className="sub">{cashStat!.sub}</span>}
               </div>
               <div className="inv-stat">
                 <span className="k">Weighted expense ratio</span>
@@ -163,9 +168,20 @@ export function HoldingsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {h.rows.map((r) => (
-                    <HoldingRows key={r.securityId} r={r} open={expanded.has(r.securityId)} onToggle={() => toggle(r.securityId)} editing={editing === r.securityId} onEdit={viewer ? null : (on) => setEditing(on ? r.securityId : null)} />
-                  ))}
+                  {h.rows.map((r) => {
+                    const key = holdingRowKey(r);
+                    const security = r.securityId === null ? null : { ...r, securityId: r.securityId };
+                    return (
+                      <HoldingRows
+                        key={key}
+                        r={r}
+                        open={expanded.has(key)}
+                        onToggle={() => toggle(key)}
+                        editing={editing === key}
+                        editor={security !== null && canEditSecurityClass(r, viewer) ? { security, onEdit: (on) => setEditing(on ? key : null) } : null}
+                      />
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -175,7 +191,7 @@ export function HoldingsPage() {
                   <li key={c.securityId} className={`tone-${concentrationTone(c.level)}`}>
                     <Badge tone={concentrationTone(c.level)}>{c.level}</Badge> {c.message}{" "}
                     <span className="muted small">
-                      ({formatBp(c.weightBp)} of the classified total; flagged at {formatBp(c.thresholdBp, { places: 0 })})
+                      ({formatBp(c.weightBp)} of the holdings shown; flagged at {formatBp(c.thresholdBp, { places: 0 })})
                     </span>
                   </li>
                 ))}
@@ -196,7 +212,13 @@ export function HoldingsPage() {
 
 const TYPE_LABELS: Record<HoldingRowView["type"], string> = { stock: "stock", etf: "ETF", fund: "fund", bond: "bond", cash: "cash", cd: "CD", other: "other" };
 
-function HoldingRows({ r, open, onToggle, editing, onEdit }: { r: HoldingRowView; open: boolean; onToggle: () => void; editing: boolean; onEdit: ((on: boolean) => void) | null }) {
+/** A security's class editor: offered to owners for every security but cash (always class cash, never split). */
+interface ClassEditor {
+  security: HoldingRowView & { securityId: string };
+  onEdit: (on: boolean) => void;
+}
+
+function HoldingRows({ r, open, onToggle, editing, editor }: { r: HoldingRowView; open: boolean; onToggle: () => void; editing: boolean; editor: ClassEditor | null }) {
   const split = splitLabel(r.splits);
   const sources = r.accounts.map((a) => a.basisSource).filter((b): b is BasisSource => b !== null);
   const basisSource: BasisSource | null = sources.length === 0 ? null : sources.every((b) => b === "statement") ? "statement" : "lots";
@@ -240,17 +262,17 @@ function HoldingRows({ r, open, onToggle, editing, onEdit }: { r: HoldingRowView
           <button type="button" className="link small" onClick={onToggle}>
             {open ? "hide" : `${r.accounts.length} account${r.accounts.length === 1 ? "" : "s"}`}
           </button>
-          {onEdit && (
-            <button type="button" className="link small" onClick={() => onEdit(!editing)}>
+          {editor && (
+            <button type="button" className="link small" onClick={() => editor.onEdit(!editing)}>
               {editing ? "cancel" : "class"}
             </button>
           )}
         </td>
       </tr>
-      {editing && onEdit && (
+      {editing && editor && (
         <tr className="inv-detail">
           <td colSpan={span}>
-            <SecurityAllocationEditor security={r} onClose={() => onEdit(false)} />
+            <SecurityAllocationEditor security={editor.security} onClose={() => editor.onEdit(false)} />
           </td>
         </tr>
       )}
@@ -260,8 +282,7 @@ function HoldingRows({ r, open, onToggle, editing, onEdit }: { r: HoldingRowView
             <td>
               {a.accountName}
               <FidelityBadge fidelity={a.fidelity} fidelityNote={a.fidelityNote} accountId={a.accountId} />
-              {a.kind === "cash" && <span className="muted small"> · reported</span>}
-              {(a.kind === "cash_plug" || a.kind === "carried_flows") && <span className="muted small"> · unlisted (balance − positions)</span>}
+              {holdingLineLabel(a) !== null && <span className="muted small"> · {holdingLineLabel(a)}</span>}
               {a.dollarOnly && <Badge tone="neutral">value only</Badge>}
             </td>
             <td className="num">{a.quantity === null ? <span className="muted">value only</span> : formatQuantity(a.quantity, 4)}</td>

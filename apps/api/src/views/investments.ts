@@ -14,7 +14,7 @@ import type {
   SnapshotSummaryView,
   TradesImportResult,
 } from "@meridian/shared";
-import { formatFixed8, type ActionFound, type EngineWarning, type Fixed8, type ImportRowError, type IsoDate, type MappedPosition, type MappedTrade } from "@meridian/shared";
+import { engineWarningSentence, formatFixed8, type ActionFound, type EngineWarning, type Fixed8, type ImportRowError, type IsoDate, type MappedPosition, type MappedTrade } from "@meridian/shared";
 import type {
   AllocationTargetsRecord,
   HoldingSnapshotRecord,
@@ -214,12 +214,9 @@ export function toRowErrors(errors: readonly ImportRowError[]): Array<{ rowIndex
   return errors.map((e) => ({ rowIndex: e.rowIndex, message: e.message }));
 }
 
-/** A readable line for an engine warning returned by an import (the preview has no row to attach it to). */
-export function engineWarningText(w: EngineWarning): string {
-  const parts: string[] = [w.code];
-  if (w.detail) parts.push(w.detail);
-  else if (w.date) parts.push(w.date);
-  return parts.join(": ");
+/** A readable line for an engine warning (an import's rebuild, the Performance page): the shared sentence, never the code. */
+export function engineWarningText(w: EngineWarning, securityName?: (securityId: string) => string | null): string {
+  return engineWarningSentence(w, securityName);
 }
 
 export interface PositionsImportOutcome {

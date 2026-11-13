@@ -44,7 +44,7 @@ describe.skipIf(!TEST_DATABASE_URL)("valuation routes", () => {
     expect(res.statusCode, res.body).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
     expect(view).toMatchObject({ asOf: "2026-10-13", today: TODAY, expectedDate: "2026-10-13", totalCents: "4525200", partial: false, missing: [], priceStatus: "implied" });
-    expect(view.dayChange).toEqual({ cents: "36000", asOf: "2026-10-13", prior: "2026-10-12", reason: null, bp: 80, partial: false, excluded: [] });
+    expect(view.dayChange).toEqual({ cents: "36000", asOf: "2026-10-13", prior: "2026-10-12", reason: null, bp: 80, partial: false, excluded: [], carriedPrior: null });
     expect(view.periodChange).toEqual({
       period: "1y",
       from: "2025-10-13",
