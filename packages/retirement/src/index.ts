@@ -103,8 +103,19 @@ export type {
 } from "./strategies/index.js";
 export { EngineInputError, EngineInvariantError, EngineRuntimeError } from "./errors.js";
 export type { EngineRuntimeCode } from "./errors.js";
-export { TAX_DATA_FIRST_YEAR, TaxDataError, fullRetirementAgeTable, listTaxRuleSets, loadTaxData, pendingLimits, taxDataStale } from "./tax/index.js";
-export type { TaxData, TaxDataErrorCode } from "./tax/index.js";
+export {
+  TAX_DATA_FIRST_YEAR, TaxDataError, fullRetirementAgeTable, listTaxRuleSets, loadTaxData, pendingLimits, taxDataStale, buildRulesView, federalTaxPreview,
+  contributionLimit, NOT_MODELLED,
+} from "./tax/index.js";
+export type { TaxData, TaxDataErrorCode, ContributionLimitKind, NotModelledEntry, NotModelledId } from "./tax/index.js";
+export {
+  TD, TD_REC, AD, AD_REC, TY, TY_REC, INTEREST_NONE, INTEREST_PRIOR_BILL_PLUS_SPREAD, INTEREST_BILL_RETURN, accountDragOffset,
+  employeeDeferralLimit, annualAdditionsLimit, iraLimit, hsaLimit, hsaMonthsBefore65, employeePayrollTax,
+  TAX_DRAG_CLASSES, BLEND_STOCK, BLEND_BOND, compileTaxDrag, assetClassMapRows, blendTaxDrag, compileAccountTaxDrag, taxableYieldsInto,
+  WN, WN_REC, PATH_WARNING_CODES, PATH_WARNING_SLOTS, resetPathWarnings, noteWarning, createWarningTotals, addPathWarnings, mergeWarningTotals, warningMessages,
+  TAX_FUNCTIONS,
+} from "./tax/index.js";
+export type { TaxDragOverrides, PathWarningCode, WarningTotals, TaxFunctions } from "./tax/index.js";
 export {
   TR, PR, TI, TO, TAX_REC, PROG_REC, TAX_IN, TAX_OUT, taxOffset, progOffset,
   compileTaxLaw, fillPathTables, federalTaxInto, effectiveMarginalRates, assertTaxInput, computeFederalTax, taxYearDetail, TaxInputError,

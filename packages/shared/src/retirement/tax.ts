@@ -286,6 +286,11 @@ export const RetirementRulesView = z.object({
     }),
   ),
   notModelled: z.array(z.object({ id: z.string(), label: z.string(), effect: z.string() })),
+  /**
+   * Each Social Security rule the engine codes, with the weakest verification mark of the figures
+   * it rests on (plan decision 11: `www.ssa.gov` refuses the build environment, so none is primary).
+   */
+  socialSecurityRules: z.array(z.object({ id: z.string(), label: z.string(), status: z.enum(["primary", "secondary", "unverified"]) })),
   sources: z.array(z.object({ file: z.string(), title: z.string(), url: z.string(), retrieved: z.string(), sha256: z.string().nullable() })),
   disclaimer: z.string(),
 });

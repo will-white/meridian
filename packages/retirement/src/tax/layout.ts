@@ -6,8 +6,9 @@
  * functions read and write these slots and allocate nothing (tax-rmd-ss decision 14).
  *
  * Not built here, by the seams' rulings: the taxable-income record `YI` and the six-slot taxable
- * holding (C17: the taxable-account mechanics are the engine's), and the warning slot
- * `CASH_SERIES_MISSING` (C17.6: every return model has a bill series).
+ * holding (C17: the taxable-account mechanics are the engine's; the yields on its three simulated
+ * assets are `AD` and `TY` below), and the warning slot `CASH_SERIES_MISSING` (C17.6: every return
+ * model has a bill series).
  */
 
 // ---------------------------------------------------------------------------------------------
@@ -293,6 +294,73 @@ export const SO = {
   MONTHS_PAID: 8,
 } as const;
 export const SO_REC = 10;
+
+// ---------------------------------------------------------------------------------------------
+// Taxable-account yield assumptions (taxDrag.ts; tax-rmd-ss §2.6 with seams C17 and C18)
+
+/** One asset class's compiled assumptions, `TD_REC` slots per class in `AssetClass` order (`compileTaxDrag`). */
+export const TD = {
+  /** Dividends a year as a fraction of the value. */
+  DIVIDEND_YIELD: 0,
+  /** The qualified fraction of those dividends. */
+  QUALIFIED_SHARE: 1,
+  /** `INTEREST_NONE`, `INTEREST_PRIOR_BILL_PLUS_SPREAD` or `INTEREST_BILL_RETURN` (data, for the rules view). */
+  INTEREST_MODE: 2,
+  /** Added to the previous plan year's bill return to give the interest rate (seams C18). */
+  INTEREST_SPREAD: 3,
+  /** The tax-exempt fraction of the interest. */
+  TAX_EXEMPT_SHARE: 4,
+  /** Long-term gain distributed a year as a fraction of the unrealized gain. */
+  GAIN_DISTRIBUTION: 5,
+} as const;
+export const TD_REC = 6;
+export const INTEREST_NONE = 0;
+export const INTEREST_PRIOR_BILL_PLUS_SPREAD = 1;
+export const INTEREST_BILL_RETURN = 2;
+
+/**
+ * The assumptions of one account in one plan year, blended from the six classes into the simulated
+ * stock and bond assets (seams C17 item 2), `AD_REC` slots at `accountDragOffset(t, a, accounts)`.
+ * The bill asset has none: it earns the whole bill return, taxed the next year (C17 item 5).
+ */
+export const AD = {
+  STOCK_DIVIDEND_YIELD: 0,
+  /** Dividend-weighted. */
+  STOCK_QUALIFIED_SHARE: 1,
+  STOCK_GAIN_DISTRIBUTION: 2,
+  BOND_INTEREST_SPREAD: 3,
+  BOND_TAX_EXEMPT_SHARE: 4,
+  BOND_GAIN_DISTRIBUTION: 5,
+  /** 6, 7 reserved. */
+  RESERVED0: 6,
+} as const;
+export const AD_REC = 8;
+
+/** Offset of account `a`'s record for plan year `t` in a table of `accounts` accounts. */
+export function accountDragOffset(t: number, a: number, accounts: number): number {
+  return (t * accounts + a) * AD_REC;
+}
+
+/** Output of `taxableYieldsInto`: one taxable account's income for the period, dollars. */
+export const TY = {
+  /** Ordinary dividends including the qualified part: to `TI.ORD_DIV`. */
+  DIVIDENDS: 0,
+  /** To `TI.QUAL_DIV`. */
+  QUALIFIED_DIVIDENDS: 1,
+  /** Taxable bond interest: to `TI.INTEREST`. */
+  INTEREST: 2,
+  /** To `TI.TAX_EXEMPT_INTEREST`. */
+  TAX_EXEMPT_INTEREST: 3,
+  /** Long-term gain distributions: to `TI.LT_GAIN`. */
+  GAIN_DISTRIBUTIONS: 4,
+  /** The income reinvested in the stock asset (dividends and its distributions): added to its basis. */
+  STOCK_BASIS_ADD: 5,
+  /** The income reinvested in the bond asset (all its interest and its distributions): added to its basis. */
+  BOND_BASIS_ADD: 6,
+  /** 7 reserved. */
+  RESERVED0: 7,
+} as const;
+export const TY_REC = 8;
 
 /** Warning amounts per path, `Float64Array(WN_REC)` (tax-rmd-ss §3.11; seams C41). */
 export const WN = {
