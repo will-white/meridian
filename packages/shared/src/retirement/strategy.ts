@@ -107,7 +107,8 @@ export const STRATEGY_INFO: Record<StrategyKind, { label: string; summary: strin
 // Shared so the run-settings hints in the browser and the engine's `decideSpending` compute the same
 // percentage. Rates are float64 here (a rate, never money); the power is taken by repeated
 // multiplication in a fixed order (the engine's `powInt`), with no `Math.pow` or `**`, so the result
-// is the same on every platform. Nothing is allocated, so the engine's hook may call it every year.
+// is the same on every platform. `vpwRawPercentageInto` allocates nothing, so the engine's hook
+// calls it every year; `vpwRawPercentage` and `vpwPercentage` wrap it for the browser.
 
 /** VPW's parameters as fractions (0.05 = 5%) and whole ages. */
 export interface VpwParams {
@@ -130,20 +131,41 @@ export function vpwParams(config: Extract<StrategyConfig, { kind: "vpw" }>): Vpw
   };
 }
 
+/** The question `vpwRawPercentageInto` answers: an age attained (whole years) and a stock share (0 to 1). */
+export interface VpwQuery {
+  age: number;
+  stockShare: number;
+}
+
 /**
- * The uncapped VPW percentage at `age` (the younger living person's age attained, a whole number)
- * with `stockShare` (0 to 1) of the target mix in stocks: the payment of an annuity-due on 1,
- * `g ÷ (1 − 1 ÷ (1 + g)^n) ÷ (1 + g)` with `g = stockShare × stockReal + (1 − stockShare) × bondReal`
- * and `n = max(1, lastAge + 1 − age)`; `1 ÷ n` when g is 0.
+ * The uncapped VPW percentage at `q.age` (the younger living person's age attained, a whole number)
+ * with `q.stockShare` (0 to 1) of the target mix in stocks, written to `out.raw`: the payment of an
+ * annuity-due on 1, `g ÷ (1 − 1 ÷ (1 + g)^n) ÷ (1 + g)` with
+ * `g = stockShare × stockReal + (1 − stockShare) × bondReal` and `n = max(1, lastAge + 1 − age)`;
+ * `1 ÷ n` when g is 0.
+ *
+ * This is the one implementation (seams C47). It takes and fills records so that the engine's
+ * spending hook, which must allocate nothing, never passes a double across a call (V8 boxes a
+ * double argument or return value of a call it does not inline).
  */
-export function vpwRawPercentage(age: number, stockShare: number, p: Readonly<VpwParams>): number {
-  const n = Math.max(1, p.lastAge + 1 - age);
-  const g = stockShare * p.stockReal + (1 - stockShare) * p.bondReal;
-  if (g === 0) return 1 / n;
+export function vpwRawPercentageInto(q: Readonly<VpwQuery>, p: Readonly<VpwParams>, out: { raw: number }): void {
+  const n = Math.max(1, p.lastAge + 1 - q.age);
+  const g = q.stockShare * p.stockReal + (1 - q.stockShare) * p.bondReal;
+  if (g === 0) {
+    out.raw = 1 / n;
+    return;
+  }
   const x = 1 + g;
   let growth = 1;
   for (let i = 0; i < n; i++) growth *= x;
-  return g / (1 - 1 / growth) / x;
+  out.raw = g / (1 - 1 / growth) / x;
+}
+
+/** The uncapped VPW percentage (`vpwRawPercentageInto` with a fresh query; for the run-settings hints). */
+export function vpwRawPercentage(age: number, stockShare: number, p: Readonly<VpwParams>): number {
+  const out = { raw: 0 };
+  vpwRawPercentageInto({ age, stockShare }, p, out);
+  return out.raw;
 }
 
 /** The VPW percentage, capped at `maxRate` (the strategy flags `cap` when `vpwRawPercentage` is above it). */
