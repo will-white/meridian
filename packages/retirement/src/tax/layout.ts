@@ -362,6 +362,34 @@ export const TY = {
 } as const;
 export const TY_REC = 8;
 
+// ---------------------------------------------------------------------------------------------
+// Payroll tax and contribution limits (payroll.ts, contributionLimits.ts; tax-rmd-ss §3.10)
+
+/** Output of `employeePayrollTaxInto`: the period's employee payroll tax, dollars. */
+export const PT = {
+  /** OASDI + Medicare + Additional Medicare. */
+  TOTAL: 0,
+  /** 6.2% to the wage base, per worker. */
+  OASDI: 1,
+  /** 1.45% of all wages. */
+  MEDICARE: 2,
+  /** 0.9% of the household's wages over the filing status's threshold. */
+  ADDITIONAL_MEDICARE: 3,
+} as const;
+export const PT_REC = 4;
+
+/** Output of `contributionLimitsInto`: one owner's limits for the period, dollars. */
+export const CL = {
+  /** Elective deferrals, shared by the owner's 401(k) accounts, pre-tax and Roth. */
+  EMPLOYEE_DEFERRAL: 0,
+  /** §415(c) annual additions, employee plus employer. */
+  ANNUAL_ADDITIONS: 1,
+  /** Shared by the owner's IRA and Roth IRA accounts (before the wage cap). */
+  IRA: 2,
+  HSA: 3,
+} as const;
+export const CL_REC = 4;
+
 /** Warning amounts per path, `Float64Array(WN_REC)` (tax-rmd-ss §3.11; seams C41). */
 export const WN = {
   /** The largest amount withheld by the earnings test in one year. */

@@ -685,9 +685,11 @@ describe("A7 staleness and pending limits", () => {
 
 describe("seams §9 item 20: static JSON imports under the repository's toolchain", () => {
   it("the esbuild bundle of scripts/bundle.mjs carries the JSON tables and the generated series", () => {
-    // The bundle keeps zod external (as in production), so it must sit where Node resolves the
-    // package's dependencies: a scratch directory under the package's own node_modules.
-    const cache = join(PACKAGE_DIR, "node_modules", ".cache");
+    // The bundle keeps every npm dependency external (as in production): zod, and the dependencies
+    // of the workspace packages compiled into it (@meridian/shared's re2js since the remediation's
+    // a6 batch). It must sit where Node resolves all of them: @meridian/shared's node_modules holds
+    // zod and shared's own dependencies, and this package may depend on nothing else (plan, L1).
+    const cache = join(PACKAGE_DIR, "..", "shared", "node_modules", ".cache");
     mkdirSync(cache, { recursive: true });
     const dir = mkdtempSync(join(cache, "meridian-bundle-"));
     temps.push(dir);

@@ -13,9 +13,11 @@ export type {
 export {
   TAX_DATA_FIRST_YEAR, listTaxRuleSets, fullRetirementAgeTable, taxDataStale, pendingLimits, buildRulesView, federalTaxPreview,
 } from "./rulesView.js";
-export { contributionLimit, employeeDeferralLimit, annualAdditionsLimit, iraLimit, hsaLimit, hsaMonthsBefore65 } from "./contributionLimits.js";
+export {
+  contributionLimit, contributionLimitsInto, employeeDeferralLimit, annualAdditionsLimit, iraLimit, hsaLimit, hsaMonthsBefore65,
+} from "./contributionLimits.js";
 export type { ContributionLimitKind } from "./contributionLimits.js";
-export { employeePayrollTax } from "./payroll.js";
+export { employeePayrollTax, employeePayrollTaxInto } from "./payroll.js";
 export {
   TAX_DRAG_CLASSES, BLEND_STOCK, BLEND_BOND, compileTaxDrag, assetClassMapRows, blendTaxDrag, compileAccountTaxDrag, taxableYieldsInto,
 } from "./taxDrag.js";
@@ -30,7 +32,7 @@ export { TAX_FUNCTIONS } from "./functions.js";
 export type { TaxFunctions } from "./functions.js";
 export {
   TR, PR, TI, TO, RB, RW, HW, SS, SO, WN, TAX_REC, PROG_REC, TAX_IN, TAX_IN_DOLLAR_SLOTS, TAX_OUT, RB_REC, RW_REC, HW_REC, SS_REC, SO_REC, WN_REC,
-  N_BRACKETS, TD, TD_REC, AD, AD_REC, TY, TY_REC, INTEREST_NONE, INTEREST_PRIOR_BILL_PLUS_SPREAD, INTEREST_BILL_RETURN,
+  N_BRACKETS, TD, TD_REC, AD, AD_REC, TY, TY_REC, PT, PT_REC, CL, CL_REC, INTEREST_NONE, INTEREST_PRIOR_BILL_PLUS_SPREAD, INTEREST_BILL_RETURN,
   STATUS_SINGLE, STATUS_MFJ, taxOffset, progOffset, accountDragOffset,
 } from "./layout.js";
 export type { FilingStatusIndex } from "./layout.js";

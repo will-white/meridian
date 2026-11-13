@@ -109,8 +109,8 @@ export {
 } from "./tax/index.js";
 export type { TaxData, TaxDataErrorCode, ContributionLimitKind, NotModelledEntry, NotModelledId } from "./tax/index.js";
 export {
-  TD, TD_REC, AD, AD_REC, TY, TY_REC, INTEREST_NONE, INTEREST_PRIOR_BILL_PLUS_SPREAD, INTEREST_BILL_RETURN, accountDragOffset,
-  employeeDeferralLimit, annualAdditionsLimit, iraLimit, hsaLimit, hsaMonthsBefore65, employeePayrollTax,
+  TD, TD_REC, AD, AD_REC, TY, TY_REC, PT, PT_REC, CL, CL_REC, INTEREST_NONE, INTEREST_PRIOR_BILL_PLUS_SPREAD, INTEREST_BILL_RETURN, accountDragOffset,
+  contributionLimitsInto, employeeDeferralLimit, annualAdditionsLimit, iraLimit, hsaLimit, hsaMonthsBefore65, employeePayrollTax, employeePayrollTaxInto,
   TAX_DRAG_CLASSES, BLEND_STOCK, BLEND_BOND, compileTaxDrag, assetClassMapRows, blendTaxDrag, compileAccountTaxDrag, taxableYieldsInto,
   WN, WN_REC, PATH_WARNING_CODES, PATH_WARNING_SLOTS, resetPathWarnings, noteWarning, createWarningTotals, addPathWarnings, mergeWarningTotals, warningMessages,
   TAX_FUNCTIONS,

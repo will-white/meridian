@@ -1,9 +1,13 @@
 /**
  * Contribution limits (tax-rmd-ss §3.10, decisions 41 and 42; seams C26; plan decision 5).
  *
- * The hot-path functions read one program record (`p` at offset `o`, filled by `fillPathTables`
- * with the year's published or indexed limits) and return the limit for the plan year's period in
- * dollars. Ages are whole years attained by 31 December (`year − birthYear`, decision 27).
+ * `contributionLimitsInto` reads one program record (`p` at offset `o`, filled by `fillPathTables`
+ * with the year's published or indexed limits) and writes one owner's limits for the plan year's
+ * period into a `CL` record. Ages are whole years attained by 31 December (`year − birthYear`,
+ * decision 27). The loop calls it through `TAX_FUNCTIONS`: an out record, never a returned number,
+ * as the engine's hook rule asks (engine-and-returns §4; V8 boxes a double returned from a call it
+ * does not inline). The scalar functions below give the same figures one at a time, for previews,
+ * the resolver and tests.
  *
  * The period rule (C14, C26 "× f in year 0") is applied here, not by the caller: with
  * `f = periodMonths / 12` (the convention of `TI.YEAR_FRACTION`: a value outside (0, 1) means a full
@@ -16,42 +20,36 @@
  * year).
  *
  * `contributionLimit` is the allocating form for the resolver's `contribution_over_limit` warning
- * (and `PlannerEnv.contributionLimit`): the same functions on a published year's record, in cents.
+ * (and `PlannerEnv.contributionLimit`): the same formulas on a published year's record, in cents.
  */
 
 import { dollarsToCentsBigInt } from "../units.js";
 import { compileTaxLaw, fillYearAtFactors } from "./compile.js";
-import { PR, PROG_REC, TAX_REC } from "./layout.js";
+import { CL, CL_REC, PR, PROG_REC, TAX_REC } from "./layout.js";
 import { MONTHS_65 } from "./penalties.js";
 import { loadTaxData, type TaxData } from "./taxData.js";
 
-/** The year fraction as `TI.YEAR_FRACTION` reads it: a value outside (0, 1) is a full year. */
-function periodFraction(f: number): number {
-  return f > 0 && f < 1 ? f : 1;
-}
-
 /**
- * The elective deferral limit of one owner for the period: `DEFERRAL` plus the catch-up
- * (`CATCHUP6063` at 60 to 63, else `CATCHUP50` from 50), × `f`. One limit is shared by all of the
- * owner's accounts of type `401k`, pre-tax and Roth.
+ * One owner's limits for the period into `out` (`CL`):
+ * - `EMPLOYEE_DEFERRAL`: `DEFERRAL` plus the catch-up (`CATCHUP6063` at 60 to 63, else `CATCHUP50`
+ *   from 50), × `f`; one limit for all of the owner's accounts of type `401k`, pre-tax and Roth;
+ * - `ANNUAL_ADDITIONS`: `ANNUAL_ADD` (employee plus employer, catch-up excluded), × `f`;
+ * - `IRA`: `IRA` plus `IRA_CATCHUP` from 50, × `f`, for the owner's `ira` and `roth` accounts (the
+ *   caller also caps it at the household's wages of the period; no income test, §8.2
+ *   `ira_deduction_limits`);
+ * - `HSA`: (`HSA_FAMILY` or `HSA_SELF`, plus `HSA_CATCHUP` from 55) × `hsaMonths / 12`, where
+ *   `hsaMonths` counts months of this period before 65 (`hsaMonthsBefore65`). The plan does not
+ *   know the coverage tier, so the engine passes `family = true`.
+ * Allocates nothing.
  */
-export function employeeDeferralLimit(p: Float64Array, o: number, age: number, f: number): number {
+export function contributionLimitsInto(p: Float64Array, o: number, age: number, f: number, family: boolean, hsaMonths: number, out: Float64Array): void {
+  const g = f > 0 && f < 1 ? f : 1;
   const catchUp = age >= 60 && age <= 63 ? p[o + PR.CATCHUP6063]! : age >= 50 ? p[o + PR.CATCHUP50]! : 0;
-  return (p[o + PR.DEFERRAL]! + catchUp) * periodFraction(f);
-}
-
-/** The §415(c) annual-additions limit (employee plus employer, catch-up excluded) for the period, × `f`. */
-export function annualAdditionsLimit(p: Float64Array, o: number, f: number): number {
-  return p[o + PR.ANNUAL_ADD]! * periodFraction(f);
-}
-
-/**
- * The IRA limit of one owner for the period: `IRA` plus `IRA_CATCHUP` from 50, × `f`, shared by the
- * owner's accounts of type `ira` and `roth`. The caller also caps it at the household's wages of the
- * period; no income test applies (tax-rmd-ss §8.2 `ira_deduction_limits`).
- */
-export function iraLimit(p: Float64Array, o: number, age: number, f: number): number {
-  return (p[o + PR.IRA]! + (age >= 50 ? p[o + PR.IRA_CATCHUP]! : 0)) * periodFraction(f);
+  out[CL.EMPLOYEE_DEFERRAL] = (p[o + PR.DEFERRAL]! + catchUp) * g;
+  out[CL.ANNUAL_ADDITIONS] = p[o + PR.ANNUAL_ADD]! * g;
+  out[CL.IRA] = (p[o + PR.IRA]! + (age >= 50 ? p[o + PR.IRA_CATCHUP]! : 0)) * g;
+  const hsaBase = family ? p[o + PR.HSA_FAMILY]! : p[o + PR.HSA_SELF]!;
+  out[CL.HSA] = ((hsaBase + (age >= 55 ? p[o + PR.HSA_CATCHUP]! : 0)) * hsaMonths) / 12;
 }
 
 /**
@@ -64,14 +62,33 @@ export function hsaMonthsBefore65(birthIndex: number, periodStart: number, perio
   return m <= 0 ? 0 : m >= periodMonths ? periodMonths : m;
 }
 
-/**
- * The HSA limit of one owner for the period: (`HSA_FAMILY` or `HSA_SELF`, plus `HSA_CATCHUP` from 55)
- * × `monthsBefore65 / 12`, where `monthsBefore65` counts months of this period (`hsaMonthsBefore65`).
- * The plan does not know the coverage tier, so the engine passes `family = true`.
- */
+// ---------------------------------------------------------------------------------------------
+// The scalar forms (tax-rmd-ss §4.1), on one scratch record: previews, the resolver and tests.
+
+const SCRATCH = new Float64Array(CL_REC);
+
+/** `CL.EMPLOYEE_DEFERRAL` of `contributionLimitsInto`. */
+export function employeeDeferralLimit(p: Float64Array, o: number, age: number, f: number): number {
+  contributionLimitsInto(p, o, age, f, true, 0, SCRATCH);
+  return SCRATCH[CL.EMPLOYEE_DEFERRAL]!;
+}
+
+/** `CL.ANNUAL_ADDITIONS` of `contributionLimitsInto`. */
+export function annualAdditionsLimit(p: Float64Array, o: number, f: number): number {
+  contributionLimitsInto(p, o, 0, f, true, 0, SCRATCH);
+  return SCRATCH[CL.ANNUAL_ADDITIONS]!;
+}
+
+/** `CL.IRA` of `contributionLimitsInto`. */
+export function iraLimit(p: Float64Array, o: number, age: number, f: number): number {
+  contributionLimitsInto(p, o, age, f, true, 0, SCRATCH);
+  return SCRATCH[CL.IRA]!;
+}
+
+/** `CL.HSA` of `contributionLimitsInto` (`monthsBefore65` from `hsaMonthsBefore65`). */
 export function hsaLimit(p: Float64Array, o: number, age: number, family: boolean, monthsBefore65: number): number {
-  const base = family ? p[o + PR.HSA_FAMILY]! : p[o + PR.HSA_SELF]!;
-  return ((base + (age >= 55 ? p[o + PR.HSA_CATCHUP]! : 0)) * monthsBefore65) / 12;
+  contributionLimitsInto(p, o, age, 1, family, monthsBefore65, SCRATCH);
+  return SCRATCH[CL.HSA]!;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -108,7 +125,7 @@ export function contributionLimit(year: number, age: number, kind: ContributionL
   if (!Number.isInteger(year)) throw new RangeError(`year must be an integer, got ${year}`);
   if (!Number.isInteger(age) || age < 0) throw new RangeError(`age must be a whole number of years, got ${age}`);
   if (year < data.firstTaxYear || year > data.lastPublishedYear) return null;
-  const p = publishedProgram(data, year);
-  const dollars = kind === "employer_plan" ? employeeDeferralLimit(p, 0, age, 1) : kind === "ira" ? iraLimit(p, 0, age, 1) : hsaLimit(p, 0, age, true, 12);
-  return dollarsToCentsBigInt(dollars);
+  const out = new Float64Array(CL_REC);
+  contributionLimitsInto(publishedProgram(data, year), 0, age, 1, true, 12, out);
+  return dollarsToCentsBigInt(out[kind === "employer_plan" ? CL.EMPLOYEE_DEFERRAL : kind === "ira" ? CL.IRA : CL.HSA]!);
 }

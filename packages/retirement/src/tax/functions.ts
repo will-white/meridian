@@ -7,15 +7,21 @@
  *
  * Every member is pure apart from its `out` arguments, allocates nothing and never throws on finite
  * inputs. Amounts in and out are the period's (seams §2.6): the partial first year is handled inside
- * `federalTaxInto`, `employeePayrollTax`, the limit functions, `requiredMinimumDistribution`,
+ * `federalTaxInto`, `employeePayrollTaxInto`, `contributionLimitsInto`, `requiredMinimumDistribution`,
  * `socialSecurityYear` and `taxableYieldsInto`, so the loop never multiplies or divides by `f`.
+ *
+ * Step 11's members write out records (the engine's hook rule, engine-and-returns §4: V8 boxes a
+ * double returned from a call it does not inline); the payroll tax and the four limits are therefore
+ * `employeePayrollTaxInto` and `contributionLimitsInto` here, and their scalar forms
+ * (`employeePayrollTax`, `employeeDeferralLimit`, …) serve previews and tests. `preTaxPenaltyBase`,
+ * `rothFreeAmount` and `requiredMinimumDistribution` (steps 8 and 9) still return their number.
  */
 
 import { fillPathTables } from "./compile.js";
-import { annualAdditionsLimit, employeeDeferralLimit, hsaLimit, iraLimit } from "./contributionLimits.js";
+import { contributionLimitsInto } from "./contributionLimits.js";
 import { federalTaxInto } from "./federalTax.js";
 import { hsaWithdraw, preTaxPenaltyBase } from "./penalties.js";
-import { employeePayrollTax } from "./payroll.js";
+import { employeePayrollTaxInto } from "./payroll.js";
 import { requiredMinimumDistribution } from "./rmd.js";
 import { rothFreeAmount, rothWithdraw } from "./rothBasis.js";
 import { socialSecurityYear } from "./socialSecurity.js";
@@ -38,13 +44,10 @@ export interface TaxFunctions {
   readonly requiredMinimumDistribution: typeof requiredMinimumDistribution;
   /** The period's Social Security benefits into an `SO` record, never scaled again (socialSecurity.ts; seams C21). */
   readonly socialSecurityYear: typeof socialSecurityYear;
-  /** The period's employee payroll tax (payroll.ts; seams C27). */
-  readonly employeePayrollTax: typeof employeePayrollTax;
-  /** The period's contribution limits (contributionLimits.ts; seams C26). */
-  readonly employeeDeferralLimit: typeof employeeDeferralLimit;
-  readonly annualAdditionsLimit: typeof annualAdditionsLimit;
-  readonly iraLimit: typeof iraLimit;
-  readonly hsaLimit: typeof hsaLimit;
+  /** The period's employee payroll tax into a `PT` record (payroll.ts; seams C27). */
+  readonly employeePayrollTaxInto: typeof employeePayrollTaxInto;
+  /** One owner's contribution limits for the period into a `CL` record (contributionLimits.ts; seams C26). */
+  readonly contributionLimitsInto: typeof contributionLimitsInto;
   /** A taxable account's dividends, interest and gain distributions into a `TY` record (taxDrag.ts; seams C17, C18). */
   readonly taxableYieldsInto: typeof taxableYieldsInto;
 }
@@ -59,10 +62,7 @@ export const TAX_FUNCTIONS: TaxFunctions = Object.freeze({
   hsaWithdraw,
   requiredMinimumDistribution,
   socialSecurityYear,
-  employeePayrollTax,
-  employeeDeferralLimit,
-  annualAdditionsLimit,
-  iraLimit,
-  hsaLimit,
+  employeePayrollTaxInto,
+  contributionLimitsInto,
   taxableYieldsInto,
 });

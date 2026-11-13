@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { PR, progOffset } from "./layout.js";
-import { employeePayrollTax } from "./payroll.js";
+import { PR, PT, PT_REC, progOffset } from "./layout.js";
+import { employeePayrollTax, employeePayrollTaxInto } from "./payroll.js";
 import { loadTaxData } from "./taxData.js";
 import { pathTables } from "./testKit.js";
 
@@ -19,6 +19,13 @@ const at = (year: number) => progOffset(year - 2026);
 describe("I1 payroll tax", () => {
   it("I1 single, 2026, wages 250,000: 6.2% × 184,500 + 1.45% × 250,000 + 0.9% × 50,000 = 11,439 + 3,625 + 450 = 15,514.00", () => {
     near(employeePayrollTax(t.prog, at(2026), 250000, 0, 0, 1), 15514);
+    // The out-record form (what the loop calls through TAX_FUNCTIONS) carries the three parts.
+    const out = new Float64Array(PT_REC).fill(-1);
+    employeePayrollTaxInto(t.prog, at(2026), 250000, 0, 0, 1, out);
+    near(out[PT.OASDI]!, 11439);
+    near(out[PT.MEDICARE]!, 3625);
+    near(out[PT.ADDITIONAL_MEDICARE]!, 450);
+    near(out[PT.TOTAL]!, 15514);
   });
 
   it("I1 single, 2027, wages 60,000: 3,720.00 + 870.00 = 4,590.00", () => {

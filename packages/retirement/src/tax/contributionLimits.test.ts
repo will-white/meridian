@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { compileTaxLaw } from "./compile.js";
-import { annualAdditionsLimit, contributionLimit, employeeDeferralLimit, hsaLimit, hsaMonthsBefore65, iraLimit } from "./contributionLimits.js";
-import { progOffset } from "./layout.js";
+import {
+  annualAdditionsLimit,
+  contributionLimit,
+  contributionLimitsInto,
+  employeeDeferralLimit,
+  hsaLimit,
+  hsaMonthsBefore65,
+  iraLimit,
+} from "./contributionLimits.js";
+import { CL, CL_REC, progOffset } from "./layout.js";
 import { birthMonthIndex } from "./penalties.js";
 import { loadTaxData, rawTaxData, validateTaxData } from "./taxData.js";
 import { pathTables } from "./testKit.js";
@@ -74,6 +82,23 @@ describe("I3 IRA and HSA limits", () => {
   it("I3 2027: 4,500 self-only and 9,000 family (Rev. Proc. 2026-24, published)", () => {
     expect(hsaLimit(t.prog, P27, 40, false, 12)).toBe(4500);
     expect(hsaLimit(t.prog, P27, 40, true, 12)).toBe(9000);
+  });
+});
+
+describe("contributionLimitsInto (the loop's form, through TAX_FUNCTIONS)", () => {
+  it("one call writes the four limits of one owner for the period: 61 in 2026, family HSA, a full year", () => {
+    // I2 and I3: deferral 24,500 + 11,250 = 35,750; additions 72,000; IRA 7,500 + 1,100 = 8,600; HSA 8,750 + 1,000 = 9,750.
+    const out = new Float64Array(CL_REC).fill(-1);
+    contributionLimitsInto(t.prog, P26, 61, 1, true, 12, out);
+    expect([out[CL.EMPLOYEE_DEFERRAL], out[CL.ANNUAL_ADDITIONS], out[CL.IRA], out[CL.HSA]]).toEqual([35750, 72000, 8600, 9750]);
+  });
+
+  it("year 0 of October to December 2026 at 45: every limit × 3/12 (6,125; 18,000; 1,875) and the HSA by its months (2,187.50)", () => {
+    const out = new Float64Array(CL_REC);
+    contributionLimitsInto(t.prog, P26, 45, 3 / 12, true, 3, out);
+    expect([out[CL.EMPLOYEE_DEFERRAL], out[CL.ANNUAL_ADDITIONS], out[CL.IRA]]).toEqual([6125, 18000, 1875]);
+    // 8,750 × 3/12 = 2,187.50 (no catch-up at 45).
+    near(out[CL.HSA]!, 2187.5);
   });
 });
 
