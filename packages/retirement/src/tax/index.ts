@@ -2,7 +2,14 @@
 
 export { TaxDataError, LAW_PATHS, loadTaxData, validateTaxData, rawTaxData, fractionValue } from "./taxData.js";
 export type { TaxData, TaxDataErrorCode, RawTaxData, LawPath, LawChange, LawChangeOp, IndexingRule } from "./taxData.js";
-export { fraMonths, survivorFraMonths } from "./socialSecurity.js";
+export {
+  fraMonths, survivorFraMonths, compileSsRules, defaultSsRules, floorDime, floorDollar, roundCola, retirementFactor, spousalFactor, survivorFactor,
+  compileSsPlan, ssPersonInputs, resetSsState, monthlyPayment, socialSecurityYear, socialSecurityYearMonthLoop, socialSecurityParts,
+  socialSecurityPreview, socialSecurityPreviewView, SS_RULES, ssRuleVerification,
+} from "./socialSecurity.js";
+export type {
+  SsRules, SsMode, SsPersonInput, SsPerson, SsPlan, SsCompileWarning, SsPreview, SsPreviewPerson, SsPreviewClaimAge, SsRule, SsRuleVerification,
+} from "./socialSecurity.js";
 export { TAX_DATA_FIRST_YEAR, listTaxRuleSets, fullRetirementAgeTable, taxDataStale, pendingLimits } from "./rulesView.js";
 export {
   TR, PR, TI, TO, RB, RW, HW, SS, SO, WN, TAX_REC, PROG_REC, TAX_IN, TAX_IN_DOLLAR_SLOTS, TAX_OUT, RB_REC, RW_REC, HW_REC, SS_REC, SO_REC, WN_REC,
