@@ -24,6 +24,7 @@
 
 import { FederalYearRecord } from "@meridian/shared";
 import { N_BRACKETS, PR, PROG_REC, TAX_REC, TR, progOffset, taxOffset } from "./layout.js";
+import { roundCola } from "./socialSecurity.js";
 import { TaxDataError, yearValueAt, type IndexingRule, type LawChangeOp, type TaxData } from "./taxData.js";
 
 export { progOffset, taxOffset } from "./layout.js";
@@ -306,6 +307,8 @@ export interface CompiledTaxLaw {
    */
   readonly preStartFrozen: Uint8Array;
   readonly staleInflation: number;
+  /** `ss/rules.json`'s `colaStep` (0.001): a COLA is rounded to a multiple of it (`roundCola`). */
+  readonly colaStep: number;
   readonly warnings: readonly CompileWarning[];
 }
 
@@ -421,6 +424,7 @@ export function compileTaxLaw(data: TaxData, o: CompileTaxLawOptions): CompiledT
     frozen,
     preStartFrozen,
     staleInflation: data.rules.staleInflation,
+    colaStep: data.ss.colaStep,
     warnings: Object.freeze(compileWarnings(data, startYear, years)),
   });
 }
@@ -467,9 +471,9 @@ export function fillYearAtFactors(law: CompiledTaxLaw, i: number, F: number, W: 
  * buffers can be reused across paths. Allocates nothing.
  *
  * The COLA of a year `Y` after the last published year `L` (§3.9.6): with `P_L = 1`, `H = 1` and
- * `P_Y = P_{Y−1} × (1 + π(Y − 1))`, `cola_Y = max(0, floor((P_Y / H − 1) × 1000 + 0.5) / 1000)`, and
- * `H = P_Y` when `cola_Y > 0`, so a year after a deflation is measured from the last level that
- * produced an adjustment.
+ * `P_Y = P_{Y−1} × (1 + π(Y − 1))`, `cola_Y = roundCola(P_Y / H − 1, colaStep)` (to the nearest
+ * 0.1%, a half step up, never negative; socialSecurity.ts), and `H = P_Y` when `cola_Y > 0`, so a
+ * year after a deflation is measured from the last level that produced an adjustment.
  */
 export function fillPathTables(law: CompiledTaxLaw, indexInflation: Float64Array, o: FillOptions, outTax: Float64Array, outProg: Float64Array): void {
   const S = law.startYear;
@@ -481,6 +485,7 @@ export function fillPathTables(law: CompiledTaxLaw, indexInflation: Float64Array
   const wedge = 1 - o.chainedCpiWedge;
   const growth = o.realWageGrowth;
   const stale = law.staleInflation;
+  const colaStep = law.colaStep;
   let F = 1;
   let W = 1;
   let P = 1;
@@ -491,7 +496,7 @@ export function fillPathTables(law: CompiledTaxLaw, indexInflation: Float64Array
     if (law.preStartFrozen[y - L - 1] === 0) F = F * (1 + stale) * wedge;
     W = W * (1 + stale + growth);
     P = P * (1 + stale);
-    cola = Math.max(0, Math.floor((P / H - 1) * 1000 + 0.5) / 1000);
+    cola = roundCola(P / H - 1, colaStep);
     if (cola > 0) H = P;
   }
   for (let i = 0; i < years; i++) {
@@ -501,7 +506,7 @@ export function fillPathTables(law: CompiledTaxLaw, indexInflation: Float64Array
       if (law.frozen[i] === 0) F = F * (1 + pi) * wedge;
       W = W * (1 + pi + growth);
       P = P * (1 + pi);
-      cola = Math.max(0, Math.floor((P / H - 1) * 1000 + 0.5) / 1000);
+      cola = roundCola(P / H - 1, colaStep);
       if (cola > 0) H = P;
     }
     fillYearAtFactors(law, i, F, W, cola, outTax, outProg);

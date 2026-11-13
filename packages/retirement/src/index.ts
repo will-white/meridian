@@ -116,5 +116,12 @@ export {
   hsaPenaltyShare, hsaWithdraw,
   seedRoth, rothRollYear, addRothContribution, addRothConversion, rothFiveYearMet, rothWithdraw, rothFreeAmount, mergeRothAtDeath,
   compileRmdTables, defaultRmdTables, rmdStartAge, firstRmdYear, rmdDivisor, requiredMinimumDistribution,
+  SS, SS_REC, SO, SO_REC,
+  fraMonths, survivorFraMonths, compileSsRules, defaultSsRules, floorDime, floorDollar, roundCola, retirementFactor, spousalFactor, survivorFactor,
+  compileSsPlan, ssPersonInputs, resetSsState, monthlyPayment, socialSecurityYear, socialSecurityYearMonthLoop, socialSecurityParts,
+  socialSecurityPreview, socialSecurityPreviewView, SS_RULES, ssRuleVerification,
 } from "./tax/index.js";
 export type { RmdTables } from "./tax/index.js";
+export type {
+  SsRules, SsMode, SsPersonInput, SsPerson, SsPlan, SsCompileWarning, SsPreview, SsPreviewPerson, SsPreviewClaimAge, SsRule, SsRuleVerification,
+} from "./tax/index.js";
