@@ -102,3 +102,52 @@ export const STRATEGY_INFO: Record<StrategyKind, { label: string; summary: strin
     source: "Bengen (2001)",
   },
 };
+
+// ---- VPW (strategies-outputs-web §3.4 (d), decision 16, seams C47) ----
+// Shared so the run-settings hints in the browser and the engine's `decideSpending` compute the same
+// percentage. Rates are float64 here (a rate, never money); the power is taken by repeated
+// multiplication in a fixed order (the engine's `powInt`), with no `Math.pow` or `**`, so the result
+// is the same on every platform. Nothing is allocated, so the engine's hook may call it every year.
+
+/** VPW's parameters as fractions (0.05 = 5%) and whole ages. */
+export interface VpwParams {
+  /** Real growth a year of stocks and of bonds. */
+  stockReal: number;
+  bondReal: number;
+  /** The last age with a withdrawal: n = lastAge + 1 − age. */
+  lastAge: number;
+  /** The cap on the percentage. */
+  maxRate: number;
+}
+
+/** The parameters of a `vpw` strategy setting: basis points divided by 10,000. */
+export function vpwParams(config: Extract<StrategyConfig, { kind: "vpw" }>): VpwParams {
+  return {
+    stockReal: config.stockRealBp / 10000,
+    bondReal: config.bondRealBp / 10000,
+    lastAge: config.lastWithdrawalAge,
+    maxRate: config.maxRateBp / 10000,
+  };
+}
+
+/**
+ * The uncapped VPW percentage at `age` (the younger living person's age attained, a whole number)
+ * with `stockShare` (0 to 1) of the target mix in stocks: the payment of an annuity-due on 1,
+ * `g ÷ (1 − 1 ÷ (1 + g)^n) ÷ (1 + g)` with `g = stockShare × stockReal + (1 − stockShare) × bondReal`
+ * and `n = max(1, lastAge + 1 − age)`; `1 ÷ n` when g is 0.
+ */
+export function vpwRawPercentage(age: number, stockShare: number, p: Readonly<VpwParams>): number {
+  const n = Math.max(1, p.lastAge + 1 - age);
+  const g = stockShare * p.stockReal + (1 - stockShare) * p.bondReal;
+  if (g === 0) return 1 / n;
+  const x = 1 + g;
+  let growth = 1;
+  for (let i = 0; i < n; i++) growth *= x;
+  return g / (1 - 1 / growth) / x;
+}
+
+/** The VPW percentage, capped at `maxRate` (the strategy flags `cap` when `vpwRawPercentage` is above it). */
+export function vpwPercentage(age: number, stockShare: number, p: Readonly<VpwParams>): number {
+  const raw = vpwRawPercentage(age, stockShare, p);
+  return raw < p.maxRate ? raw : p.maxRate;
+}
