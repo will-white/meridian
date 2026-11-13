@@ -5,7 +5,8 @@ export type { TaxData, TaxDataErrorCode, RawTaxData, LawPath, LawChange, LawChan
 export { fraMonths, survivorFraMonths } from "./socialSecurity.js";
 export { TAX_DATA_FIRST_YEAR, listTaxRuleSets, fullRetirementAgeTable, taxDataStale, pendingLimits } from "./rulesView.js";
 export {
-  TR, PR, TI, TO, RB, SS, SO, WN, TAX_REC, PROG_REC, TAX_IN, TAX_IN_DOLLAR_SLOTS, TAX_OUT, RB_REC, SS_REC, SO_REC, WN_REC, N_BRACKETS,
+  TR, PR, TI, TO, RB, RW, HW, SS, SO, WN, TAX_REC, PROG_REC, TAX_IN, TAX_IN_DOLLAR_SLOTS, TAX_OUT, RB_REC, RW_REC, HW_REC, SS_REC, SO_REC, WN_REC,
+  N_BRACKETS,
   STATUS_SINGLE, STATUS_MFJ, taxOffset, progOffset,
 } from "./layout.js";
 export type { FilingStatusIndex } from "./layout.js";
@@ -15,3 +16,12 @@ export {
 export type { CompiledTaxLaw, CompileTaxLawOptions, CompileWarning, FillOptions } from "./compile.js";
 export { federalTaxInto, effectiveMarginalRates, assertTaxInput, computeFederalTax, taxYearDetail, taxYearDetailCents, TaxInputError } from "./federalTax.js";
 export type { FederalTaxInput, FederalTaxResult, FederalTaxLine, TaxInputErrorCode, TaxYearDetailCents } from "./federalTax.js";
+export {
+  MONTHS_59_HALF, MONTHS_65, birthMonthIndex, earlyFraction, earlyFractionBefore59Half, earlyFractionBefore65, isEmployerPlan, separatedAt55, preTaxPenaltyShare, preTaxPenaltyBase,
+  hsaPenaltyShare, hsaWithdraw,
+} from "./penalties.js";
+export {
+  seedRoth, rothRollYear, addRothContribution, addRothConversion, rothFiveYearMet, rothWithdraw, rothFreeAmount, mergeRothAtDeath,
+} from "./rothBasis.js";
+export { compileRmdTables, defaultRmdTables, rmdStartAge, firstRmdYear, rmdDivisor, requiredMinimumDistribution } from "./rmd.js";
+export type { RmdTables } from "./rmd.js";
