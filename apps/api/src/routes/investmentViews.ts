@@ -113,7 +113,7 @@ export async function investmentViewRoutes(app: FastifyInstance): Promise<void> 
     if (q.period === "custom" && q.to !== undefined) asOf = q.to;
     if (asOf > today) throw badRequest(`asOf ${asOf} is after today ${today}`, "validation");
 
-    const ids = await investmentAccountIds(app.db, q.accountIds);
+    const ids = await investmentAccountIds(app.db, q.accountIds, q.includeClosed ? { includeClosed: true } : {});
     const fidelities = await accountFidelities(app.db, ids);
     const earliest = earliestDataDate(await firstDataDates(app.db, ids, fidelities));
     let bounds: PeriodBounds | null = null;
@@ -132,7 +132,7 @@ export async function investmentViewRoutes(app: FastifyInstance): Promise<void> 
       benchmark = { securityId: security.id, ticker: security.ticker, name: security.name };
     }
 
-    const query: GetPerformanceQuery = { today, now, detail: "full", to: asOf, asOf, accountIds: ids, benchmarkSecurityId, ...(from !== undefined ? { from } : {}) };
+    const query: GetPerformanceQuery = { today, now, detail: "full", to: asOf, asOf, accountIds: ids, benchmarkSecurityId, ...(q.includeClosed ? { includeClosed: true } : {}), ...(from !== undefined ? { from } : {}) };
     const record = await getPerformance(app.db, query);
 
     let benchmarkCloses: PerformanceViewExtras["benchmarkCloses"] = [];

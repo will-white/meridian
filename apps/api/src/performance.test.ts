@@ -237,10 +237,11 @@ describe.skipIf(!TEST_DATABASE_URL)("performance and lots as of a date before a 
     expect(a.lots.map((l) => [l.quantity, l.costBasisCents, l.valueCents, l.unrealizedCents, l.term, l.priceDate, l.closedDate])).toEqual([["10", "100000", "120000", "20000", "short", "2026-06-30", null]]);
     expect(a.disposals).toEqual([]);
     expect(await lots("2026-06-30")).toEqual([["10", "100000", "120000", "20000", "short"]]);
-    // The Holdings page on the same date agrees; its cash row nets the 1,000.00 put in against the 1,000.00 spent, at no gain.
+    // The Holdings page on the same date agrees; its cash row nets the 1,000.00 put in against the 1,000.00 spent, at no gain
+    // (its quantity is its whole value at 1.00 a unit, audit b6-12).
     expect(await holdingRows("2026-06-30")).toEqual([
       ["ACME", "10", "120000", "100000", "20000"],
-      ["Cash (USD)", null, "0", "0", "0"],
+      ["Cash (USD)", "0", "0", "0", "0"],
     ]);
   });
 
@@ -259,7 +260,7 @@ describe.skipIf(!TEST_DATABASE_URL)("performance and lots as of a date before a 
     // Cash: 1,000.00 in − 1,000.00 spent + 600.00 from the sale; cash has no gain.
     expect(await holdingRows("2026-10-13")).toEqual([
       ["ACME", "6", "96000", "60000", "36000"],
-      ["Cash (USD)", null, "60000", "60000", "0"],
+      ["Cash (USD)", "600", "60000", "60000", "0"],
     ]);
   });
 });

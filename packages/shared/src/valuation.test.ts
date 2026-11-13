@@ -861,6 +861,19 @@ describe("dayChange", () => {
     ]);
   });
 
+  it("says when the prior close is carried from an older date (audit b6-08: the view labels the prior)", () => {
+    // 10-09 → prior 10-08 has no close: both lines are measured from the 09-30 implied rows.
+    expect(dayChange(s1(), [A], "2026-10-09").carriedPrior).toEqual({ date: "2026-09-30", sources: ["implied"] });
+    // A close on the prior trading day itself: nothing carried (10-12 → 10-09, 10-13 → 10-12).
+    expect(dayChange(s1(), [A], "2026-10-12").carriedPrior).toBeNull();
+    expect(dayChange(s1(), [A, B, C], "2026-10-13").carriedPrior).toBeNull();
+    // S2 on 10-13: VFIAX has no 10-12 close, so its move runs from the 10-09 close (a feed price).
+    expect(dayChange(s2(), [A], "2026-10-13").carriedPrior).toEqual({ date: "2026-10-09", sources: ["provider"] });
+    // A stale line priced with the same 10-09 row on both days moved nothing: not a carried move.
+    const stale: ValuationInput = { ...s1(), prices: s1().prices.filter((p) => !(p.securityId === VFIAX && p.date > "2026-10-09")) };
+    expect(dayChange(stale, [A], "2026-10-13").carriedPrior).toBeNull();
+  });
+
   it("S2 on 10-12: the stale line moves nothing (+190.00)", () => {
     const dc = dayChange(s2(), [A], "2026-10-12");
     expect(dc.cents).toBe(19_000n);
@@ -885,6 +898,7 @@ describe("dayChange", () => {
         { accountId: A, cents: null, asOf: null, prior: null, reason: "no_prices", lines: [] },
         { accountId: B, cents: null, asOf: null, prior: null, reason: "balance_only", lines: [] },
       ],
+      carriedPrior: null,
     });
     // a balance-only account with balances on both days: flows are not market moves
     const input = s1();

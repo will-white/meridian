@@ -409,7 +409,8 @@ describe.skipIf(!TEST_DATABASE_URL)("investment views on the INV seed (views tes
       [B, "cash_plug", null, 143200n],
       [R, "cash", f8("270"), 27000n],
     ]);
-    expect(h.rows[5]!.quantity).toBe(f8("270"));
+    // Cash is a dollar a unit: the row's quantity is its whole value, B's inferred 1,432.00 included (audit b6-12).
+    expect(h.rows[5]!.quantity).toBe(f8("1702"));
     expect(h.weightedExpenseRatio).toEqual({ ppm: 326, coveredBp: 10000, annualCostCents: 1478n });
     expect(h.concentration).toEqual([{ level: "warn", securityId: S.securities.aapl, ticker: "AAPL", weightBp: 1325, thresholdBp: 1000, message: "AAPL is 13.3% of your portfolio (individual stock; flagged above 10%)" }]);
 
@@ -421,7 +422,7 @@ describe.skipIf(!TEST_DATABASE_URL)("investment views on the INV seed (views tes
       ["AAPL", 2217, "full"],
       ["Cash (USD)", 529, "full"],
     ]);
-    expect(onlyB.rows[3]!.quantity).toBeNull();
+    expect(onlyB.rows[3]!.quantity).toBe(f8("1432"));
 
     await t.db.update(security).set({ expenseRatioPpm: null }).where(eq(security.id, S.securities.tr2050));
     expect((await getHoldings(t.db, q)).weightedExpenseRatio).toEqual({ ppm: 278, coveredBp: 9071, annualCostCents: 1142n });

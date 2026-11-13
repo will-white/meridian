@@ -1,11 +1,11 @@
 import { Fragment, useMemo, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
-import type { IncomeMonthView, IncomeView } from "@meridian/shared";
+import type { AccountView, IncomeMonthView, IncomeView } from "@meridian/shared";
 import { api, query } from "../../lib/api.js";
 import { money, shortDate } from "../../lib/format.js";
 import { localToday, monthLabel } from "../../lib/plan.js";
-import { asOfFromParams, periodFromParams, periodQuery } from "../../lib/investments.js";
+import { asOfFromParams, investmentAccountOptions, periodFromParams, periodQuery, showAccountFilter } from "../../lib/investments.js";
 import { feedModeLabel, incomeEmptyText, incomeKindLabel, linkStatusLabel, linkStatusTone, yieldText } from "../../lib/performanceView.js";
 import { Badge, Card, Empty, ErrorText } from "../../components/ui.js";
 import { AccountWarnings } from "../../components/investments/AccountWarnings.js";
@@ -22,7 +22,9 @@ import "./IncomePage.css";
  * GET /investments/income (the engine's `incomeByMonth` plus the categorized
  * bank rows, each dividend counted once), the totals strip, the rows with
  * their link status into the plan, and the owner's feed settings. URL state:
- * `?period=` (default YTD), `?from=&to=`, `?asOf=`, `?accountId=`.
+ * `?period=` (default YTD), `?from=&to=`, `?asOf=`, `?accountId=`; the account
+ * filter lists the household's investment accounts from GET /accounts, so it
+ * stays once one is chosen.
  */
 export function IncomePage() {
   const today = useMemo(() => localToday(), []);
@@ -42,6 +44,8 @@ export function IncomePage() {
     placeholderData: keepPreviousData,
   });
   const v = income.data;
+  const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api<AccountView[]>("/accounts"), staleTime: INVESTMENTS_STALE_MS });
+  const accountOptions = useMemo(() => investmentAccountOptions(accounts.data ?? [], accountId), [accounts.data, accountId]);
   const accountNames = useMemo(() => new Map((v?.feed.accounts ?? []).map((a) => [a.accountId, a.accountName])), [v?.feed.accounts]);
 
   const selectAccount = (id: string) =>
@@ -67,22 +71,24 @@ export function IncomePage() {
         <div className="row wrap">
           <PeriodPicker value={period} today={today} />
           <AsOfPicker value={asOf} today={today} />
-          {v && v.feed.accounts.length > 1 && (
+          {showAccountFilter(accountOptions, accountId) && (
             <label className="inline">
               Account
               <select value={accountId} onChange={(e) => selectAccount(e.target.value)} aria-label="Account filter">
                 <option value="">All accounts</option>
-                {v.feed.accounts.map((a) => (
-                  <option key={a.accountId} value={a.accountId}>
-                    {a.accountName}
+                {accountOptions.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
                   </option>
                 ))}
+                {accountId && !accountOptions.some((a) => a.id === accountId) && <option value={accountId}>(selected account)</option>}
               </select>
             </label>
           )}
         </div>
       </div>
       <ErrorText error={income.error} />
+      <ErrorText error={accounts.error} />
       {!v && income.isLoading && <p className="muted">Loading…</p>}
       {v && noAccounts && (
         <Card>

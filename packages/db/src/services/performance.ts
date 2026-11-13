@@ -459,6 +459,8 @@ export interface GetPerformanceQuery {
   asOf?: IsoDate;
   /** Default: every open investment account. */
   accountIds?: readonly string[];
+  /** Closed accounts too: all of them without `accountIds`, or a closed one named in it (views design D21). */
+  includeClosed?: boolean;
   /** Absent → the household benchmark; null → none. */
   benchmarkSecurityId?: string | null;
   today: IsoDate;
@@ -523,7 +525,7 @@ export async function getPerformance(db: DbOrTx, q: GetPerformanceQuery): Promis
   if (to > q.today) throw new PlanError(400, "validation", `to ${to} is after today ${q.today}`);
   const asOf = q.asOf ?? to;
   if (asOf > q.today) throw new PlanError(400, "validation", `asOf ${asOf} is after today ${q.today}`);
-  const accounts = await listInvestmentAccounts(db, q.accountIds ? { accountIds: q.accountIds } : {});
+  const accounts = await listInvestmentAccounts(db, { ...(q.accountIds ? { accountIds: q.accountIds } : {}), ...(q.includeClosed ? { includeClosed: true } : {}) });
   const ids = accounts.map((a) => a.id);
   let from = q.from ?? null;
   if (from === null) {

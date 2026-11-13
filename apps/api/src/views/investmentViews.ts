@@ -248,7 +248,7 @@ export function toHoldingsView(r: HoldingsRecord): HoldingsView {
     cashCents: cents(r.cashCents),
     residualCents: cents(r.residualCents),
     rows: r.rows.map((row) => {
-      const ref: SecurityRef = {
+      const ref: Omit<SecurityRef, "securityId"> & { securityId: string | null } = {
         securityId: row.securityId,
         ticker: row.ticker,
         name: row.name,
@@ -275,6 +275,8 @@ export function toHoldingsView(r: HoldingsRecord): HoldingsView {
         accounts: row.accounts.map((a) => ({
           ...toAccountRefView(a),
           kind: a.kind,
+          lineName: a.lineName,
+          inferred: a.inferred,
           quantity: nullableFx(a.quantity),
           valueCents: cents(a.valueCents),
           costBasisCents: nullableCents(a.costBasisCents),
@@ -454,7 +456,7 @@ export function flowsSourceOf(flows: readonly FlowResult[]): FlowsSource {
 const FAILURE_REASONS = new Set<string>(ReturnFailureReason.options);
 
 /** One readable line per distinct reason (twr, xirr, benchmark) and engine warning. */
-function readableOf(block: PerformanceBlock, from: IsoDate, benchmarkMissing: boolean): string[] {
+function readableOf(block: PerformanceBlock, from: IsoDate, benchmarkMissing: boolean, securityName: (securityId: string) => string | null): string[] {
   const out: string[] = [];
   const push = (s: string) => {
     if (!out.includes(s)) out.push(s);
@@ -464,7 +466,7 @@ function readableOf(block: PerformanceBlock, from: IsoDate, benchmarkMissing: bo
   if (benchmarkMissing) push(returnReasonText("no_benchmark_price", from));
   for (const w of block.warnings) {
     if (FAILURE_REASONS.has(w.code)) push(returnReasonText(w.code as ReturnFailureReason, w.date ?? null));
-    else push(engineWarningText(w));
+    else push(engineWarningText(w, securityName));
   }
   return out;
 }
@@ -529,7 +531,7 @@ export function toPerformanceView(r: PerformanceRecord, x: PerformanceViewExtras
     flowsSource: flowsSourceOf(b.flows),
     uncategorizedRows: x.uncategorized.get(key) ?? 0,
     warnings: b.warnings.map((w: EngineWarning) => toEngineWarningView(w, tickerOf)),
-    readable: readableOf(b, r.from, benchmarkMissing),
+    readable: readableOf(b, r.from, benchmarkMissing, (id) => tickerOf(id) ?? meta(id)?.name ?? null),
     series: indexSeriesOf(r.from, r.to, b.subPeriods, b.twr.rate),
   });
 

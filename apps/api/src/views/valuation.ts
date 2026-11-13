@@ -195,6 +195,7 @@ export function toPortfolioDayChangeView(d: PortfolioDayChange): PortfolioDayCha
     bp: d.bp,
     partial: d.partial,
     excluded: d.excluded.map((e) => ({ accountId: e.accountId, reason: e.reason })),
+    carriedPrior: d.carriedPrior === null ? null : { date: d.carriedPrior.date, sources: [...d.carriedPrior.sources] },
   };
 }
 

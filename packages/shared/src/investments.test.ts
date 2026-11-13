@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseFixed8 } from "./decimal.js";
-import { INVESTMENT_ACCOUNT_TYPES, isInvestmentAccountType } from "./enums.js";
+import { EngineWarningCode, INVESTMENT_ACCOUNT_TYPES, isInvestmentAccountType } from "./enums.js";
 import {
   accountFidelity,
   classifyInvestmentInflow,
@@ -12,6 +12,7 @@ import {
   normalizeName,
   normalizeTicker,
   periodStart,
+  engineWarningSentence,
   returnReasonText,
   tradeExternalId,
   tradeSecurityKey,
@@ -201,6 +202,31 @@ describe("periodStart (seams C31; prices test 16; views test 21)", () => {
     expect(periodStart("all", "2026-10-13")).toBeNull();
     expect(periodStart("custom", "2026-10-13", { from: "2026-01-01" })).toBe("2026-01-01");
     expect(periodStart("custom", "2026-10-13")).toBeNull();
+  });
+});
+
+describe("engineWarningSentence (audit b6-10: readable engine warnings)", () => {
+  const names = (id: string) => ({ VTI: "VTI", BND: "BND" })[id] ?? null;
+  it("reads every warning code as a sentence, never as the code", () => {
+    for (const code of EngineWarningCode.options) {
+      const text = engineWarningSentence({ code, securityId: "VTI", date: "2025-11-12", quantity: 1000000000n, diffCents: -1240n, lotsQuantity: 4000000000n, snapshotQuantity: 5000000000n, priceDate: "2025-11-10" }, names);
+      expect(text, code).not.toContain(code);
+      expect(text, code).toMatch(/^[A-Z0-9$]/);
+      expect(text.endsWith("."), code).toBe(true);
+    }
+  });
+  it("names the security and the date", () => {
+    expect(engineWarningSentence({ code: "valuation_carried", date: "2025-11-12" })).toBe("No value is recorded on 2025-11-12; the latest earlier statement or balance was carried to it.");
+    expect(engineWarningSentence({ code: "stale_price", securityId: "VTI", date: "2026-10-13", priceDate: "2026-10-09" }, names)).toBe("VTI is valued on 2026-10-13 with an older close (2026-10-09).");
+    expect(engineWarningSentence({ code: "basis_unknown", securityId: "VTI", quantity: 1000000000n }, names)).toBe("10 shares of VTI arrived without a cost basis; their gain is unknown until the basis is entered on the transfer.");
+    expect(engineWarningSentence({ code: "position_mismatch", securityId: "BND", date: "2026-10-09", lotsQuantity: 9000000000n, snapshotQuantity: 10000000000n }, names)).toBe(
+      "The trade history gives 90 shares of BND, the 2026-10-09 statement 100; the statement's shares are used until the trades explain it.",
+    );
+    expect(engineWarningSentence({ code: "statement_mismatch", date: "2026-10-13", diffCents: -1240n })).toBe("The value on 2026-10-13 differs from the statement by -$12.40; reconcile the account.");
+    expect(engineWarningSentence({ code: "oversell", securityId: "X", date: "2026-03-01", quantity: 200000000n })).toBe("A sale of a security on 2026-03-01 is larger than the shares held by 2; the trade history is missing a purchase or a transfer in.");
+    expect(engineWarningSentence({ code: "no_valuations", date: "2026-10-13" })).toBe(returnReasonText("no_valuations", "2026-10-13"));
+    // An unnamed security at the start of a sentence is capitalized.
+    expect(engineWarningSentence({ code: "no_price", securityId: "unknown", date: "2026-10-13" })).toBe("A security has no price on or before 2026-10-13; it is left out of the value.");
   });
 });
 

@@ -247,7 +247,11 @@ describe.skipIf(!TEST_DATABASE_URL)("Phase 3 gate: a brokerage account reconcile
     // Recording the dividend makes it income. A positions-level account takes its cash from statements, so its value does not move.
     await send("POST", "/api/investments/txns", { type: "dividend", accountId, securityId: securityIds["VTI"], date: "2026-10-16", amountCents: DIVIDEND, today });
     const income = await get<IncomeView>(`/api/investments/income?period=1m&today=${today}`);
-    expect(income.months.map((m) => [m.month, m.dividendsCents, m.interestCents])).toEqual([["2026-10", DIVIDEND, "0"]]);
+    // A one-month period lists both months it touches, September at zero (audit b6-15).
+    expect(income.months.map((m) => [m.month, m.dividendsCents, m.interestCents])).toEqual([
+      ["2026-09", "0", "0"],
+      ["2026-10", DIVIDEND, "0"],
+    ]);
     expect(income.totals.dividendsCents).toBe(DIVIDEND);
     expect(await valueOn("2026-10-20")).toMatchObject({ value: APP_OCT_20, basis: "positions", fidelity: "positions" });
     const second = await preview();

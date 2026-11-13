@@ -1,16 +1,20 @@
-import { AssetClass, dayDiff, formatFixed8, isIsoDate, parseDecimalToCents, parseFixed8, roundDivHalfAway } from "@meridian/shared";
+import { addMonthsClamped, AssetClass, dayDiff, formatFixed8, isInvestmentAccountType, isIsoDate, MAX_SERIES_DAYS, parseDecimalToCents, parseFixed8, roundDivHalfAway } from "@meridian/shared";
 import type {
   AccountChangesView,
+  AccountView,
   AllocationTargetView,
   BasisSource,
   ChangeSummaryView,
   ConcentrationLevel,
   CostCoverage,
+  HoldingAccountView,
   HoldingPriceSource,
+  HoldingRowView,
   InvestmentFidelity,
   InvestmentPeriod,
   LineKind,
   PortfolioAccountView,
+  PortfolioDayChangeView,
   PortfolioView,
   PriceStatus,
   RebalanceTradeView,
@@ -253,6 +257,58 @@ export function coverageLabel(coverage: CostCoverage, basisSource: BasisSource |
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
+/** A Holdings row's key: the security, or the inferred-cash row of a household without a cash security. */
+export function holdingRowKey(r: Pick<HoldingRowView, "securityId">): string {
+  return r.securityId ?? "inferred-cash";
+}
+
+/** The class editor is offered for a security an owner can classify: never for cash (always class cash, never split). */
+export function canEditSecurityClass(r: Pick<HoldingRowView, "securityId" | "type">, viewer: boolean): boolean {
+  return !viewer && r.securityId !== null && r.type !== "cash";
+}
+
+/**
+ * What a Holdings sub-row is, beside its account: a reported cash position, cash inferred from
+ * the balance ("unlisted (balance − positions)"), from the trades since the last balance, or
+ * transfers carried since it; null for a position.
+ */
+export function holdingLineLabel(a: Pick<HoldingAccountView, "kind" | "inferred">): string | null {
+  switch (a.kind) {
+    case "position":
+      return null;
+    case "cash":
+      return a.inferred ? "from trades (since the last balance)" : "reported";
+    case "cash_plug":
+      return "unlisted (balance − positions)";
+    case "carried_flows":
+      return "transfers since the last balance";
+  }
+}
+
+/**
+ * The Holdings Cash stat: the cash row's whole value (reported plus inferred), and beside it what
+ * is reported and what is inferred ("$270.00 reported · + $1,432.00 inferred (not in the positions
+ * list)"); `sub` is null without inferred cash.
+ */
+export function cashStatText(cashCents: string, residualCents: string): { totalCents: string; sub: string | null } {
+  const inferred = unlistedCashText(residualCents, "inferred (not in the positions list)");
+  return { totalCents: (BigInt(cashCents) + BigInt(residualCents)).toString(), sub: inferred === null ? null : `${money(cashCents)} reported · ${inferred}` };
+}
+
+/**
+ * The household's investment accounts for an account filter, from GET /accounts (never from a
+ * filtered response, which lists only the chosen account): open ones, plus a closed one when it
+ * is the one selected.
+ */
+export function investmentAccountOptions(accounts: readonly Pick<AccountView, "id" | "name" | "type" | "closed">[], selectedId = ""): Array<Pick<AccountView, "id" | "name" | "type">> {
+  return accounts.filter((a) => isInvestmentAccountType(a.type) && (!a.closed || a.id === selectedId)).map((a) => ({ id: a.id, name: a.name, type: a.type }));
+}
+
+/** An account filter is worth showing with more than one account, and always while one is chosen (so "All accounts" stays reachable). */
+export function showAccountFilter(options: readonly unknown[], selectedId: string): boolean {
+  return options.length > 1 || selectedId !== "";
+}
+
 const LINE_KIND_LABELS: Record<LineKind, string> = { position: "position", cash: "cash (reported)", cash_plug: "Cash (from balance)", carried_flows: "carried transfers" };
 
 export function lineKindLabel(kind: LineKind): string {
@@ -283,10 +339,20 @@ export function growthReasonText(reason: string | null): string {
   return GROWTH_REASONS[reason] ?? reason.replace(/_/g, " ");
 }
 
-/** "+$360.00 (+0.80%) since 10/12/26"; with a reason when there is no figure. */
-export function dayChangeSentence(d: { cents: string | null; bp?: number | null; prior: string | null; reason: string | null }): string {
+/**
+ * "+$360.00 (+0.80%) since 10/12/26"; with a reason when there is no figure. When the prior
+ * close was carried from an older date (no close on the prior trading day: a statement's implied
+ * price, say), the sentence says what it is measured from: "+$330.00 (+1.85%) since 09/09/26
+ * (implied prices; no close on 10/08/26)", so a month's move never reads as one day's.
+ */
+export function dayChangeSentence(d: { cents: string | null; bp?: number | null; prior: string | null; reason: string | null; carriedPrior?: PortfolioDayChangeView["carriedPrior"] }): string {
   if (d.cents === null) return d.reason ? `— (${dayChangeReasonText(d.reason)})` : "—";
   const pct = d.bp === null || d.bp === undefined ? "" : ` (${formatBp(d.bp, { places: 2, sign: true })})`;
+  const carried = d.carriedPrior ?? null;
+  if (carried && d.prior) {
+    const sources = carried.sources.map((s) => priceSourceLabel(s)).join(" and ");
+    return `${signedMoney(d.cents)}${pct} since ${shortDate(carried.date)} (${sources ? `${sources} prices; ` : ""}no close on ${shortDate(d.prior)})`;
+  }
   const since = d.prior ? ` since ${shortDate(d.prior)}` : "";
   return `${signedMoney(d.cents)}${pct}${since}`;
 }
@@ -357,6 +423,15 @@ export interface TradeGroup<T extends Pick<RebalanceTradeView, "accountId" | "ac
 }
 
 /** Trades grouped by account in the order the server generated them (account rank, sells then buys). */
+/**
+ * A trade's note cell: the server's note (for a taxable sell, the estimated-gain sentence of the
+ * views design §3.7) once, toned as a warning when the sale may realize a gain.
+ */
+export function tradeNote(t: Pick<RebalanceTradeView, "note" | "estimatedGainCents">): { text: string | null; tone: "warn" | "" } {
+  const gain = t.estimatedGainCents === null ? 0n : BigInt(t.estimatedGainCents);
+  return { text: t.note, tone: gain > 0n ? "warn" : "" };
+}
+
 export function groupTrades<T extends Pick<RebalanceTradeView, "accountId" | "accountName" | "taxTreatment">>(trades: readonly T[]): Array<TradeGroup<T>> {
   const groups: Array<TradeGroup<T>> = [];
   for (const t of trades) {
@@ -452,10 +527,17 @@ export function autoSeriesStep(from: string, to: string): SeriesStep {
   return "month";
 }
 
-/** The chart range: the period's start (or 30 days back without one) through the as-of date. */
-export function chartRange(asOf: string, period: { from: string } | null): { from: string; to: string } {
-  const from = period?.from ?? shiftDays(asOf, -30);
-  return { from: from < asOf ? from : shiftDays(asOf, -1), to: asOf };
+/**
+ * The chart range: the period's start (or 30 days back without one) through the as-of date,
+ * never longer than the series route serves (`MAX_SERIES_DAYS`; the Portfolio's own note says
+ * where the chart then starts). `capped` is true when the period started earlier.
+ */
+export function chartRange(asOf: string, period: { from: string } | null): { from: string; to: string; capped: boolean } {
+  const wanted = period?.from ?? shiftDays(asOf, -30);
+  const earliest = shiftDays(asOf, -MAX_SERIES_DAYS);
+  const capped = wanted < earliest;
+  const from = capped ? earliest : wanted;
+  return { from: from < asOf ? from : shiftDays(asOf, -1), to: asOf, capped };
 }
 
 function shiftDays(date: string, days: number): string {
@@ -606,19 +688,47 @@ export function barWidth(bp: number | null, scaleBp: number): number {
 export interface ChangeWindow {
   from: string;
   to: string;
+  /** What the window covers when it is not exactly what the row shows; null when it is. */
+  note: string | null;
+}
+
+/** `GET /investments/accounts/:id/changes` explains at most five years (400 `validation` beyond). */
+export const CHANGE_WINDOW_MONTHS = 60;
+
+/** The latest start whose window to `to` the changes route accepts: `addMonthsClamped(from, 60) ≥ to`. */
+function fiveYearsBefore(to: string): string {
+  let from = addMonthsClamped(to, -CHANGE_WINDOW_MONTHS);
+  // Month-end clamping (Feb 29 → Feb 28) can leave the window a day too long.
+  while (addMonthsClamped(from, CHANGE_WINDOW_MONTHS) < to) from = shiftDays(from, 1);
+  return from;
 }
 
 /**
  * The windows a Portfolio row's "why?" can explain through
- * `GET /investments/accounts/:id/changes`: the day (the prior close the day
- * change was measured from, to the as-of date) and the row's period. Null
- * when a window is unknown or empty (`from < to` is the route's rule).
+ * `GET /investments/accounts/:id/changes`: the day (the prior close to the
+ * close the day change was measured at, `dayChange.asOf`, which is earlier
+ * than the page's as-of date while prices lag) and the row's period (its last
+ * five years when it is longer, with a note). Null when a window is unknown
+ * or empty (`from < to` is the route's rule).
  */
 export function changeWindows(portfolio: Pick<PortfolioView, "asOf" | "dayChange">, account: Pick<PortfolioAccountView, "period">): { day: ChangeWindow | null; period: ChangeWindow | null } {
   const prior = portfolio.dayChange.prior;
-  const asOf = portfolio.asOf;
-  const day = prior !== null && asOf !== null && prior < asOf ? { from: prior, to: asOf } : null;
-  const period = account.period !== null && account.period.from < account.period.to ? { from: account.period.from, to: account.period.to } : null;
+  const closeDate = portfolio.dayChange.asOf;
+  let day: ChangeWindow | null = null;
+  if (prior !== null && closeDate !== null && prior < closeDate) {
+    const lagging = portfolio.asOf !== null && closeDate < portfolio.asOf;
+    day = {
+      from: prior,
+      to: closeDate,
+      note: lagging ? `The latest close is ${shortDate(closeDate)}: this explains the account from the ${shortDate(prior)} close to it; the day change prices the ${shortDate(portfolio.asOf!)} holdings at those closes.` : null,
+    };
+  }
+  let period: ChangeWindow | null = null;
+  if (account.period !== null && account.period.from < account.period.to) {
+    const { from, to } = account.period;
+    const earliest = fiveYearsBefore(to);
+    period = from < earliest ? { from: earliest, to, note: `The last five years of the period (from ${shortDate(earliest)}): a change is explained over at most five years.` } : { from, to, note: null };
+  }
   return { day, period };
 }
 

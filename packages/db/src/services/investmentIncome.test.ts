@@ -63,14 +63,20 @@ describe.skipIf(!TEST_DATABASE_URL)("investment income (views tests 13–15, 20)
   it("the ytd income view and the feed in link mode (test 13)", async () => {
     const v = await getInvestmentIncome(t.db, q);
     expect(v.period).toEqual({ kind: "ytd", from: "2025-12-31", to: "2026-10-13", days: 286, partial: false, note: null });
+    // Every month of the period, months without income as zeros (audit b6-15).
     expect(v.months.map((m) => [m.month, m.dividendsCents, m.interestCents, m.feesCents, m.reinvestedCents, m.totalCents])).toEqual([
+      ["2026-01", 0n, 0n, 0n, 0n, 0n],
+      ["2026-02", 0n, 0n, 0n, 0n, 0n],
       ["2026-03", 8360n, 0n, 0n, 0n, 8360n],
+      ["2026-04", 0n, 0n, 0n, 0n, 0n],
+      ["2026-05", 0n, 0n, 0n, 0n, 0n],
       ["2026-06", 4720n, 0n, 0n, 0n, 4720n],
+      ["2026-07", 0n, 0n, 0n, 0n, 0n],
       ["2026-08", 2890n, 0n, 0n, 0n, 2890n],
       ["2026-09", 13775n, 410n, 0n, 0n, 14185n],
       ["2026-10", 2280n, 0n, 0n, 0n, 2280n],
     ]);
-    expect(v.months[3]!.bySecurity.map((s) => [s.ticker, s.cents])).toEqual([
+    expect(v.months.find((m) => m.month === "2026-09")!.bySecurity.map((s) => [s.ticker, s.cents])).toEqual([
       ["VTI", 7365n],
       ["VXUS", 4150n],
       ["BND", 2260n],
@@ -97,7 +103,7 @@ describe.skipIf(!TEST_DATABASE_URL)("investment income (views tests 13–15, 20)
       const e = engine.get(m.month) ?? { dividends: 0n, interest: 0n };
       engine.set(m.month, { dividends: e.dividends + m.dividendCents, interest: e.interest + m.interestCents });
     }
-    for (const m of v.months) expect(engine.get(m.month)).toEqual({ dividends: m.dividendsCents, interest: m.interestCents });
+    for (const m of v.months) expect(engine.get(m.month) ?? { dividends: 0n, interest: 0n }).toEqual({ dividends: m.dividendsCents, interest: m.interestCents });
 
     const uncategorizedBefore = (await getPlan(t.db, { from: "2026-09", to: "2026-09", today: TODAY })).summary[0]!.uncategorized;
     expect(await runInvestmentIncomeFeed(t.db, { now: NOW })).toEqual({ categorized: 7, created: 0, upgraded: 0, awaiting: 0, unchanged: 0, deleted: 0, skipped: [] });
@@ -140,7 +146,7 @@ describe.skipIf(!TEST_DATABASE_URL)("investment income (views tests 13–15, 20)
     expect(rRows.find((r) => r.amountCents === 2280n)).toMatchObject({ date: "2026-10-06", rawDescription: "DIVIDEND BND", externalId: `inv:${S.txns["rDivBndOct"]}` });
     const v = await getInvestmentIncome(t.db, q);
     expect(v.rows.filter((r) => r.accountId === R).every((r) => r.linkStatus === "created" && r.fed)).toBe(true);
-    expect(v.months.map((m) => [m.month, m.totalCents])).toEqual([
+    expect(v.months.filter((m) => m.totalCents !== 0n).map((m) => [m.month, m.totalCents])).toEqual([
       ["2026-03", 8360n],
       ["2026-06", 4720n],
       ["2026-08", 2890n],
