@@ -1,0 +1,13 @@
+/* Rules: the editor (every condition and action) and the history list (audit a6-text-rules-accounts-13). */
+.rule-editor { display: flex; flex-direction: column; gap: 0.6rem; padding: 0.25rem 0; }
+.rule-editor fieldset { border: 1px solid var(--line); border-radius: 6px; padding: 0.5rem 0.75rem; display: flex; flex-direction: column; gap: 0.4rem; min-width: 0; }
+.rule-editor legend { padding: 0 0.25rem; font-weight: 600; }
+.rule-editor .row { gap: 0.35rem 0.6rem; align-items: center; }
+.rule-editor input[type="number"] { width: 4.5rem; }
+.rule-label { min-width: 7.5rem; }
+.rule-history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+.rule-history li { gap: 0.25rem 0.75rem; border-bottom: 1px solid var(--line); padding-bottom: 0.3rem; }
+@media (max-width: 600px) {
+  .rule-label { min-width: 100%; }
+  .rule-editor .row input:not([type="checkbox"]):not([type="number"]), .rule-editor .row select { max-width: 100%; min-width: 0; flex: 1 1 10rem; }
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateRules, RuleActions, RuleConditions, ruleMatches, type RuleLike } from "./rules.js";
+import { evaluateRules, RuleActions, RuleConditions, ruleInputProblem, ruleMatches, type RuleLike } from "./rules.js";
 
 const CAT_GROCERIES = "11111111-1111-4111-8111-111111111111";
 const CAT_SHOPPING = "22222222-2222-4222-8222-222222222222";
@@ -111,5 +111,85 @@ describe("schemas", () => {
     expect(RuleActions.safeParse({}).success).toBe(false);
     expect(RuleActions.safeParse({ addTags: [] }).success).toBe(false);
     expect(RuleActions.safeParse({ setCategoryId: null }).success).toBe(true);
+  });
+});
+
+describe("regular expressions run in linear time (a6-text-rules-accounts-04)", () => {
+  it("answers a pattern with nested quantifiers at once instead of backtracking for minutes", () => {
+    const cases: Array<[string, string]> = [
+      ["^(\\w+\\s?)+$", "POS PURCHASE STARBUCKS STORE DENVER CO 1234!"],
+      ["^(A+)+$", `${"A".repeat(5000)}!`],
+      ["(x+x+)+y", "x".repeat(500)],
+      ["^(a|aa)+$", `${"a".repeat(500)}b`],
+    ];
+    for (const [pattern, text] of cases) {
+      const t0 = performance.now();
+      expect(ruleMatches({ description: { op: "regex", value: pattern } }, { ...ctx, description: text })).toBe(false);
+      expect(performance.now() - t0, pattern).toBeLessThan(250);
+    }
+    // Ordinary patterns keep working, case-insensitively by default.
+    expect(ruleMatches({ description: { op: "regex", value: "^king\\s+soopers\\b" } }, ctx)).toBe(true);
+    expect(ruleMatches({ description: { op: "regex", value: "^king", caseSensitive: true } }, ctx)).toBe(false);
+    expect(ruleMatches({ description: { op: "regex", value: "#\\d{4}" } }, ctx)).toBe(true);
+  });
+
+  it("refuses a pattern that does not compile, uses look-around or back-references, or is too long", () => {
+    expect(ruleInputProblem({ description: { op: "regex", value: "(" } }, { setCategoryId: CAT_GROCERIES })?.code).toBe("invalid_regex");
+    expect(ruleInputProblem({ description: { op: "regex", value: "(?=x)" } }, { setCategoryId: CAT_GROCERIES })?.code).toBe("invalid_regex");
+    expect(ruleInputProblem({ description: { op: "regex", value: "(a)\\1" } }, { setCategoryId: CAT_GROCERIES })?.code).toBe("invalid_regex");
+    expect(ruleInputProblem({ payee: { op: "regex", value: "a".repeat(201) } }, { setCategoryId: CAT_GROCERIES })?.code).toBe("invalid_regex");
+    expect(ruleInputProblem({ payee: { op: "regex", value: "^(\\w+\\s?)+$" } }, { setCategoryId: CAT_GROCERIES })).toBeNull();
+    expect(ruleInputProblem({ payee: { op: "contains", value: "(" } }, { setCategoryId: CAT_GROCERIES })).toBeNull();
+  });
+});
+
+describe("rules saved as written or refused (a6-text-rules-accounts-16)", () => {
+  it("refuses an amount range without a bound or with its bounds the wrong way round", () => {
+    expect(ruleInputProblem({ amount: {} }, { setCategoryId: CAT_GROCERIES })?.code).toBe("invalid_amount_range");
+    expect(ruleInputProblem({ amount: { minCents: "1000", maxCents: "500" } }, { setCategoryId: CAT_GROCERIES })?.code).toBe("invalid_amount_range");
+    expect(ruleInputProblem({ amount: { minCents: "-5000", maxCents: "-4000" } }, { setCategoryId: CAT_GROCERIES })).toBeNull();
+    expect(ruleInputProblem({ amount: { maxCents: "0" } }, { setCategoryId: CAT_GROCERIES })).toBeNull();
+  });
+
+  it("reads a day range that wraps past the month end, and a day past the end as the last day", () => {
+    const at = (date: string) => ({ ...ctx, date });
+    const monthEnd = { dayOfMonth: { min: 28, max: 3 } };
+    expect(ruleMatches(monthEnd, at("2026-09-28"))).toBe(true);
+    expect(ruleMatches(monthEnd, at("2026-09-30"))).toBe(true);
+    expect(ruleMatches(monthEnd, at("2026-10-02"))).toBe(true);
+    expect(ruleMatches(monthEnd, at("2026-10-15"))).toBe(false);
+    const last = { dayOfMonth: { min: 31, max: 31 } };
+    expect(ruleMatches(last, at("2026-10-31"))).toBe(true);
+    expect(ruleMatches(last, at("2026-11-30"))).toBe(true);
+    expect(ruleMatches(last, at("2026-02-28"))).toBe(true);
+    expect(ruleMatches(last, at("2028-02-28"))).toBe(false);
+    expect(ruleMatches(last, at("2028-02-29"))).toBe(true);
+    expect(ruleMatches(last, at("2026-11-29"))).toBe(false);
+    expect(ruleMatches({ dayOfMonth: { min: 10, max: 20 } }, at("2026-09-15"))).toBe(true);
+  });
+});
+
+describe("rule matching and Unicode (a6-text-rules-accounts-17)", () => {
+  it("compares one spelling of an accented letter, folds Latin accents and the dotted capital I", () => {
+    const nfd = "Cafe\u0301";
+    expect(ruleMatches({ payee: { op: "equals", value: "Caf\u00E9" } }, { ...ctx, payee: nfd })).toBe(true);
+    expect(ruleMatches({ payee: { op: "equals", value: "Caf\u00E9", caseSensitive: true } }, { ...ctx, payee: nfd })).toBe(true);
+    expect(ruleMatches({ payee: { op: "equals", value: "cafe" } }, { ...ctx, payee: "Caf\u00E9" })).toBe(true);
+    expect(ruleMatches({ description: { op: "contains", value: "istanbul" } }, { ...ctx, description: "\u0130STANBUL KEBAP" })).toBe(true);
+    expect(ruleMatches({ payee: { op: "startsWith", value: "\u00C9cole" } }, { ...ctx, payee: "ecole du vin" })).toBe(true);
+    // Accents of other scripts are letters, not decoration: they stay.
+    expect(ruleMatches({ payee: { op: "equals", value: "\u0915" } }, { ...ctx, payee: "\u0915\u093F" })).toBe(false);
+  });
+});
+
+describe("payee conditions and merged names (a6-text-rules-accounts-10)", () => {
+  it("matches a payee condition on a name merged into the payee, until a rule renames it", () => {
+    const merged = { ...ctx, payee: "Starbucks Store", payeeAliases: ["Sbux Mobile Order"] };
+    const onVariant = rule("v", 1, { payee: { op: "equals", value: "Sbux Mobile Order" } }, { setCategoryId: CAT_GROCERIES });
+    expect(evaluateRules([onVariant], merged).categoryId).toBe(CAT_GROCERIES);
+    const rename = rule("r", 0, { payee: { op: "contains", value: "starbucks" } }, { setPayee: "Coffee Shop" });
+    const renamed = evaluateRules([rename, onVariant], merged);
+    expect(renamed.payee).toBe("Coffee Shop");
+    expect(renamed.categoryId).toBeUndefined();
   });
 });

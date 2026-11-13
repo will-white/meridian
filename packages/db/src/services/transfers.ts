@@ -146,6 +146,7 @@ export async function releaseTransferPartners(tx: DbOrTx, removedIds: readonly s
         amountCents: transaction.amountCents,
         rawDescription: transaction.rawDescription,
         payeeName: sql<string>`coalesce(${payee.name}, '')`,
+        payeeAliases: sql<string[]>`coalesce(${payee.aliases}, '[]'::jsonb)`,
         payeeId: transaction.payeeId,
         payeeDefaultCategoryId: payee.defaultCategoryId,
         categoryId: transaction.categoryId,

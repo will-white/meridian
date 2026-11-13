@@ -185,11 +185,33 @@ export interface MappingError {
   message: string;
 }
 
+/**
+ * How a header name is compared with a mapping's column name: sanitized and lower case, so a
+ * mapping built from the sanitized headers a preview shows finds the raw header it came from
+ * (audit a6-text-rules-accounts-15).
+ */
+export function headerKey(name: string): string {
+  return sanitizeText(name, PREVIEW_CELL_MAX).toLowerCase();
+}
+
+/** A preview cell or header is shown with at most this many characters. */
+export const PREVIEW_CELL_MAX = 100;
+
+/**
+ * The cells of a file as a preview may show them (headers and sample rows): sanitized like
+ * every text from an import (no markup, control or bidirectional characters) and at most 100
+ * characters each (audit a6-text-rules-accounts-15).
+ */
+export function previewCells(rows: readonly (readonly string[])[]): string[][] {
+  return rows.map((row) => row.map((cell) => sanitizeText(cell, PREVIEW_CELL_MAX)));
+}
+
 function resolveColumn(ref: ColumnRef, headers: readonly string[] | undefined): number {
   if (typeof ref === "number") return ref;
-  if (!headers) throw new Error(`Column "${ref}" referenced by name, but the file has no header row`);
-  const idx = headers.findIndex((h) => h.trim().toLowerCase() === ref.trim().toLowerCase());
-  if (idx < 0) throw new Error(`Column "${ref}" not found in header`);
+  if (!headers) throw new Error(`Column "${sanitizeText(ref, 50)}" referenced by name, but the file has no header row`);
+  const key = headerKey(ref);
+  const idx = headers.findIndex((h) => headerKey(h) === key);
+  if (idx < 0) throw new Error(`Column "${sanitizeText(ref, 50)}" not found in header`);
   return idx;
 }
 
@@ -231,7 +253,7 @@ export async function mapCsvRows(rows: readonly string[][], mappingInput: CsvMap
     if (row.every((c) => c.trim() === "")) continue;
     const date = parseCsvDate(row[dateCol] ?? "", mapping.date.format);
     if (!date) {
-      errors.push({ rowIndex, message: `Unreadable date "${row[dateCol] ?? ""}"` });
+      errors.push({ rowIndex, message: `Unreadable date "${sanitizeText(row[dateCol] ?? "", 50)}"` });
       continue;
     }
     let amountCents: bigint | undefined;

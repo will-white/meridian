@@ -41,4 +41,57 @@ describe("normalizePayee", () => {
       expect(normalizePayee(once)).toBe(once);
     }
   });
+
+  // Audit a6-text-rules-accounts-12: one merchant, one payee, across cities and days.
+  const cityCases: Array<[string, string]> = [
+    ["STARBUCKS STORE 12345 SAN FRANCISCO CA", "Starbucks Store"],
+    ["STARBUCKS STORE 12345 DENVER CO", "Starbucks Store"],
+    ["STARBUCKS STORE 12345 NEW YORK NY", "Starbucks Store"],
+    ["STARBUCKS STORE NEW YORK NY", "Starbucks Store"],
+    ["SMITHS FOOD #4123 SALT LAKE CITY UT", "Smiths Food"],
+    ["SMITHS FOOD SALT LAKE CITY UT", "Smiths Food"],
+    ["KING SOOPERS #0123 FORT COLLINS CO", "King Soopers"],
+    ["KING SOOPERS FORT COLLINS CO", "King Soopers"],
+    ["PANERA BREAD #601234 LAS VEGAS NV", "Panera Bread"],
+    ["KING SOOPERS #0123 COLORADO SPRINGS CO", "King Soopers"],
+    ["TACO BELL 1234 CO", "Taco Bell"],
+    ["TACO BELL #1234", "Taco Bell"],
+    ["ST LOUIS BREAD CO #1234 KIRKWOOD MO", "St Louis Bread Co"],
+    ["SAFEWAY #1234 ST PAUL MN", "Safeway"],
+    ["SAFEWAY ST PAUL MN", "Safeway"],
+    ["LYFT *RIDE TUE 5PM", "Lyft"],
+    ["LYFT *RIDE SUN 11AM", "Lyft"],
+    ["LYFT *RIDE THU 10:15PM", "Lyft"],
+    ["SUN COUNTRY AIRLINES", "Sun Country Airlines"],
+  ];
+  for (const [raw, expected] of cityCases) {
+    it(`a6-text-rules-accounts-12: "${raw}" -> "${expected}"`, () => {
+      expect(normalizePayee(raw)).toBe(expected);
+    });
+  }
+
+  // Audit a6-text-rules-accounts-17: accented letters are letters; one spelling per merchant.
+  const unicodeCases: Array<[string, string]> = [
+    ["Caf\u00E9 Rio", "Cafe Rio"],
+    ["CAFE RIO #23 DENVER CO", "Cafe Rio"],
+    ["Cafe\u0301 Rio", "Cafe Rio"],
+    ["\u00C9COLE DU VIN", "Ecole Du Vin"],
+    ["R\u00E9sum\u00E9 Caf\u00E9", "Resume Cafe"],
+    ["\u0130STANBUL KEBAP DENVER CO", "Istanbul Kebap"],
+    ["\u00DCBER EATS", "Uber Eats"],
+    ["\u5BFF\u53F8 SUSHI", "\u5BFF\u53F8 Sushi"],
+  ];
+  for (const [raw, expected] of unicodeCases) {
+    it(`a6-text-rules-accounts-17: "${raw}" -> "${expected}"`, () => {
+      expect(normalizePayee(raw)).toBe(expected);
+    });
+  }
+
+  it("a6: stays idempotent on the new cases", () => {
+    for (const [raw] of [...cityCases, ...unicodeCases]) {
+      const once = normalizePayee(raw);
+      expect(normalizePayee(once), raw).toBe(once);
+    }
+  });
 });
+

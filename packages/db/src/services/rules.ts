@@ -1,7 +1,7 @@
-import { and, asc, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { evaluateRules, RuleActions, RuleConditions, type IsoDate, type RuleLike } from "@meridian/shared";
 import type { Db, DbOrTx } from "../index.js";
-import { payee, rule, transaction } from "../schema/index.js";
+import { category, payee, rule, transaction } from "../schema/index.js";
 import { PayeeCache } from "./payees.js";
 import { addTransactionTags } from "./tags.js";
 
@@ -9,15 +9,39 @@ export interface LoadedRule extends RuleLike {
   name: string;
 }
 
+export interface LoadRulesOptions {
+  /**
+   * The rules as stored, for display: a category action that names a category which no longer
+   * exists is kept, so the Rules page can say so. By default (for evaluation) such an action
+   * is dropped, so a stale rule sets nothing instead of making an import fail on the foreign key
+   * (audit a6-text-rules-accounts-02).
+   */
+  stored?: boolean;
+}
+
 /** Load enabled and disabled rules in order; rows whose JSON no longer validates are skipped. */
-export async function loadRules(tx: DbOrTx): Promise<LoadedRule[]> {
+export async function loadRules(tx: DbOrTx, options: LoadRulesOptions = {}): Promise<LoadedRule[]> {
   const rows = await tx.select().from(rule).orderBy(asc(rule.position), asc(rule.id));
+  const named = rows.flatMap((r) => {
+    const id = (r.actions as { setCategoryId?: unknown } | null)?.setCategoryId;
+    return typeof id === "string" ? [id] : [];
+  });
+  const known = new Set<string>();
+  if (!options.stored && named.length > 0) {
+    const found = await tx.select({ id: category.id }).from(category).where(inArray(category.id, [...new Set(named)]));
+    for (const c of found) known.add(c.id);
+  }
   const out: LoadedRule[] = [];
   for (const r of rows) {
     const conditions = RuleConditions.safeParse(r.conditions);
     const actions = RuleActions.safeParse(r.actions);
     if (!conditions.success || !actions.success) continue;
-    out.push({ id: r.id, name: r.name, position: r.position, enabled: r.enabled, conditions: conditions.data, actions: actions.data });
+    let ruleActions: RuleActions = actions.data;
+    if (!options.stored && typeof ruleActions.setCategoryId === "string" && !known.has(ruleActions.setCategoryId)) {
+      const { setCategoryId: _gone, ...rest } = ruleActions;
+      ruleActions = rest;
+    }
+    out.push({ id: r.id, name: r.name, position: r.position, enabled: r.enabled, conditions: conditions.data, actions: ruleActions });
   }
   return out;
 }
@@ -29,6 +53,8 @@ export interface RuleTargetRow {
   amountCents: bigint;
   rawDescription: string;
   payeeName: string;
+  /** The names merged into the payee: a payee condition holds on any of them (audit a6-text-rules-accounts-10). */
+  payeeAliases?: readonly string[];
   payeeId: string | null;
   payeeDefaultCategoryId: string | null;
   categoryId: string | null;
@@ -50,6 +76,7 @@ export interface ApplyRulesOptions {
 export async function applyRulesToRow(tx: DbOrTx, rules: readonly RuleLike[], row: RuleTargetRow, options: ApplyRulesOptions = {}): Promise<boolean> {
   const outcome = evaluateRules(rules, {
     payee: row.payeeName,
+    payeeAliases: row.payeeAliases ?? [],
     description: row.rawDescription,
     amountCents: row.amountCents,
     accountId: row.accountId,
@@ -107,6 +134,7 @@ export async function runRules(db: Db, options: RunRulesOptions): Promise<{ exam
         amountCents: transaction.amountCents,
         rawDescription: transaction.rawDescription,
         payeeName: sql<string>`coalesce(${payee.name}, '')`,
+        payeeAliases: sql<string[]>`coalesce(${payee.aliases}, '[]'::jsonb)`,
         payeeId: transaction.payeeId,
         payeeDefaultCategoryId: payee.defaultCategoryId,
         categoryId: transaction.categoryId,

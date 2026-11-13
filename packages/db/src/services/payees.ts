@@ -7,6 +7,8 @@ export interface PayeeRow {
   id: string;
   name: string;
   defaultCategoryId: string | null;
+  /** The names merged into this payee (and its earlier names). */
+  aliases: string[];
 }
 
 /** A small per-batch cache so an import does not hit the payee table once per row. */
@@ -40,7 +42,7 @@ export class PayeeCache {
 export async function findPayee(tx: DbOrTx, rawName: string): Promise<PayeeRow | undefined> {
   const name = rawName.trim() || "Unknown";
   const existing = await tx
-    .select({ id: payee.id, name: payee.name, defaultCategoryId: payee.defaultCategoryId })
+    .select({ id: payee.id, name: payee.name, defaultCategoryId: payee.defaultCategoryId, aliases: payee.aliases })
     .from(payee)
     .where(
       sql`lower(${payee.name}) = lower(${name}) or exists (select 1 from jsonb_array_elements_text(${payee.aliases}) a where lower(a) = lower(${name}))`,
@@ -59,7 +61,7 @@ export async function resolvePayee(tx: DbOrTx, rawName: string): Promise<PayeeRo
     .insert(payee)
     .values({ name })
     .onConflictDoUpdate({ target: payee.name, set: { name } })
-    .returning({ id: payee.id, name: payee.name, defaultCategoryId: payee.defaultCategoryId });
+    .returning({ id: payee.id, name: payee.name, defaultCategoryId: payee.defaultCategoryId, aliases: payee.aliases });
   return inserted[0]!;
 }
 

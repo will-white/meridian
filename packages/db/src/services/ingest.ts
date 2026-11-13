@@ -319,12 +319,14 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
         };
         if (options.importLogId) patch.importLogId = options.importLogId;
         let payeeName = "";
+        let payeeAliases: readonly string[] = [];
         let payeeId = local.payeeId;
         let payeeDefaultCategoryId: string | null = null;
         if (!local.payeeLocked) {
           const p = await payees.resolve(normalizePayee(item.payee?.trim() || item.description) || "Unknown");
           patch.payeeId = p.id;
           payeeName = p.name;
+          payeeAliases = p.aliases;
           payeeId = p.id;
           payeeDefaultCategoryId = p.defaultCategoryId;
         }
@@ -353,6 +355,7 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
               amountCents: item.amountCents,
               rawDescription: item.description,
               payeeName,
+              payeeAliases,
               payeeId,
               payeeDefaultCategoryId,
               categoryId: local.categoryId,
@@ -402,6 +405,7 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
       const known = await payees.find(baseName);
       const outcome = evaluateRules(options.rules, {
         payee: known?.name ?? baseName,
+        payeeAliases: known?.aliases ?? [],
         description: item.description,
         amountCents: item.amountCents,
         accountId: options.accountId,

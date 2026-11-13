@@ -11,6 +11,7 @@ import { GoalsPage } from "./pages/GoalsPage.js";
 import { ImportPage } from "./pages/ImportPage.js";
 import { PlanPage } from "./pages/PlanPage.js";
 import { RecurringPage } from "./pages/RecurringPage.js";
+import { PayeesPage } from "./pages/PayeesPage.js";
 import { RulesPage } from "./pages/RulesPage.js";
 import { SettingsPage } from "./pages/SettingsPage.js";
 import { SubscriptionsPage } from "./pages/SubscriptionsPage.js";
@@ -52,6 +53,7 @@ export function App() {
         <Route path="/accounts" element={<AccountsPage />} />
         <Route path="/connections" element={<ConnectionsPage />} />
         <Route path="/rules" element={<RulesPage />} />
+        <Route path="/payees" element={<PayeesPage />} />
         <Route path="/import" element={<ImportPage />} />
         {/* Phase 3: the Investments shell with its sub-pages (views design §5); securities and the per-account page mount under it. */}
         <Route path="/investments" element={<InvestmentsLayout />}>

@@ -36,7 +36,8 @@ h2 { font-size: 1.05rem; margin: 0; }
 a { color: var(--accent); }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
 
-.shell { display: grid; grid-template-columns: 200px 1fr; min-height: 100vh; }
+/* minmax(0, 1fr): a wide table scrolls inside its .scroll box instead of widening the page (found with audit a6-text-rules-accounts at phone width). */
+.shell { display: grid; grid-template-columns: 200px minmax(0, 1fr); min-height: 100vh; }
 .nav { background: var(--panel); border-right: 1px solid var(--line); padding: 1rem; display: flex; flex-direction: column; gap: 1rem; position: sticky; top: 0; height: 100vh; }
 .nav ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
 .nav a { display: block; padding: 0.45rem 0.6rem; border-radius: 6px; text-decoration: none; color: var(--ink); }
@@ -44,7 +45,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0
 .nav-foot { margin-top: auto; display: flex; flex-direction: column; gap: 0.25rem; }
 .brand { font-weight: 700; letter-spacing: 0.02em; }
 .brand.big { font-size: 1.1rem; margin-bottom: 0.5rem; color: var(--muted); }
-.content { padding: 1.5rem; max-width: 1200px; width: 100%; }
+.content { padding: 1.5rem; max-width: 1200px; width: 100%; min-width: 0; }
 
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 1rem; margin-bottom: 1rem; }
 .card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; gap: 1rem; }
@@ -107,7 +108,7 @@ button.link.small { font-size: 0.85em; }
 .secret { display: block; word-break: break-all; margin-top: 0.5rem; }
 
 @media (max-width: 800px) {
-  .shell { grid-template-columns: 1fr; }
+  .shell { grid-template-columns: minmax(0, 1fr); }
   .nav { position: static; height: auto; flex-direction: row; align-items: center; overflow-x: auto; }
   .nav ul { flex-direction: row; }
   .nav-foot { margin-top: 0; margin-left: auto; flex-direction: row; }

@@ -60,3 +60,15 @@ describe("cashFlowChartOption", () => {
     expect(tooltip.formatter([])).toBe("");
   });
 });
+
+describe("tooltip text from the feed is never markup (a6-text-rules-accounts-01)", () => {
+  const hostile = 'Savings <meta http-equiv=refresh content=0;url=/api/health?" & <img src=x>';
+  const escaped = "Savings &lt;meta http-equiv=refresh content=0;url=/api/health?&quot; &amp; &lt;img src=x&gt;";
+  it("escapes an account name in the cash-flow tooltip", () => {
+    const series = [{ key: "a", name: hostile, points: ["100", "200"], thresholdCents: null, minDate: "2026-10-13", minCents: "100", firstBelowThresholdDate: null }];
+    const tooltip = cashFlowChartOption({ dates: ["2026-10-13", "2026-10-14"], series, theme }).tooltip as { formatter: (p: unknown) => string };
+    const html = tooltip.formatter([{ seriesIndex: 0, dataIndex: 0, seriesName: hostile, marker: "" }]);
+    expect(html).toBe(`10/13/26<br/>${escaped}: <strong>$1.00</strong>`);
+    expect(html).not.toContain("<meta");
+  });
+});

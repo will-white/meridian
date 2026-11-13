@@ -13,6 +13,7 @@ const links = [
   ["/cashflow", "Cash flow"],
   ["/alerts", "Alerts"],
   ["/rules", "Rules"],
+  ["/payees", "Payees"],
   ["/connections", "Connections"],
   ["/import", "Import CSV"],
   ["/settings", "Settings"],

@@ -31,3 +31,35 @@ describe("errorMessageText (a4-sync-parse-11)", () => {
     expect(errorMessageText({ weird: true })).toBe("[object Object]");
   });
 });
+
+describe("sanitizeText and markup that is not a complete tag (a6-text-rules-accounts-01)", () => {
+  it("leaves no angle bracket behind, so an unclosed tag cannot open one where HTML is set", () => {
+    const name = "Savings <meta http-equiv=refresh content=0;url=/api/health?";
+    expect(sanitizeText(name, 100)).toBe("Savings meta http-equiv=refresh content=0;url=/api/health?");
+    expect(sanitizeText("a < b > c <<x>> <img src=x onerror=alert(1)", 100)).toBe("a c img src=x onerror=alert(1)");
+    expect(sanitizeText("<b>KING</b> SOOPERS")).toBe("KING SOOPERS");
+  });
+});
+
+describe("sanitizeText on enormous fields (a6-text-rules-accounts-11)", () => {
+  it("takes linear time on long runs of '<' and cuts before any pattern runs", () => {
+    for (const text of ["<".repeat(300_000), `<${"a".repeat(300_000)}`, "<a".repeat(150_000), ` ${"\u0000".repeat(300_000)}x`]) {
+      const t0 = performance.now();
+      const out = sanitizeText(text, 500);
+      expect(performance.now() - t0).toBeLessThan(100);
+      expect(out.length).toBeLessThanOrEqual(500);
+    }
+    expect(sanitizeText("x".repeat(1_000_000), 500)).toBe("x".repeat(500));
+  });
+  it("never cuts a surrogate pair in half", () => {
+    const out = sanitizeText(`${"x".repeat(9)}\u{1F600}`, 10);
+    expect(out).toBe("x".repeat(9));
+  });
+});
+
+describe("sanitizeText and Unicode normalization (a6-text-rules-accounts-17)", () => {
+  it("stores one spelling (NFC) of an accented letter", () => {
+    expect(sanitizeText("Café Rio")).toBe("Café Rio");
+    expect(sanitizeText("Café Rio")).toBe(sanitizeText("Café Rio"));
+  });
+});

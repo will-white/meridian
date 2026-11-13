@@ -42,6 +42,7 @@ import {
   dayDiff,
   formatCents,
   guessCsvMapping,
+  previewCells,
   guessPositionsMapping,
   guessTradesMapping,
   ImportResult,
@@ -380,10 +381,11 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
       if (!parsed.success) throw badRequest("The saved mapping is no longer valid; rebuild it", "bad_profile");
       mapping = parsed.data;
     }
-    const headers = rows[0]!;
+    // What the preview shows is sanitized (audit a6-text-rules-accounts-15); a mapping built from these names still finds the raw headers (`headerKey`).
+    const headers = previewCells([rows[0]!])[0]!;
     if (!mapping) mapping = guessCsvMapping(headers, rows.slice(1, 6));
 
-    const sampleRows = rows.slice(0, 6);
+    const sampleRows = previewCells(rows.slice(0, 6));
     if (!mapping) return { headers, sampleRows, mapping: null, rows: [], totalRows: Math.max(rows.length - 1, 0), duplicateCount: 0, errors: [] };
 
     let mapped: Awaited<ReturnType<typeof mapCsvRows>>;
@@ -516,9 +518,9 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
     const acct = await loadInvestmentAccount(app.db, b.accountId);
     let mapping: PositionsCsvMappingInput | undefined = b.mapping;
     if (!mapping && b.profileId) mapping = await loadMappingProfile(b.profileId, "positions", PositionsCsvMapping);
-    const headers = rows[0]!;
+    const headers = previewCells([rows[0]!])[0]!;
     if (!mapping) mapping = guessPositionsMapping(headers, rows.slice(1, 6));
-    const sampleRows = rows.slice(0, 6);
+    const sampleRows = previewCells(rows.slice(0, 6));
     /** What can be said before there is anything to list: no mapping could be guessed, or the file gives no date. */
     const nothingListed = {
       sampleRows,
@@ -676,9 +678,9 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
     const acct = await loadInvestmentAccount(app.db, b.accountId);
     let mapping: TradesCsvMappingInput | undefined = b.mapping;
     if (!mapping && b.profileId) mapping = await loadMappingProfile(b.profileId, "trades", TradesCsvMapping);
-    const headers = rows[0]!;
+    const headers = previewCells([rows[0]!])[0]!;
     if (!mapping) mapping = guessTradesMapping(headers, rows.slice(1, 6));
-    const sampleRows = rows.slice(0, 6);
+    const sampleRows = previewCells(rows.slice(0, 6));
     if (!mapping) {
       return { headers, sampleRows, mapping: null, rowOrder: null, trades: [], totalRows: Math.max(rows.length - 1, 0), duplicateCount: 0, changedCount: 0, userEditedCount: 0, actionsFound: [], unknownActions: 0, filterValues: [], errors: [], skipped: [] };
     }

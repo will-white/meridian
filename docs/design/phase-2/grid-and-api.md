@@ -129,7 +129,7 @@ computePlan:
 planAverages(db, { months: 3|6|12, asOf: Month }): window = [addMonths(asOf, -months), addMonths(asOf, -1)] (the partial current month is excluded). firstLedgerMonth = monthOf(min(transaction.date)); monthsWithData = count of window months >= firstLedgerMonth; 0 -> every average 0n. averageCents(c) = max(0n, divTrunc(Σ_{m in window} actual(c, m) incl. goalNet, BigInt(monthsWithData))). Rule: divide by months that have data (a 12-month average in a 2-month-old ledger is sum/2, and the response says so), truncate toward zero, clamp at 0.
 
 ## Net worth (dashboard)
-todayCents = Σ over non-closed accounts of the latest balance_snapshot with date <= today (DISTINCT ON (account_id) ORDER BY account_id, date DESC). yearAgoDate = addMonthsClamped(today, -12). yearAgoCents = same query with date <= yearAgoDate; accounts with no snapshot on/before that date contribute 0 and are listed in newAccounts; yearAgoCents and changeCents are null when NO account has a snapshot that old. changeCents = today - yearAgo. Liabilities are negative balances.
+todayCents = Σ over non-closed accounts of the latest balance_snapshot with date <= today (DISTINCT ON (account_id) ORDER BY account_id, date DESC). yearAgoDate = addMonthsClamped(today, -12). yearAgoCents = same query with date <= yearAgoDate over every account, closed ones included (Phase 2 plan audit decision A16: closing an account does not rewrite the past); accounts with no snapshot on/before that date contribute 0 and are listed in newAccounts; yearAgoCents and changeCents are null when NO account has a snapshot that old. changeCents = today - yearAgo. Liabilities are negative balances.
 
 ## Persistence, packages/db/src/services
 ```ts
@@ -261,7 +261,7 @@ GET /audit — AuditQuery { entity?: AuditEntity, entityId?: string, batchId?: u
 - Concurrent edits from two tabs: last write wins per cell; audit_log keeps both with their own batch ids; the optimistic cache is rolled back on error and replaced by the returned plan on success.
 - Deleting a group leaves its categories ungrouped (FK set null) at their existing positions; deleting a category that any transaction, split, recurring item or goal references -> 409 (hide instead); deleting an unused category cascades its month_plan rows.
 - Reorder into a group of another bucket -> 400; unknown ids are ignored; ids left out keep their relative order after the listed ones.
-- Net worth: closed accounts excluded; yearAgoDate = addMonthsClamped(today, -12) (2028-02-29 -> 2027-02-28); accounts with no snapshot on or before that date contribute 0 and are listed in newAccounts; no snapshot that old anywhere -> yearAgoCents and changeCents null.
+- Net worth: closed accounts excluded from today's figure, kept in the year-ago figure (plan audit decision A16); yearAgoDate = addMonthsClamped(today, -12) (2028-02-29 -> 2027-02-28); accounts with no snapshot on or before that date contribute 0 and are listed in newAccounts; no snapshot that old anywhere -> yearAgoCents and changeCents null.
 - Alerts dedupe on (kind, recurring_id, dedupe_key), so a nightly rerun never creates a second missed_charge for the same expected date and a dismissed alert stays dismissed; dismissing twice is a no-op 200.
 - Dismissed recurring suggestions keep their row (status dismissed) so detection does not re-propose the payee; GET /recurring omits them unless status=dismissed is asked; a dismissed row can be re-activated.
 - Viewer role: every GET under /plan, /dashboard, /recurring, /alerts, /audit is 200; every PUT/POST/PATCH/DELETE is 403 (existing auth plugin).
@@ -379,7 +379,7 @@ EXPECTED: Sep spending committed 84000n includes Old Hobby 2000n; removing Old H
 - today: A's client-supplied date (PWA local date) with a 2-day sanity bound, combined with B's injectable server clock as the default and for tests.
 - Groups: B's nullable group_id (ungrouped categories render after groups) over A's seeded default group per bucket and NOT NULL backfill. Bucket stays directly editable on PATCH /categories (Phase 1 behaviour, B) with goal/income guards; A's 'move via group' restriction dropped.
 - Category delete: A's DELETE with 409 when referenced (B offered none). Reason: unused categories accumulate; the guard keeps the ledger safe.
-- Net worth: A's addMonthsClamped(today, -12) and newAccounts list (B used today - 365 days and no list); B's null when nothing that old exists kept. Closed accounts excluded (B).
+- Net worth: A's addMonthsClamped(today, -12) and newAccounts list (B used today - 365 days and no list); B's null when nothing that old exists kept. Closed accounts excluded (B); since the audit (plan decision A16) only from today's figure.
 - Bills due: B's next_due_date <= today + 14 with overdue flag (A's window started at today and would hide an overdue bill).
 - Subscriptions: B's GET /recurring?status=active&direction=out&sort=cost plus A's totals, as RecurringList { items, totals }.
 - Drill-down: existing from/to date params (B) rather than A's new month param; goalId filter added (both); A's bulk recategorize endpoint dropped (not required by the spec).
