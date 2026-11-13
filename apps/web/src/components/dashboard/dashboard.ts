@@ -93,7 +93,8 @@ export function syncTone(status: SyncAttention["status"]): "warn" | "bad" | "neu
 export function syncStatusText(status: SyncAttention["status"]): string {
   switch (status) {
     case "auth_required":
-      return "needs a new token";
+      // con.auth: the bank's login at the SimpleFIN Bridge needs renewing; the token is fine.
+      return "needs re-authentication at the Bridge";
     case "error":
       return "last sync failed";
     case "disabled":
@@ -103,6 +104,12 @@ export function syncStatusText(status: SyncAttention["status"]): string {
     default:
       return "ok";
   }
+}
+
+/** A connection's line on the sync card, as the Connections page words it: the status, and when the schedule stopped asking. */
+export function syncAttentionText(c: Pick<SyncAttention, "status" | "syncPaused">): string {
+  const status = syncStatusText(c.status);
+  return c.syncPaused ? `${status} · scheduled syncs paused` : status;
 }
 
 // ---- Phase 3: the net-worth breakdown and the investments block (views design §5, seams C47) ----

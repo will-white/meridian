@@ -3,11 +3,16 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import { useSearchParams } from "react-router";
 import type { CategoryDetailView, HouseholdSettingView, PlanAveragesResponse, PlanCellEdit, PlanResponse, RolloverMode, TransactionView } from "@meridian/shared";
 import { addMonths, monthDiff } from "@meridian/shared";
+import { useIsViewer } from "../components/investments/queries.js";
+import { DrillPanel, type DrillCategory } from "../components/plan/DrillPanel.js";
 import { ManageCategories } from "../components/plan/ManageCategories.js";
 import { PlanGrid } from "../components/plan/PlanGrid.js";
+import { RulePrompt } from "../components/transactions/RulePrompt.js";
 import { Empty, ErrorText } from "../components/ui.js";
 import { api, query } from "../lib/api.js";
-import { MAX_RANGE_MONTHS, applyEdits, averagePlanOutcome, defaultRange, localToday, monthLabel, resolveRange, visibleRows, type PlanCategoryRow } from "../lib/plan.js";
+import { MAX_RANGE_MONTHS, applyEdits, averagePlanOutcome, defaultRange, monthLabel, resolveRange, visibleRows, type DrillTarget, type PlanCategoryRow } from "../lib/plan.js";
+import { recategorizePrompt, ruleSavedNotice, type RulePromptTarget } from "../lib/recategorize.js";
+import { useLocalToday } from "../lib/useLocalToday.js";
 import "./PlanPage.css";
 
 interface SetPlanCellsResponse {
@@ -37,12 +42,15 @@ function writeFlag(key: string, value: boolean): void {
 export function PlanPage() {
   const qc = useQueryClient();
   const [params, setParams] = useSearchParams();
-  const today = localToday();
+  const today = useLocalToday();
+  const viewer = useIsViewer();
   const { from, to } = useMemo(() => resolveRange(params.get("from"), params.get("to"), today), [params, today]);
   const [compact, setCompact] = useState(() => readFlag(COMPACT_KEY));
   const [showHidden, setShowHidden] = useState(() => readFlag(SHOW_HIDDEN_KEY));
   const [manage, setManage] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [drill, setDrill] = useState<DrillTarget | null>(null);
+  const [rulePrompt, setRulePrompt] = useState<{ target: RulePromptTarget; categoryName: string | undefined } | null>(null);
 
   const planKey = useMemo(() => ["plan", from, to, today] as const, [from, to, today]);
   const plan = useQuery({
@@ -109,11 +117,14 @@ export function PlanPage() {
     },
   });
 
-  const dropTransaction = useMutation({
+  // Drag onto a category row, or the drill-down panel's select: the register's PATCH, then its rule prompt.
+  const recategorize = useMutation({
     mutationFn: ({ id, categoryId }: { id: string; categoryId: string }) => api<TransactionView>(`/transactions/${id}`, { method: "PATCH", body: { categoryId } }),
-    onSuccess: (t) => {
-      for (const key of [["transactions"], ["plan"], ["dashboard"]]) void qc.invalidateQueries({ queryKey: key });
+    onSuccess: (t, { categoryId }) => {
+      for (const key of [["transactions"], ["plan"], ["dashboard"], ["goals"]]) void qc.invalidateQueries({ queryKey: key });
       setNotice(`${t.payeeName ?? t.rawDescription} moved to ${t.categoryName ?? "its category"}.`);
+      const target = recategorizePrompt(t, categoryId);
+      setRulePrompt(target ? { target, categoryName: t.categoryName ?? undefined } : null);
     },
   });
 
@@ -123,7 +134,8 @@ export function PlanPage() {
     (row: PlanCategoryRow, rolloverMode: RolloverMode, rolloverFromMonth: string | null) => patchCategory.mutate({ id: row.categoryId, rolloverMode, rolloverFromMonth }),
     [patchCategory],
   );
-  const onDropTransaction = useCallback((id: string, categoryId: string) => dropTransaction.mutate({ id, categoryId }), [dropTransaction]);
+  const onDropTransaction = useCallback((id: string, categoryId: string) => recategorize.mutate({ id, categoryId }), [recategorize]);
+  const onDrill = useCallback((target: DrillTarget) => setDrill(target), []);
 
   const span = monthDiff(from, to) + 1;
   const setRange = (f: string, t: string) => setParams({ from: f, to: t });
@@ -136,9 +148,18 @@ export function PlanPage() {
   const zeroBased = settings.isPending && settings.variables !== undefined ? settings.variables : (plan.data?.zeroBased ?? false);
   const rows = useMemo(() => (plan.data ? visibleRows(plan.data.rows, showHidden) : []), [plan.data, showHidden]);
   const busy = setCells.isPending || average.isPending || patchCategory.isPending;
+  const drillCategories = useMemo<DrillCategory[]>(
+    () => (plan.data ? visibleRows(plan.data.rows, false) : []).filter((r): r is PlanCategoryRow => r.kind === "category").map((r) => ({ id: r.categoryId, name: r.name, bucket: r.bucket })),
+    [plan.data],
+  );
+  const drillName = (categoryId: string): string => {
+    const row = plan.data?.rows.find((r): r is PlanCategoryRow => r.kind === "category" && r.categoryId === categoryId);
+    return row?.name ?? "Category";
+  };
+  const drillTitle = drill ? `${drill.kind === "uncategorized" ? "Uncategorized" : drillName(drill.row.categoryId)} · ${monthLabel(drill.month)}` : "";
 
   return (
-    <div className="plan-page">
+    <div className={`plan-page ${drill ? "with-drill" : ""}`}>
       <div className="row space wrap plan-toolbar">
         <h1>Spending plan</h1>
         <div className="row wrap">
@@ -170,7 +191,7 @@ export function PlanPage() {
             compact
           </label>
           <label className="inline" title="Show 'to assign' (income received minus everything planned) instead of 'left to spend'">
-            <input type="checkbox" checked={zeroBased} disabled={settings.isPending || !plan.data} onChange={(e) => settings.mutate(e.target.checked)} /> zero-based
+            <input type="checkbox" checked={zeroBased} disabled={viewer || settings.isPending || !plan.data} onChange={(e) => settings.mutate(e.target.checked)} /> zero-based
           </label>
           <label className="inline">
             <input
@@ -183,9 +204,11 @@ export function PlanPage() {
             />{" "}
             show hidden
           </label>
-          <button type="button" className="secondary" onClick={() => setManage((m) => !m)}>
-            {manage ? "Hide manager" : "Manage categories"}
-          </button>
+          {!viewer && (
+            <button type="button" className="secondary" onClick={() => setManage((m) => !m)}>
+              {manage ? "Hide manager" : "Manage categories"}
+            </button>
+          )}
         </div>
       </div>
       <ErrorText error={plan.error} />
@@ -193,7 +216,7 @@ export function PlanPage() {
       <ErrorText error={average.error} />
       <ErrorText error={patchCategory.error} />
       <ErrorText error={settings.error} />
-      <ErrorText error={dropTransaction.error} />
+      <ErrorText error={recategorize.error} />
       {notice && (
         <p className="notice">
           {notice}{" "}
@@ -201,6 +224,18 @@ export function PlanPage() {
             dismiss
           </button>
         </p>
+      )}
+      {rulePrompt && !viewer && (
+        <RulePrompt
+          key={`${rulePrompt.target.payeeName}|${rulePrompt.target.categoryId}`}
+          target={rulePrompt.target}
+          categoryName={rulePrompt.categoryName}
+          onSaved={(changed) => {
+            setRulePrompt(null);
+            setNotice(ruleSavedNotice(changed));
+          }}
+          onDismiss={() => setRulePrompt(null)}
+        />
       )}
       {plan.isLoading && <p className="muted">Loading the plan…</p>}
       {plan.data && plan.data.rows.length === 0 && <Empty>No categories yet. Create a few below, then plan your first month.</Empty>}
@@ -211,19 +246,36 @@ export function PlanPage() {
           compact={compact}
           zeroBased={zeroBased}
           busy={busy}
+          readOnly={viewer}
           onEdits={onEdits}
           onPlanFromAverage={onPlanFromAverage}
           onRollover={onRollover}
           onDropTransaction={onDropTransaction}
+          onDrill={onDrill}
         />
       )}
-      {plan.data && (
-        <p className="muted small plan-help">
-          Type a planned amount and press Enter (down), Shift+Enter (up), Tab (next month) or arrows. Esc reverts; Delete on an empty cell restores the automatic value (R recurring, G goal, A
-          average). Ctrl+Shift+→ fills the value into later months; Ctrl+Shift+A plans from an average. Drag a transaction from the register onto a category row to categorize it.
-        </p>
+      {drill && plan.data && (
+        <DrillPanel
+          target={drill}
+          title={drillTitle}
+          categories={drillCategories}
+          canEdit={!viewer}
+          onRecategorize={(t, categoryId) => recategorize.mutate({ id: t.id, categoryId })}
+          onClose={() => setDrill(null)}
+        />
       )}
-      {manage && plan.data && <ManageCategories rows={plan.data.rows} onClose={() => setManage(false)} />}
+      {plan.data &&
+        (viewer ? (
+          <p className="muted small plan-help">You are signed in as a viewer: the plan is read-only. Click an actual to see its transactions.</p>
+        ) : (
+          <p className="muted small plan-help">
+            Type a planned amount and press Enter (down), Shift+Enter (up), Tab (next month) or arrows. Esc reverts; Delete on an empty cell restores the automatic value (R recurring, G goal, A
+            average). Ctrl+Shift+→ copies the value into later months; Ctrl+Shift+A plans from an average. Click an actual to list its transactions under the grid, then drag one onto a category
+            row to move it there.
+            {plan.data.months.some((m) => m < plan.data!.startMonth) && ` Months before the plan start (${monthLabel(plan.data.startMonth)}) are read-only: change the start month in Settings.`}
+          </p>
+        ))}
+      {manage && plan.data && !viewer && <ManageCategories rows={plan.data.rows} onClose={() => setManage(false)} />}
     </div>
   );
 }

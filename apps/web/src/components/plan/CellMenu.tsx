@@ -15,6 +15,10 @@ export interface CellMenuProps {
   anchor: DOMRect;
   initialSection?: MenuSection | undefined;
   canFillRight: boolean;
+  /** The planned value can be changed here (false for a viewer and before the plan start): Fill right, average, Clear. */
+  canEdit: boolean;
+  /** The category's rollover can be changed (false for a viewer). */
+  canSetRollover: boolean;
   busy: boolean;
   onClose: () => void;
   onFillRight: () => void;
@@ -28,9 +32,9 @@ const MENU_WIDTH = 280;
 
 /** The "⋯" popover on a category cell. Fixed-positioned so the grid's scroll clipping never hides it. */
 export function CellMenu(props: CellMenuProps) {
-  const { row, cell, month, currentMonth, anchor, initialSection, canFillRight, busy, onClose } = props;
+  const { row, cell, month, currentMonth, anchor, initialSection, canFillRight, canEdit, canSetRollover, busy, onClose } = props;
   const ref = useRef<HTMLDivElement>(null);
-  const [section, setSection] = useState<MenuSection | null>(initialSection ?? null);
+  const [section, setSection] = useState<MenuSection | null>(initialSection === "average" && !canEdit ? null : (initialSection ?? null));
   const [mode, setMode] = useState<RolloverMode>(row.rolloverMode);
   const [fromMonth, setFromMonth] = useState<string>(row.rolloverFromMonth ?? currentMonth);
 
@@ -68,25 +72,33 @@ export function CellMenu(props: CellMenuProps) {
       </div>
       {section === null && (
         <ul>
+          {canEdit && (
+            <>
+              <li>
+                <button type="button" className="link" disabled={!canFillRight || busy} onClick={props.onFillRight} title="Copy this value into every later visible month (Ctrl+Shift+→)">
+                  Fill right
+                </button>
+              </li>
+              <li>
+                <button type="button" className="link" disabled={busy} onClick={() => setSection("average")} title="Plan this month from the average of past months (Ctrl+Shift+A)">
+                  Plan from average…
+                </button>
+              </li>
+              <li>
+                <button type="button" className="link" disabled={!cell.hasExplicitPlan || busy} onClick={props.onClear} title="Remove the typed value so the automatic value shows through">
+                  Clear (use automatic value)
+                </button>
+              </li>
+            </>
+          )}
           <li>
-            <button type="button" className="link" disabled={!canFillRight || busy} onClick={props.onFillRight} title="Copy this value into every later visible month (Ctrl+Shift+→)">
-              Fill right
-            </button>
-          </li>
-          <li>
-            <button type="button" className="link" disabled={busy} onClick={() => setSection("average")} title="Plan this month from the average of past months (Ctrl+Shift+A)">
-              Plan from average…
-            </button>
-          </li>
-          <li>
-            <button type="button" className="link" disabled={!cell.hasExplicitPlan || busy} onClick={props.onClear} title="Remove the typed value so the automatic value shows through">
-              Clear (use automatic value)
-            </button>
-          </li>
-          <li>
-            <button type="button" className="link" onClick={() => setSection("rollover")}>
-              Rollover: {ROLLOVER_LABELS[row.rolloverMode]}…
-            </button>
+            {canSetRollover ? (
+              <button type="button" className="link" onClick={() => setSection("rollover")}>
+                Rollover: {ROLLOVER_LABELS[row.rolloverMode]}…
+              </button>
+            ) : (
+              <span className="muted small plan-menu-note">Rollover: {ROLLOVER_LABELS[row.rolloverMode]}</span>
+            )}
           </li>
           <li>
             <button type="button" className="link" onClick={props.onDrillDown}>

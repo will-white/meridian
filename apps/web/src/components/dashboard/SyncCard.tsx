@@ -2,7 +2,7 @@ import { Link } from "react-router";
 import type { DashboardView } from "@meridian/shared";
 import { relativeTime } from "../../lib/format.js";
 import { Badge, Card } from "../ui.js";
-import { syncStatusText, syncTone } from "./dashboard.js";
+import { syncAttentionText, syncTone } from "./dashboard.js";
 
 /** When the banks were last read, and the connections that need a person. */
 export function SyncCard({ sync }: { sync: DashboardView["sync"] }) {
@@ -19,7 +19,7 @@ export function SyncCard({ sync }: { sync: DashboardView["sync"] }) {
           {sync.attention.map((c) => (
             <li key={c.connectionId}>
               <Link to="/connections">{c.name}</Link>
-              <Badge tone={syncTone(c.status)}>{syncStatusText(c.status)}</Badge>
+              <Badge tone={syncTone(c.status)}>{syncAttentionText(c)}</Badge>
             </li>
           ))}
         </ul>

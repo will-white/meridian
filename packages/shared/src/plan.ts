@@ -247,6 +247,8 @@ export interface MonthSummaryResult {
 export interface PlanResult {
   today: IsoDate;
   currentMonth: MonthKey;
+  /** The household's plan start month: months before it take no plan edits. */
+  startMonth: MonthKey;
   from: MonthKey;
   to: MonthKey;
   months: MonthKey[];
@@ -758,6 +760,7 @@ export function computePlan(input: ComputePlanInput): PlanResult {
   return {
     today: input.today,
     currentMonth,
+    startMonth: input.startMonth,
     from: input.from,
     to: input.to,
     months,

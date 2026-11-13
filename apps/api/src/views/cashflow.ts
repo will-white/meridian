@@ -140,7 +140,7 @@ export function toDashboardView(d: DashboardResult): DashboardView {
     review: { uncategorized: d.review.uncategorized, suggestedRecurring: d.review.suggestedRecurring, alerts: d.review.alerts },
     sync: {
       lastSyncAt: d.sync.lastSyncAt === null ? null : d.sync.lastSyncAt.toISOString(),
-      attention: d.sync.attention.map((c) => ({ connectionId: c.connectionId, name: c.name, status: c.status })),
+      attention: d.sync.attention.map((c) => ({ connectionId: c.connectionId, name: c.name, status: c.status, syncPaused: c.syncPaused })),
     },
     retirement: null,
     investments: d.investments === null ? null : toDashboardInvestmentsView(d.investments),

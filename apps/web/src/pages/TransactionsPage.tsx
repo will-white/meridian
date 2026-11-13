@@ -2,15 +2,16 @@ import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
 import { isIsoDate } from "@meridian/shared";
-import type { AccountView, CategoryView, GoalView, RecurringList, RuleView, TransactionList, TransactionView } from "@meridian/shared";
+import type { AccountView, CategoryView, GoalView, RecurringList, TransactionList, TransactionView } from "@meridian/shared";
 import { api, query } from "../lib/api.js";
 import { money, shortDate } from "../lib/format.js";
-import { TRANSACTION_DRAG_TYPE } from "../lib/plan.js";
+import { TRANSACTION_DRAG_TYPE, canDragToRecategorize, recategorizePrompt, ruleSavedNotice, type RulePromptTarget } from "../lib/recategorize.js";
 import { amountInCategory, type SplitRequestLine } from "../lib/splits.js";
 import { useIsViewer } from "../components/investments/queries.js";
 import { RowActions } from "../components/transactions/RowActions.js";
+import { RulePrompt } from "../components/transactions/RulePrompt.js";
 import { SplitEditor } from "../components/transactions/SplitEditor.js";
-import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
+import { Badge, Empty, ErrorText } from "../components/ui.js";
 import "./TransactionsPage.css";
 
 function useDebounced<T>(value: T, ms: number): T {
@@ -20,11 +21,6 @@ function useDebounced<T>(value: T, ms: number): T {
     return () => clearTimeout(t);
   }, [value, ms]);
   return v;
-}
-
-interface RulePrompt {
-  transaction: TransactionView;
-  categoryId: string | null;
 }
 
 type Transfers = "include" | "exclude" | "only";
@@ -70,7 +66,7 @@ export function TransactionsPage() {
   const f = useMemo(() => readFilters(searchParams), [searchParams]);
   const [q, setQ] = useState(() => searchParams.get("q") ?? "");
   const search = useDebounced(q, 250);
-  const [prompt, setPrompt] = useState<RulePrompt | null>(null);
+  const [prompt, setPrompt] = useState<RulePromptTarget | null>(null);
   const [splitting, setSplitting] = useState<string | null>(null);
   /** The row whose corrections (pair, mark as transfer, delete) are open. */
   const [correcting, setCorrecting] = useState<string | null>(null);
@@ -149,15 +145,6 @@ export function TransactionsPage() {
       void qc.invalidateQueries({ queryKey: ["accounts"] });
     },
   });
-  const createRule = useMutation({
-    mutationFn: (body: unknown) => api<{ rule: RuleView; applied: { examined: number; changed: number } }>("/rules", { method: "POST", body }),
-    onSuccess: (res) => {
-      setPrompt(null);
-      setRuleNotice(`Rule saved. ${res.applied.changed} other transaction${res.applied.changed === 1 ? "" : "s"} categorized.`);
-      invalidate();
-      void qc.invalidateQueries({ queryKey: ["rules"] });
-    },
-  });
   const [ruleNotice, setRuleNotice] = useState<string | null>(null);
 
   const categoryName = useMemo(() => new Map((categories.data ?? []).map((c) => [c.id, c.name])), [categories.data]);
@@ -168,8 +155,7 @@ export function TransactionsPage() {
   const onCategoryChange = (t: TransactionView, value: string) => {
     const categoryId = value === "" ? null : value;
     update.mutate({ id: t.id, categoryId });
-    if (categoryId && t.payeeName) setPrompt({ transaction: t, categoryId });
-    else setPrompt(null);
+    setPrompt(recategorizePrompt(t, categoryId));
   };
 
   return (
@@ -246,33 +232,16 @@ export function TransactionsPage() {
       <ErrorText error={txns.error} />
       <ErrorText error={update.error} />
       {prompt && (
-        <Card>
-          <div className="row wrap space">
-            <span>
-              Always categorize <strong>{prompt.transaction.payeeName}</strong> as <strong>{categoryName.get(prompt.categoryId ?? "") ?? "—"}</strong>?
-              <span className="muted"> Creates a rule and applies it to uncategorized transactions.</span>
-            </span>
-            <span className="row">
-              <button
-                onClick={() =>
-                  createRule.mutate({
-                    name: `${prompt.transaction.payeeName} → ${categoryName.get(prompt.categoryId ?? "")}`,
-                    conditions: { payee: { op: "equals", value: prompt.transaction.payeeName } },
-                    actions: { setCategoryId: prompt.categoryId },
-                    applyTo: "uncategorized",
-                  })
-                }
-                disabled={createRule.isPending}
-              >
-                Always do this
-              </button>
-              <button className="secondary" onClick={() => setPrompt(null)}>
-                Just this once
-              </button>
-            </span>
-          </div>
-          <ErrorText error={createRule.error} />
-        </Card>
+        <RulePrompt
+          key={`${prompt.payeeName}|${prompt.categoryId}`}
+          target={prompt}
+          categoryName={categoryName.get(prompt.categoryId)}
+          onSaved={(changed) => {
+            setPrompt(null);
+            setRuleNotice(ruleSavedNotice(changed));
+          }}
+          onDismiss={() => setPrompt(null)}
+        />
       )}
       {ruleNotice && (
         <p className="notice">
@@ -299,15 +268,15 @@ export function TransactionsPage() {
               <tr
                 key={t.id}
                 className={t.pending ? "pending" : ""}
-                draggable={!t.isTransfer}
+                draggable={!viewer && canDragToRecategorize(t)}
                 onDragStart={(e) => {
                   e.dataTransfer.setData(TRANSACTION_DRAG_TYPE, t.id);
                   e.dataTransfer.effectAllowed = "move";
                 }}
-                title={t.isTransfer ? undefined : "Drag onto a plan category to recategorize"}
+                title={!viewer && canDragToRecategorize(t) ? "Drag onto a plan category to recategorize" : undefined}
               >
                 <td className="nowrap">
-                  {!t.isTransfer && (
+                  {!viewer && canDragToRecategorize(t) && (
                     <span className="drag-handle" aria-hidden="true">
                       ⠿
                     </span>

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, lt, lte } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, lt, lte, or } from "drizzle-orm";
 import {
   addDays,
   addMonthsClamped,
@@ -107,7 +107,8 @@ export interface DashboardResult {
   billsDue: BillDue[];
   netWorth: NetWorthBlock;
   review: { uncategorized: number; suggestedRecurring: number; alerts: number };
-  sync: { lastSyncAt: Date | null; attention: Array<{ connectionId: string; name: string; status: ConnectionStatus }> };
+  /** `attention`: connections in auth_required or error, or with scheduled syncs paused (`syncPaused`). */
+  sync: { lastSyncAt: Date | null; attention: Array<{ connectionId: string; name: string; status: ConnectionStatus; syncPaused: boolean }> };
   retirement: null;
   /** Phase 3: null without open investment accounts. */
   investments: DashboardInvestmentsBlock | null;
@@ -264,9 +265,9 @@ async function syncStatus(db: DbOrTx): Promise<DashboardResult["sync"]> {
     .orderBy(desc(connection.lastSyncAt))
     .limit(1);
   const attention = await db
-    .select({ connectionId: connection.id, name: connection.name, status: connection.status })
+    .select({ connectionId: connection.id, name: connection.name, status: connection.status, syncPaused: connection.syncPaused })
     .from(connection)
-    .where(inArray(connection.status, ["auth_required", "error"]))
+    .where(or(inArray(connection.status, ["auth_required", "error"]), eq(connection.syncPaused, true)))
     .orderBy(asc(connection.name), asc(connection.id));
   return { lastSyncAt: latest?.lastSyncAt ?? null, attention };
 }

@@ -15,8 +15,8 @@ export type PaceView = NonNullable<MonthSummaryView["pace"]>;
 
 /** The server caps a plan range at this many months. */
 export const MAX_RANGE_MONTHS = 24;
-/** dataTransfer type a draggable register row carries (the transaction id). */
-export const TRANSACTION_DRAG_TYPE = "text/meridian-transaction";
+/** dataTransfer type a draggable transaction row carries (the transaction id). */
+export { TRANSACTION_DRAG_TYPE } from "./recategorize.js";
 
 const pad = (n: number): string => String(n).padStart(2, "0");
 
@@ -52,10 +52,14 @@ export function resolveRange(fromParam: string | null, toParam: string | null, t
 
 export type ParsedAmount = { ok: true; cents: bigint | null } | { ok: false; error: string };
 
+/** The largest amount a request may carry: the wire's cents are at most 15 digits (9,999,999,999,999.99). */
+export const MAX_PLANNED_CENTS = 999_999_999_999_999n;
+
 /**
  * Parse what a person types into a planned cell: "1,234.50", "$12", "12.5",
  * " 1 000 ". Empty means "no value" (clear). Negatives are rejected; the grid
- * holds magnitudes in the bucket's direction.
+ * holds magnitudes in the bucket's direction. An amount past the API's bound is
+ * refused here, in the person's words, instead of by the request's validation.
  */
 export function parseAmountInput(raw: string): ParsedAmount {
   let s = raw.replace(/[$,\s]/g, "");
@@ -66,7 +70,9 @@ export function parseAmountInput(raw: string): ParsedAmount {
   if (s.endsWith(".")) s = s.slice(0, -1);
   if (/^\d+\.\d{3,}$/.test(s)) return { ok: false, error: "Use at most two decimals" };
   if (!/^\d+(\.\d{1,2})?$/.test(s)) return { ok: false, error: "Not an amount" };
-  return { ok: true, cents: parseDecimalToCents(s) };
+  const cents = parseDecimalToCents(s);
+  if (cents > MAX_PLANNED_CENTS) return { ok: false, error: "Too large" };
+  return { ok: true, cents };
 }
 
 /** The text a planned input shows when nobody is typing: the resolved value, or empty for an auto zero. */
@@ -89,16 +95,74 @@ export function sourceMarker(source: PlanCellView["source"]): string | null {
   }
 }
 
-/** One manual edit per visible month after `fromIndex`, carrying the displayed value. */
-export function fillRightEdits(row: PlanCategoryRow, months: readonly string[], fromIndex: number): PlanCellEdit[] {
+/**
+ * One manual edit per visible month after `fromIndex`, carrying `cents`: by default the
+ * displayed (resolved) value of the source cell, which is right for the cell menu (it waits
+ * for the plan to be fresh). The keyboard shortcut passes the value it is committing.
+ */
+export function fillRightEdits(row: PlanCategoryRow, months: readonly string[], fromIndex: number, cents?: bigint): PlanCellEdit[] {
   const source = row.cells[fromIndex];
   if (!source) return [];
+  const plannedCents = (cents ?? BigInt(source.plannedCents)).toString();
   const edits: PlanCellEdit[] = [];
   for (let i = fromIndex + 1; i < months.length; i++) {
     const month = months[i];
-    if (month !== undefined) edits.push({ month, categoryId: row.categoryId, plannedCents: source.plannedCents, source: "manual" });
+    if (month !== undefined) edits.push({ month, categoryId: row.categoryId, plannedCents, source: "manual" });
   }
   return edits;
+}
+
+/** What leaving a planned input does with its text (Enter, Tab, arrows, blur, the fill-right shortcut). */
+export type CellCommit =
+  /** Nothing new: the cell keeps the value it shows (`cents`, the resolved value). */
+  | { kind: "keep"; cents: bigint }
+  /** A new planned amount for the month. */
+  | { kind: "set"; cents: bigint }
+  /** The typed value is removed, so the automatic value shows through. */
+  | { kind: "clear" }
+  | { kind: "invalid"; error: string };
+
+/**
+ * Decide what a planned input's text means against the cell as the plan last showed it. `text`
+ * is null when nobody typed. Re-typing the shown value, or emptying an automatic cell, is no edit.
+ */
+export function resolveCellCommit(text: string | null, cell: Pick<PlanCellView, "plannedCents" | "hasExplicitPlan">): CellCommit {
+  const shown = BigInt(cell.plannedCents);
+  if (text === null || text === plannedInputValue(cell)) return { kind: "keep", cents: shown };
+  const parsed = parseAmountInput(text);
+  if (!parsed.ok) return { kind: "invalid", error: parsed.error };
+  if (parsed.cents === null) return cell.hasExplicitPlan ? { kind: "clear" } : { kind: "keep", cents: shown };
+  if (cell.hasExplicitPlan && parsed.cents === shown) return { kind: "keep", cents: shown };
+  return { kind: "set", cents: parsed.cents };
+}
+
+/**
+ * The edits one commit sends, in one batch (one request, one audit batch). With `fillRight`
+ * (Ctrl/Cmd+Shift+→) every later visible month gets the value being committed: the amount just
+ * typed, or the shown value when nothing was typed. Emptying a typed cell sends only the clear:
+ * the automatic value it falls back to is known once the server answers, and the cell menu's
+ * Fill right copies it from there.
+ */
+export function cellEdits(row: PlanCategoryRow, months: readonly string[], col: number, commit: CellCommit, opts: { fillRight: boolean }): PlanCellEdit[] {
+  const month = months[col];
+  if (month === undefined) return [];
+  switch (commit.kind) {
+    case "invalid":
+      return [];
+    case "clear":
+      return [{ month, categoryId: row.categoryId, plannedCents: null, source: "manual" }];
+    case "keep":
+      return opts.fillRight ? fillRightEdits(row, months, col, commit.cents) : [];
+    case "set": {
+      const own: PlanCellEdit = { month, categoryId: row.categoryId, plannedCents: commit.cents.toString(), source: "manual" };
+      return opts.fillRight ? [own, ...fillRightEdits(row, months, col, commit.cents)] : [own];
+    }
+  }
+}
+
+/** A month before the household's plan start month takes no plan edits (the API answers 400 `before_plan_start`). */
+export function beforePlanStart(month: string, startMonth: string): boolean {
+  return month < startMonth;
 }
 
 const maxBig = (a: bigint, b: bigint): bigint => (a > b ? a : b);
@@ -149,19 +213,29 @@ export function applyEdits(plan: PlanResponse, edits: readonly PlanCellEdit[]): 
   };
 }
 
+/** What a drill-down shows: the transactions behind a category cell's actual, or a month's uncategorized ones. */
+export type DrillTarget = { kind: "category"; row: Pick<PlanCategoryRow, "categoryId" | "goal">; month: string } | { kind: "uncategorized"; month: string };
+
 /**
- * The register behind a cell's actual. `planScope` asks for exactly what the plan counts
+ * The register query behind a drill-down. `planScope` asks for exactly what the plan counts
  * (on-budget accounts, split transactions by their lines), so the list adds up to the cell.
+ * The Plan page's drill-down panel and the register link use the same query.
  */
-export function drillDownUrl(row: PlanCategoryRow, month: string): string {
-  const from = monthStart(month);
-  const to = monthEnd(month);
-  if (row.goal) return `/transactions${query({ goalId: row.goal.id, from, to, planScope: true })}`;
-  return `/transactions${query({ categoryId: row.categoryId, from, to, transfers: "exclude", planScope: true })}`;
+export function drillDownQuery(target: DrillTarget): Record<string, string | boolean> {
+  const from = monthStart(target.month);
+  const to = monthEnd(target.month);
+  if (target.kind === "uncategorized") return { uncategorized: true, from, to, planScope: true };
+  if (target.row.goal) return { goalId: target.row.goal.id, from, to, planScope: true };
+  return { categoryId: target.row.categoryId, from, to, transfers: "exclude", planScope: true };
+}
+
+/** The register page behind a cell's actual. */
+export function drillDownUrl(row: Pick<PlanCategoryRow, "categoryId" | "goal">, month: string): string {
+  return `/transactions${query(drillDownQuery({ kind: "category", row, month }))}`;
 }
 
 export function uncategorizedUrl(month: string): string {
-  return `/transactions${query({ uncategorized: true, from: monthStart(month), to: monthEnd(month), planScope: true })}`;
+  return `/transactions${query(drillDownQuery({ kind: "uncategorized", month }))}`;
 }
 
 /**

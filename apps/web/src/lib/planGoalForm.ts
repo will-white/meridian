@@ -1,5 +1,5 @@
 import { formatCents } from "@meridian/shared";
-import type { GoalStatus, GoalView } from "@meridian/shared";
+import type { CategoryDetailView, GoalStatus, GoalView } from "@meridian/shared";
 import { monthLabel, parseAmountInput } from "./plan.js";
 
 /** Wire shape of POST/PATCH /goals (the CreateGoalBody / UpdateGoalBody fields the form uses). */
@@ -122,4 +122,26 @@ export function goalProjectionText(goal: Pick<GoalView, "monthlyContributionCent
   if (done) return "";
   if (goal.progress.projectedCompletionMonth) return ` · projected ${monthLabel(goal.progress.projectedCompletionMonth)}`;
   return goal.monthlyContributionCents === "0" ? " · no projection without a contribution" : " · not reached before 2200 at this pace";
+}
+
+/** One entry of the goal form's "Savings category" select. */
+export interface GoalCategoryOption {
+  id: string;
+  label: string;
+}
+
+/**
+ * Categories a goal can live on: visible savings categories without a goal, plus the edited
+ * goal's own category whatever its state. A hidden category keeps its goal and its numbers, so
+ * the goal stays editable; its entry says it is hidden. `keep` is the edited goal's category.
+ */
+export function goalCategoryOptions(
+  categories: ReadonlyArray<Pick<CategoryDetailView, "id" | "name" | "bucket" | "hidden" | "goalId">>,
+  goals: ReadonlyArray<Pick<GoalView, "categoryId">>,
+  keep: string | null,
+): GoalCategoryOption[] {
+  const taken = new Set(goals.map((g) => g.categoryId));
+  return categories
+    .filter((c) => c.bucket === "savings" && (c.id === keep || (!c.hidden && !taken.has(c.id) && !c.goalId)))
+    .map((c) => ({ id: c.id, label: c.hidden ? `${c.name} (hidden)` : c.name }));
 }

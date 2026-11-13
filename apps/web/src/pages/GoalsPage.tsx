@@ -1,18 +1,30 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
 import type { AccountView, CategoryDetailView, GoalStatus, GoalView } from "@meridian/shared";
 import { GoalStatus as GoalStatusEnum } from "@meridian/shared";
+import { useIsViewer } from "../components/investments/queries.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
 import { api, query } from "../lib/api.js";
 import { money, shortDate, titleCase } from "../lib/format.js";
 import { localToday, monthLabel } from "../lib/plan.js";
-import { NEW_CATEGORY, buildGoalBody, goalProjectionText, initialGoalForm, linkedAccountOptions, percentFromBp, type GoalBody, type GoalFormState } from "../lib/planGoalForm.js";
+import {
+  NEW_CATEGORY,
+  buildGoalBody,
+  goalCategoryOptions,
+  goalProjectionText,
+  initialGoalForm,
+  linkedAccountOptions,
+  percentFromBp,
+  type GoalBody,
+  type GoalCategoryOption,
+  type GoalFormState,
+} from "../lib/planGoalForm.js";
 import "./GoalsPage.css";
 
 interface GoalFormProps {
   goal: GoalView | null;
-  categories: CategoryDetailView[];
+  categories: GoalCategoryOption[];
   accounts: AccountView[];
   /** Every goal, to show which accounts already feed one. */
   goals: GoalView[];
@@ -54,7 +66,7 @@ function GoalForm({ goal, categories, accounts, goals, currentMonth, pending, er
             <option value="">— choose —</option>
             {categories.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.name}
+                {c.label}
               </option>
             ))}
             {!editing && <option value={NEW_CATEGORY}>+ New savings category…</option>}
@@ -126,7 +138,8 @@ function GoalForm({ goal, categories, accounts, goals, currentMonth, pending, er
   );
 }
 
-function GoalCard({ goal, onEdit, onDelete, deleting }: { goal: GoalView; onEdit: () => void; onDelete: () => void; deleting: boolean }) {
+/** One goal; `onEdit` and `onDelete` are null for a viewer, who reads goals without changing them. */
+function GoalCard({ goal, onEdit, onDelete, deleting }: { goal: GoalView; onEdit: (() => void) | null; onDelete: (() => void) | null; deleting: boolean }) {
   const [showHistory, setShowHistory] = useState(false);
   const p = goal.progress;
   const done = p.remainingToTargetCents === "0";
@@ -148,12 +161,16 @@ function GoalCard({ goal, onEdit, onDelete, deleting }: { goal: GoalView; onEdit
           <Link className="small" to={`/transactions${query({ goalId: goal.id })}`}>
             transactions
           </Link>
-          <button type="button" className="link" onClick={onEdit}>
-            Edit
-          </button>
-          <button type="button" className="link danger" disabled={deleting} onClick={onDelete}>
-            Delete
-          </button>
+          {onEdit && (
+            <button type="button" className="link" onClick={onEdit}>
+              Edit
+            </button>
+          )}
+          {onDelete && (
+            <button type="button" className="link danger" disabled={deleting} onClick={onDelete}>
+              Delete
+            </button>
+          )}
         </div>
       </div>
       <div className={`goal-bar ${done ? "done" : ""}`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.floor(p.progressBp / 100)} aria-label={`${goal.name} progress`}>
@@ -212,6 +229,7 @@ function GoalCard({ goal, onEdit, onDelete, deleting }: { goal: GoalView; onEdit
 
 export function GoalsPage() {
   const qc = useQueryClient();
+  const viewer = useIsViewer();
   const currentMonth = localToday().slice(0, 7);
   const goals = useQuery({ queryKey: ["goals"], queryFn: () => api<GoalView[]>("/goals") });
   const categories = useQuery({ queryKey: ["categories"], queryFn: () => api<CategoryDetailView[]>("/categories") });
@@ -241,10 +259,8 @@ export function GoalsPage() {
 
   const all = goals.data ?? [];
   const visible = all.filter((g) => showInactive || g.status === "active");
-  const takenCategories = useMemo(() => new Set(all.map((g) => g.categoryId)), [all]);
-  /** Savings categories without a goal (plus the one being edited). */
-  const freeCategories = (keep: string | null) =>
-    (categories.data ?? []).filter((c) => c.bucket === "savings" && !c.hidden && (c.id === keep || (!takenCategories.has(c.id) && !c.goalId)));
+  /** Visible savings categories without a goal, plus the edited goal's own (hidden or not). */
+  const freeCategories = (keep: string | null) => goalCategoryOptions(categories.data ?? [], all, keep);
   const openAccounts = (accounts.data ?? []).filter((a) => !a.closed);
   const totalSaved = visible.reduce((acc, g) => acc + BigInt(g.progress.savedCents), 0n).toString();
   const totalTarget = visible.reduce((acc, g) => acc + BigInt(g.targetCents), 0n).toString();
@@ -262,14 +278,16 @@ export function GoalsPage() {
           <label className="inline">
             <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} /> show completed and archived
           </label>
-          <button type="button" onClick={() => setCreating(true)} disabled={creating}>
-            New goal
-          </button>
+          {!viewer && (
+            <button type="button" onClick={() => setCreating(true)} disabled={creating}>
+              New goal
+            </button>
+          )}
         </div>
       </div>
       <ErrorText error={goals.error} />
       <ErrorText error={remove.error} />
-      {creating && (
+      {creating && !viewer && (
         <Card title="New goal">
           <GoalForm
             goal={null}
@@ -290,7 +308,7 @@ export function GoalsPage() {
       {!goals.isLoading && all.length === 0 && !creating && <Empty>No goals yet. A goal lives on a savings category; its monthly contribution plans that row for you.</Empty>}
       {!goals.isLoading && all.length > 0 && visible.length === 0 && <Empty>Every goal is completed or archived.</Empty>}
       {visible.map((g) =>
-        editingId === g.id ? (
+        editingId === g.id && !viewer ? (
           <Card key={g.id} title={`Edit ${g.name}`}>
             <GoalForm
               goal={g}
@@ -311,13 +329,21 @@ export function GoalsPage() {
           <GoalCard
             key={g.id}
             goal={g}
-            onEdit={() => {
-              setCreating(false);
-              setEditingId(g.id);
-            }}
-            onDelete={() => {
-              if (window.confirm(`Delete the goal "${g.name}"? The category stays; its planned amounts revert to what you typed or zero.`)) remove.mutate(g.id);
-            }}
+            onEdit={
+              viewer
+                ? null
+                : () => {
+                    setCreating(false);
+                    setEditingId(g.id);
+                  }
+            }
+            onDelete={
+              viewer
+                ? null
+                : () => {
+                    if (window.confirm(`Delete the goal "${g.name}"? The category stays; its planned amounts revert to what you typed or zero.`)) remove.mutate(g.id);
+                  }
+            }
             deleting={remove.isPending}
           />
         ),

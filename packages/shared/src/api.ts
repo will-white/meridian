@@ -686,6 +686,8 @@ export type MonthSummaryView = z.infer<typeof MonthSummaryView>;
 export const PlanResponse = z.object({
   today: IsoDateString,
   currentMonth: MonthString,
+  /** household_setting.plan_start_month: the grid shows earlier months read-only (PUT /plan/cells answers 400 before_plan_start). */
+  startMonth: MonthString,
   from: MonthString,
   to: MonthString,
   months: z.array(MonthString),
@@ -1052,7 +1054,8 @@ export const DashboardView = z.object({
   review: z.object({ uncategorized: z.number().int(), suggestedRecurring: z.number().int(), alerts: z.number().int() }),
   sync: z.object({
     lastSyncAt: z.string().nullable(),
-    attention: z.array(z.object({ connectionId: z.string().uuid(), name: z.string(), status: ConnectionStatus })),
+    /** Connections that need a person; `syncPaused`: scheduled syncs stopped after a 403 or 402 (audit b7-plan-ui-12). */
+    attention: z.array(z.object({ connectionId: z.string().uuid(), name: z.string(), status: ConnectionStatus, syncPaused: z.boolean() })),
   }),
   retirement: z.null(),
   /** Phase 3 (views design §4, seams C47): null without open investment accounts. */
