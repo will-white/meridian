@@ -7,6 +7,8 @@ import { api, query } from "../lib/api.js";
 import { money, shortDate } from "../lib/format.js";
 import { TRANSACTION_DRAG_TYPE } from "../lib/plan.js";
 import { amountInCategory, type SplitRequestLine } from "../lib/splits.js";
+import { useIsViewer } from "../components/investments/queries.js";
+import { RowActions } from "../components/transactions/RowActions.js";
 import { SplitEditor } from "../components/transactions/SplitEditor.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
 import "./TransactionsPage.css";
@@ -70,6 +72,9 @@ export function TransactionsPage() {
   const search = useDebounced(q, 250);
   const [prompt, setPrompt] = useState<RulePrompt | null>(null);
   const [splitting, setSplitting] = useState<string | null>(null);
+  /** The row whose corrections (pair, mark as transfer, delete) are open. */
+  const [correcting, setCorrecting] = useState<string | null>(null);
+  const viewer = useIsViewer();
 
   const setFilter = (patch: Partial<RegisterFilters>) =>
     setSearchParams(
@@ -129,6 +134,19 @@ export function TransactionsPage() {
     onSuccess: () => {
       setSplitting(null);
       invalidate();
+    },
+  });
+  // Audit a5-ingest-transfers-09 and -12: the register's corrections.
+  const correct = useMutation({
+    mutationFn: async (v: { id: string; action: "pair"; otherId: string } | { id: string; action: "transfer" } | { id: string; action: "delete" }): Promise<void> => {
+      if (v.action === "pair") await api<TransactionView>(`/transactions/${v.id}/pair`, { method: "POST", body: { otherId: v.otherId } });
+      else if (v.action === "transfer") await api<TransactionView>(`/transactions/${v.id}`, { method: "PATCH", body: { isTransfer: true } });
+      else await api<{ ok: true }>(`/transactions/${v.id}`, { method: "DELETE" });
+    },
+    onSuccess: () => {
+      setCorrecting(null);
+      invalidate();
+      void qc.invalidateQueries({ queryKey: ["accounts"] });
     },
   });
   const createRule = useMutation({
@@ -353,6 +371,17 @@ export function TransactionsPage() {
                       </button>
                     </>
                   )}
+                  <button
+                    className="link small"
+                    onClick={() => {
+                      correct.reset();
+                      setCorrecting(correcting === t.id ? null : t.id);
+                    }}
+                    aria-expanded={correcting === t.id}
+                    title={t.isTransfer ? "Delete this transaction" : "Pair with the other leg of a transfer, mark as a transfer, or delete"}
+                  >
+                    more
+                  </button>
                 </td>
                 <td className={`num nowrap ${t.amountCents.startsWith("-") ? "neg" : "pos"}`}>
                   {f.categoryId && t.splits.length > 0 ? (
@@ -378,6 +407,22 @@ export function TransactionsPage() {
                         setSplitting(null);
                         saveSplit.reset();
                       }}
+                    />
+                  </td>
+                </tr>
+              ) : null,
+              correcting === t.id ? (
+                <tr key={`${t.id}-actions`} className="split-row">
+                  <td colSpan={5}>
+                    <RowActions
+                      transaction={t}
+                      viewer={viewer}
+                      pending={correct.isPending}
+                      error={correct.error}
+                      onPair={(otherId) => correct.mutate({ id: t.id, action: "pair", otherId })}
+                      onMarkTransfer={() => correct.mutate({ id: t.id, action: "transfer" })}
+                      onDelete={() => correct.mutate({ id: t.id, action: "delete" })}
+                      onClose={() => setCorrecting(null)}
                     />
                   </td>
                 </tr>

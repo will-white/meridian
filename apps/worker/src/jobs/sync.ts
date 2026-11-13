@@ -103,7 +103,8 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
             today,
             windowStart,
             incomplete: applied.incomplete,
-            accountsCreated: applied.accountsCreated,
+            // An account attached again after its connection was removed missed the days since then, as a new one has none.
+            accountsCreated: applied.accountsCreated + applied.accountsReattached,
             balanceDates: applied.balanceDates,
             config: ctx.config,
           });
@@ -127,6 +128,7 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
     const stats = {
       accounts: applied.accounts,
       accountsCreated: applied.accountsCreated,
+      accountsReattached: applied.accountsReattached,
       ...applied.stats,
       transfersPaired: applied.transfersPaired,
       ...applied.holdings,

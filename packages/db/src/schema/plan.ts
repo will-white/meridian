@@ -25,6 +25,9 @@ export const AUDIT_ENTITIES = [
   "account",
   // Household members (audit remediation)
   "user",
+  // Ledger corrections (audit a5-ingest-transfers): a transaction deleted or paired by hand, a CSV import undone
+  "transaction",
+  "import_log",
 ] as const;
 
 /** Category groups sit under bucket headers in the grid. A group belongs to exactly one bucket. */

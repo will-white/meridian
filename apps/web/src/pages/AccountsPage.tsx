@@ -1,10 +1,11 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
-import { AccountType, TaxTreatment, formatCents, isInvestmentAccountType, parseDecimalToCents, type AccountView } from "@meridian/shared";
+import { AccountType, TaxTreatment, formatCents, isInvestmentAccountType, parseDecimalToCents, type AccountView, type LinkFeedAccountResult } from "@meridian/shared";
 import { api, query } from "../lib/api.js";
 import { money, shortDate, titleCase } from "../lib/format.js";
 import { lastReconciliationText, positionsMatchText } from "../lib/investmentForms.js";
+import { linkableFeedAccounts, linkResultText } from "../lib/ledgerCorrections.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
 import { FidelityBadge } from "../components/investments/FidelityBadge.js";
 import { useIsViewer } from "../components/investments/queries.js";
@@ -188,6 +189,16 @@ export function AccountsPage() {
       void qc.invalidateQueries({ queryKey: ["accounts"] });
     },
   });
+  // Audit a5-ingest-transfers-02: an account without a connection takes over the feed account the sync created for it.
+  const [linkNotice, setLinkNotice] = useState<string | null>(null);
+  const link = useMutation({
+    mutationFn: (v: { id: string; feedAccountId: string }) => api<LinkFeedAccountResult>(`/accounts/${v.id}/link-feed`, { method: "POST", body: { feedAccountId: v.feedAccountId } }),
+    onSuccess: (r) => {
+      setLinkNotice(linkResultText(r));
+      invalidate();
+      void qc.invalidateQueries({ queryKey: ["transactions"] });
+    },
+  });
   const [showClosed, setShowClosed] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
@@ -212,6 +223,8 @@ export function AccountsPage() {
       </div>
       <ErrorText error={accounts.error} />
       <ErrorText error={update.error} />
+      <ErrorText error={link.error} />
+      {linkNotice && <p className="notice">{linkNotice}</p>}
       {all.length === 0 && !accounts.isLoading && <Empty>No accounts yet. Connect SimpleFIN or add a manual account below.</Empty>}
       {GROUPS.map(([label, types]) => {
         const rows = visible.filter((a) => types.includes(a.type));
@@ -243,6 +256,30 @@ export function AccountsPage() {
                         <div className="muted small">
                           {a.transactionCount} txns{a.connectionName ? ` · ${a.connectionName}` : " · manual"}
                         </div>
+                        {!viewer && linkableFeedAccounts(a, all).length > 0 && (
+                          <div className="small">
+                            <select
+                              value=""
+                              aria-label={`${a.name} is the same account as a feed account`}
+                              title="The bank connection created a second account for this one (it was re-linked, or this account's history came from a CSV): fold that account into this one"
+                              disabled={link.isPending}
+                              onChange={(e) => {
+                                const feed = all.find((x) => x.id === e.target.value);
+                                if (feed && window.confirm(`Make ${a.name} the account the feed fills, and fold "${feed.name}" into it? Transactions both have are kept once.`)) {
+                                  link.mutate({ id: a.id, feedAccountId: feed.id });
+                                }
+                              }}
+                            >
+                              <option value="">same as a feed account…</option>
+                              {linkableFeedAccounts(a, all).map((f) => (
+                                <option key={f.id} value={f.id}>
+                                  {f.name}
+                                  {f.connectionName ? ` (${f.connectionName})` : ""}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
                         {isInvestmentAccountType(a.type) && <InvestmentBlock a={a} />}
                       </td>
                       <td>{a.institution ?? "—"}</td>

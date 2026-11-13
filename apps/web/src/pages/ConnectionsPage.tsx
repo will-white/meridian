@@ -53,6 +53,11 @@ export function ConnectionsPage() {
   });
   const remove = useMutation({ mutationFn: (id: string) => api(`/connections/${id}`, { method: "DELETE" }), onSuccess: invalidate });
   // Phase 3: replay the stored sync payloads through the holdings parser (plan decision 18).
+  // Audit a5-ingest-transfers-13: replay the stored payloads' transactions.
+  const reprocessTransactions = useMutation({
+    mutationFn: (id: string) => api<JobView>(`/connections/${id}/reprocess-transactions`, { method: "POST", body: {} }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["connections"] }),
+  });
   const reprocess = useMutation({
     mutationFn: (id: string) => api<JobView>(`/connections/${id}/reprocess-holdings`, { method: "POST", body: {} }),
     onSuccess: () => {
@@ -97,6 +102,7 @@ export function ConnectionsPage() {
         <ErrorText error={add.error} />
         <ErrorText error={sync.error} />
         <ErrorText error={reprocess.error} />
+        <ErrorText error={reprocessTransactions.error} />
         {connections.isLoading && <p className="muted">Loading…</p>}
         {simplefin.length === 0 && !connections.isLoading && <Empty>No SimpleFIN connections yet.</Empty>}
         <ul className="list">
@@ -157,6 +163,16 @@ export function ConnectionsPage() {
                     Re-process holdings
                   </button>
                 )}
+                {!viewer && (
+                  <button
+                    className="secondary"
+                    onClick={() => reprocessTransactions.mutate(c.id)}
+                    disabled={reprocessTransactions.isPending || !!c.activeJob || c.status === "disabled"}
+                    title="Re-read the transactions in every stored sync payload, also those older than the Bridge's three months (after an update); rows the ledger has are left as they are and nothing is added twice. No bank call is made"
+                  >
+                    Re-read transactions
+                  </button>
+                )}
                 <button className="secondary" onClick={() => setOpenLog(openLog === c.id ? null : c.id)}>
                   {openLog === c.id ? "Hide log" : "Log"}
                 </button>
@@ -166,7 +182,7 @@ export function ConnectionsPage() {
                 <button
                   className="danger"
                   onClick={() => {
-                    if (confirm(`Remove ${c.name}? Accounts and transactions stay; the access URL is deleted.`)) remove.mutate(c.id);
+                    if (confirm(`Remove ${c.name}? Accounts and transactions stay; the access URL is deleted. Adding the connection again attaches the same accounts.`)) remove.mutate(c.id);
                   }}
                 >
                   Remove
