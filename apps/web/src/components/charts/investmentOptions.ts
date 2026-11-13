@@ -1,4 +1,4 @@
-import { money, shortDate } from "../../lib/format.js";
+import { escapeHtml, money, shortDate } from "../../lib/format.js";
 import type { ChartTheme, EChartOption } from "./EChart.js";
 import { axisDate, axisMoney, centsToDollars, seriesColor } from "./chartOptions.js";
 
@@ -72,9 +72,9 @@ export function valueOverTimeOption(input: { dates: string[]; series: ValueSerie
         const rows = list.map((p) => {
           const s = p.seriesIndex === undefined ? undefined : series[p.seriesIndex];
           const cents = s?.points[p.dataIndex ?? 0];
-          return `${p.marker ?? ""}${p.seriesName ?? ""}: <strong>${cents === undefined || cents === null ? "—" : money(cents)}</strong>`;
+          return `${p.marker ?? ""}${escapeHtml(p.seriesName ?? "")}: <strong>${cents === undefined || cents === null ? "—" : money(cents)}</strong>`;
         });
-        return [shortDate(date), ...rows].join("<br/>");
+        return [escapeHtml(shortDate(date)), ...rows].join("<br/>");
       },
     },
     xAxis: {

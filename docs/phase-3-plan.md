@@ -74,7 +74,7 @@ Steps 1–2 are the skeleton (task 14); 3–12 the implementation workflow (task
 - `lot` is a derived cache with a nullable basis flag; cost basis from the statement is displayed but never used for gains.
 - Implied prices are stored as price rows for every position lacking a provider or manual price, not only ticker-less funds; prices are fetched nightly plus a catch-up, and for the benchmark and `always_price` securities although not held.
 - Cash inference (balance plug and carried transfer legs) is an addition, on by default, always labelled.
-- Investment accounts default off-budget at creation; Phase 2's plan loaders exclude off-budget accounts except feed-category rows.
+- Investment accounts default off-budget at creation (and, since Phase 1 audit decision 65, asset and loan accounts too); Phase 2's plan loaders exclude off-budget accounts except feed-category rows.
 - Wash sales, return of capital and capital-gain distributions are not special-cased; multi-currency is not supported (a non-USD holding is a preview warning); money-weighted return for sub-year ranges is shown unannualized beside Excel's XIRR.
 - The free price source (Tiingo) needs a free API key; its current terms and fund coverage must be confirmed by the owner at signup.
 

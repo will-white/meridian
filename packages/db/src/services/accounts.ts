@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   defaultTaxTreatment,
   isInvestmentAccountType,
@@ -7,6 +7,7 @@ import {
   sanitizeText,
   unixToIsoDate,
   type AccountType,
+  type IsoDate,
   type SimplefinAccount,
 } from "@meridian/shared";
 import type { Db, DbOrTx } from "../index.js";
@@ -30,14 +31,22 @@ import { pairTransfersInDb, releaseTransferPartners } from "./transfers.js";
 
 /**
  * Phase 3 (plan decision 15): investment-type accounts start off budget, so a brokerage's
- * buys never show as uncategorized spending; every other type starts on budget. Applied by
- * both creation paths (the SimpleFIN upsert here and `POST /api/accounts`), never by DDL.
+ * buys never show as uncategorized spending. Audit a6-text-rules-accounts-08: assets (a house,
+ * a vehicle) and loans start off budget too, so a property value or a mortgage is not cash in
+ * the cash-flow projection; checking, savings and cards start on budget. Applied by both
+ * creation paths (the SimpleFIN upsert here and `POST /api/accounts`), never by DDL.
  */
 export function defaultOnBudget(type: AccountType): boolean {
-  return !isInvestmentAccountType(type);
+  return !isInvestmentAccountType(type) && type !== "asset" && type !== "loan";
 }
 
-/** SimpleFIN has no account type; guess from the name and let the user correct it. */
+/**
+ * SimpleFIN has no account type; guess from the name and let the user correct it. The account
+ * noun decides first (audit a6-text-rules-accounts-06): "Joint Checking", "Kasasa Rewards
+ * Checking" and "Student Checking" are checking accounts and "Auto Savings" a savings account,
+ * whatever their qualifiers; the retirement and investment words come before that, and the
+ * card and loan words only when no bank noun is present.
+ */
 export function guessAccountType(name: string): AccountType {
   const n = name.toLowerCase();
   if (/\b(roth)\b/.test(n)) return "roth";
@@ -45,10 +54,14 @@ export function guessAccountType(name: string): AccountType {
   if (/\b(hsa|health savings)\b/.test(n)) return "hsa";
   if (/\b529\b/.test(n)) return "529";
   if (/\b(ira|sep|simple ira)\b/.test(n)) return "ira";
-  if (/\b(brokerage|invest|trading|individual|joint|securities)\b/.test(n)) return "brokerage";
-  if (/\b(credit|card|visa|mastercard|amex|discover|platinum|sapphire|freedom|rewards)\b/.test(n)) return "credit";
-  if (/\b(mortgage|loan|auto|student|heloc|line of credit)\b/.test(n)) return "loan";
-  if (/\b(savings|save|money market|mma|cd)\b/.test(n)) return "savings";
+  if (/\b(brokerage|invest(ment|ing)?s?|trading|securities)\b/.test(n)) return "brokerage";
+  if (/\b(mortgage|loan|heloc|line of credit)\b/.test(n)) return "loan";
+  if (/\b(checking|chequing|share draft)\b/.test(n)) return "checking";
+  if (/\b(savings|save|money market|mma|cd|certificate)\b/.test(n)) return "savings";
+  if (/\b(credit|card|visa|mastercard|amex|discover|platinum|sapphire|freedom|rewards|cash back|double cash)\b/.test(n)) return "credit";
+  // "Individual" and "Joint" with no bank noun name a brokerage registration ("Individual - TOD").
+  if (/\b(individual|joint)\b/.test(n)) return "brokerage";
+  if (/\b(auto|student)\b/.test(n)) return "loan";
   return "checking";
 }
 
@@ -150,6 +163,71 @@ export async function upsertSimplefinAccount(tx: DbOrTx, connectionId: string, s
     });
 
   return result;
+}
+
+/**
+ * Why a manual balance cannot be stored for an account of `type`, or null: a loan's balance is
+ * what is owed, so it is never positive (audit a6-text-rules-accounts-05). A card can be in
+ * credit, so only loans are checked.
+ */
+export function manualBalanceProblem(type: AccountType, balanceCents: bigint): string | null {
+  if (type === "loan" && balanceCents > 0n) return "A loan's balance is what is owed, as a negative amount (enter 15000.00 owed as -15000.00)";
+  return null;
+}
+
+export interface RecordManualBalanceInput {
+  accountId: string;
+  date: IsoDate;
+  balanceCents: bigint;
+  /** The household's day: a balance may not be dated after it. */
+  today: IsoDate;
+}
+
+/**
+ * Audit a6-text-rules-accounts-03: record what an account without a bank connection is worth
+ * or owes on a day (a house revalued, a loan paid down). The day's `balance_snapshot` becomes a
+ * manual row (it outranks every other source, Phase 3 decision 14), and the account's
+ * `balance_cents` and `balance_date` follow when no later balance exists, so net worth and its
+ * history read it. Refused for a feed account (409 `feed_account`: its balance is the bank's), a
+ * date after today (400 `future_date`) and a positive loan balance (400 `debt_balance_positive`).
+ * Audited as `account` (the day's balance before and after).
+ */
+export async function recordManualBalance(db: Db, input: RecordManualBalanceInput, audit?: AuditContext): Promise<void> {
+  if (input.date > input.today) throw new PlanError(400, "future_date", `A balance cannot be dated after today (${input.today})`);
+  await db.transaction(async (tx) => {
+    const [acct] = await tx.select().from(account).where(eq(account.id, input.accountId)).for("update");
+    if (!acct) throw new PlanError(404, "not_found", "Account not found");
+    if (acct.connectionId !== null) throw new PlanError(409, "feed_account", "This account's balance comes from its bank connection; only an account without one takes a balance by hand");
+    const problem = manualBalanceProblem(acct.type, input.balanceCents);
+    if (problem) throw new PlanError(400, "debt_balance_positive", problem);
+    const [previous] = await tx
+      .select({ balanceCents: balanceSnapshot.balanceCents, source: balanceSnapshot.source })
+      .from(balanceSnapshot)
+      .where(and(eq(balanceSnapshot.accountId, acct.id), eq(balanceSnapshot.date, input.date)));
+    await tx
+      .insert(balanceSnapshot)
+      .values({ accountId: acct.id, date: input.date, balanceCents: input.balanceCents, source: "manual" })
+      .onConflictDoUpdate({ target: [balanceSnapshot.accountId, balanceSnapshot.date], set: { balanceCents: input.balanceCents, availableCents: null, source: "manual" } });
+    const [latest] = await tx
+      .select({ date: balanceSnapshot.date, balanceCents: balanceSnapshot.balanceCents })
+      .from(balanceSnapshot)
+      .where(eq(balanceSnapshot.accountId, acct.id))
+      .orderBy(desc(balanceSnapshot.date))
+      .limit(1);
+    if (latest && latest.date === input.date) {
+      await tx.update(account).set({ balanceCents: input.balanceCents, balanceDate: input.date, updatedAt: new Date() }).where(eq(account.id, acct.id));
+    }
+    if (audit) {
+      await writeAudit(tx, {
+        ...audit,
+        entity: "account",
+        entityId: acct.id,
+        action: "update",
+        before: { balanceDate: input.date, balanceCents: previous ? previous.balanceCents.toString() : null },
+        after: { balanceDate: input.date, balanceCents: input.balanceCents.toString() },
+      });
+    }
+  });
 }
 
 export interface LinkFeedAccountResult {

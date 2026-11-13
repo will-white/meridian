@@ -1,7 +1,7 @@
 import { and, asc, count, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { addMonths, BUCKET_ORDER, isMonthKey, maxMonth, minMonth, monthKey, monthRange, type Bucket, type IsoDate, type MonthKey, type RolloverMode } from "@meridian/shared";
 import type { Db, DbOrTx } from "../index.js";
-import { category, categoryGroup, monthPlan, recurring, savingsGoal, split, transaction } from "../schema/index.js";
+import { category, categoryGroup, monthPlan, recurring, rule, savingsGoal, split, transaction } from "../schema/index.js";
 import { PlanError, writeAudit, type AuditContext } from "./audit.js";
 import { applyPlanCellEdits } from "./plan.js";
 import { getHouseholdSetting } from "./settings.js";
@@ -312,7 +312,7 @@ export async function updateCategory(db: Db, id: string, patch: UpdateCategoryIn
   return (await getCategory(db, id))!;
 }
 
-/** Delete an unused category (month_plan rows cascade). 409 `in_use` when any transaction, split, recurring item or goal references it. */
+/** Delete an unused category (month_plan rows cascade). 409 `in_use` when any transaction, split, recurring item, goal or rule references it. */
 export async function deleteCategory(db: Db, id: string, ctx: AuditContext): Promise<void> {
   await db.transaction(async (tx) => {
     const [existing] = await tx.select().from(category).where(eq(category.id, id));
@@ -332,6 +332,16 @@ export async function deleteCategory(db: Db, id: string, ctx: AuditContext): Pro
     if (refs.splits > 0) reasons.push(`${refs.splits} split(s)`);
     if (refs.recurring > 0) reasons.push(`${refs.recurring} recurring item(s)`);
     if (refs.goals > 0) reasons.push("a goal");
+    // Audit a6-text-rules-accounts-02: a rule that sets the category would make every import with a matching row fail.
+    const rules = await tx
+      .select({ name: rule.name })
+      .from(rule)
+      .where(sql`${rule.actions} ->> 'setCategoryId' = ${id}`)
+      .orderBy(asc(rule.position), asc(rule.id));
+    if (rules.length > 0) {
+      const names = rules.slice(0, 3).map((r) => r.name || "unnamed");
+      reasons.push(`${rules.length} rule(s) (${names.join(", ")}${rules.length > 3 ? ", …" : ""})`);
+    }
     if (reasons.length > 0) throw new PlanError(409, "in_use", `Category is in use by ${reasons.join(", ")}; hide it instead`);
     await tx.delete(category).where(eq(category.id, id));
     await writeAudit(tx, { ...ctx, entity: "category", entityId: id, action: "delete", before: categoryAuditJson(existing), after: null });

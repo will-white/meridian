@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { money, shortDate } from "../../lib/format.js";
+import { escapeHtml, money, shortDate } from "../../lib/format.js";
 import { mergeIndexSeries, type IndexLine } from "../../lib/performanceView.js";
 import { EChart, type ChartTheme, type EChartOption } from "../charts/EChart.js";
 import { axisDate, axisMoney } from "../charts/chartOptions.js";
@@ -65,9 +65,9 @@ export function growthOf10kOption(input: { lines: readonly GrowthLine[]; theme: 
         const rows = list.map((p) => {
           const l = p.seriesIndex === undefined ? undefined : merged.lines[p.seriesIndex];
           const v = l?.values[p.dataIndex ?? 0];
-          return `${p.marker ?? ""}${p.seriesName ?? ""}: <strong>${v === undefined || v === null ? "—" : money(String(v * 100))}</strong>`;
+          return `${p.marker ?? ""}${escapeHtml(p.seriesName ?? "")}: <strong>${v === undefined || v === null ? "—" : money(String(v * 100))}</strong>`;
         });
-        return [shortDate(date), ...rows].join("<br/>");
+        return [escapeHtml(shortDate(date)), ...rows].join("<br/>");
       },
     },
     xAxis: {

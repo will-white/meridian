@@ -1,4 +1,4 @@
-import { money, shortDate } from "../../lib/format.js";
+import { escapeHtml, money, shortDate } from "../../lib/format.js";
 import type { ChartTheme, EChartOption } from "./EChart.js";
 
 /**
@@ -131,9 +131,9 @@ export function cashFlowChartOption(input: { dates: string[]; series: CashFlowCh
         const rows = list.map((p) => {
           const s = p.seriesIndex === undefined ? undefined : series[p.seriesIndex];
           const cents = s?.points[p.dataIndex ?? 0];
-          return `${p.marker ?? ""}${p.seriesName ?? ""}: <strong>${cents === undefined ? "—" : money(cents)}</strong>`;
+          return `${p.marker ?? ""}${escapeHtml(p.seriesName ?? "")}: <strong>${cents === undefined ? "—" : money(cents)}</strong>`;
         });
-        return [shortDate(date), ...rows].join("<br/>");
+        return [escapeHtml(shortDate(date)), ...rows].join("<br/>");
       },
     },
     xAxis: {

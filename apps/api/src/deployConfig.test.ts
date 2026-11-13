@@ -88,3 +88,13 @@ describe("deploy files: where the API listens and which proxy it trusts", () => 
     expect(repo("apps/web/vite.config.ts")).toContain('proxy: { "/api": "http://127.0.0.1:3000" }');
   });
 });
+
+describe("repository layout (audit a6-text-rules-accounts-21)", () => {
+  it("has no stray root sources or superseded kickoff instructions (CLAUDE.md: apps/, packages/, deploy/, docs/)", async () => {
+    const { existsSync } = await import("node:fs");
+    const at = (relative: string) => existsSync(fileURLToPath(new URL(`../../../${relative}`, import.meta.url)));
+    expect(at("CLAUDE.md")).toBe(true);
+    expect(at("src")).toBe(false);
+    expect(at("KICKOFF.md")).toBe(false);
+  });
+});

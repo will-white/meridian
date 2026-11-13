@@ -34,7 +34,7 @@ import {
   UpdatePayeeBody,
   UuidParams,
 } from "@meridian/shared";
-import { badRequest, notFound } from "../lib/errors.js";
+import { badRequest, HttpError, notFound } from "../lib/errors.js";
 import { toCategoryDetailView, toCategoryGroupView } from "../views/plan.js";
 import { auditContext, resolveToday, usePlanErrors } from "./plan.js";
 
@@ -135,7 +135,22 @@ export async function categoryRoutes(app: FastifyInstance): Promise<void> {
     if (!target) throw notFound("Payee not found");
     await app.db.transaction(async (tx) => {
       const patch: Partial<typeof payee.$inferInsert> = {};
-      if (request.body.name !== undefined) patch.name = request.body.name.trim();
+      let aliases = target.aliases;
+      const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+      if (request.body.name !== undefined && request.body.name.trim() !== target.name) {
+        const name = request.body.name.trim();
+        // Audit a6-text-rules-accounts-10: a name another payee has (or has merged in) is that payee; say so instead of a 500.
+        const [taken] = await tx
+          .select({ id: payee.id, name: payee.name })
+          .from(payee)
+          .where(sql`${payee.id} <> ${target.id} and ${payee.id} <> ${request.body.mergeFromId ?? target.id} and (lower(${payee.name}) = lower(${name}) or exists (select 1 from jsonb_array_elements_text(${payee.aliases}) a where lower(a) = lower(${name})))`)
+          .limit(1);
+        if (taken) throw new HttpError(409, `"${taken.name}" already has that name; merge it into this payee instead`, "name_taken");
+        patch.name = name;
+        // The old name stays an alias, so the next import of it finds this payee and the rules written on it keep matching.
+        aliases = [...new Set([...aliases.filter((a) => !sameName(a, name)), ...(sameName(target.name, name) ? [] : [target.name])])];
+        patch.aliases = aliases;
+      }
       if (request.body.defaultCategoryId !== undefined) patch.defaultCategoryId = request.body.defaultCategoryId;
       if (request.body.mergeFromId !== undefined && request.body.mergeFromId !== target.id) {
         const [source] = await tx.select().from(payee).where(eq(payee.id, request.body.mergeFromId));
@@ -144,7 +159,7 @@ export async function categoryRoutes(app: FastifyInstance): Promise<void> {
         await tx.update(transaction).set({ payeeId: target.id }).where(eq(transaction.payeeId, source.id));
         await tx.update(recurring).set({ payeeId: target.id }).where(eq(recurring.payeeId, source.id));
         await tx.update(alert).set({ payeeId: target.id }).where(eq(alert.payeeId, source.id));
-        patch.aliases = [...new Set([...target.aliases, source.name, ...source.aliases])];
+        patch.aliases = [...new Set([...aliases, source.name, ...source.aliases])].filter((a) => !sameName(a, patch.name ?? target.name));
         await tx.delete(payee).where(eq(payee.id, source.id));
       }
       if (Object.keys(patch).length > 0) await tx.update(payee).set(patch).where(eq(payee.id, target.id));

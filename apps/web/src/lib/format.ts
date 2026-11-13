@@ -31,3 +31,14 @@ export function relativeTime(iso: string | null | undefined): string {
 export function titleCase(s: string): string {
   return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
+
+const HTML_ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+
+/**
+ * Text for a place that sets HTML (an ECharts tooltip formatter returns HTML): every character
+ * that could open markup or an attribute is escaped. Account, payee and security names come
+ * from the feed and from imports, so they are text, never markup (audit a6-text-rules-accounts-01).
+ */
+export function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]!);
+}

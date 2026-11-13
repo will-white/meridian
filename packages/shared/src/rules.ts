@@ -1,5 +1,7 @@
+import { RE2JS } from "re2js";
 import { z } from "zod";
 import { dayOfMonth, type IsoDate } from "./dates.js";
+import { foldLatinAccents } from "./sanitize.js";
 import { CentsInput } from "./wire.js";
 
 /**
@@ -8,6 +10,10 @@ import { CentsInput } from "./wire.js";
  * overrides an earlier one for the same field, tags accumulate, and `stop` ends
  * evaluation after that rule. Conditions evaluate against the running context,
  * so a rule that renames a payee feeds the rules after it.
+ *
+ * The contracts below are the stored shape (what `GET /rules` returns and `loadRules`
+ * reads, so a rule saved before a check existed still lists); `ruleInputProblem` holds what
+ * a create or an edit must also satisfy (audit a6-text-rules-accounts-04 and -16).
  */
 
 export const StringMatch = z.object({
@@ -54,6 +60,13 @@ export interface RuleLike {
 
 export interface RuleContext {
   payee: string;
+  /**
+   * The names merged into the payee (its aliases). A payee condition holds when it holds for
+   * the payee's name or for one of these, so a rule written on a name keeps working after that
+   * name is merged into another payee or renamed (audit a6-text-rules-accounts-10). A rule that
+   * sets the payee clears them for the rules after it.
+   */
+  payeeAliases?: readonly string[];
   description: string;
   amountCents: bigint;
   accountId: string;
@@ -68,10 +81,110 @@ export interface RuleOutcome {
   matchedRuleIds: string[];
 }
 
-export function matchString(cond: StringMatch, value: string): boolean {
+/** The longest regular expression a rule may be saved with. */
+export const RULE_REGEX_MAX_LENGTH = 200;
+
+/** Compiled patterns by flags and source: a batch compiles each rule's pattern once. */
+const compiledPatterns = new Map<string, RE2JS | null>();
+
+/**
+ * A rule's pattern compiled for RE2, whose matching time is linear in the text whatever the
+ * pattern (no backtracking: `^(\w+\s?)+$` cannot hang an import, audit a6-text-rules-accounts-04).
+ * RE2 has no look-around or back-references; a pattern it refuses is null and never matches.
+ */
+function compilePattern(pattern: string, caseSensitive: boolean): RE2JS | null {
+  const key = `${caseSensitive ? "s" : "i"}:${pattern}`;
+  const hit = compiledPatterns.get(key);
+  if (hit !== undefined) return hit;
+  let re: RE2JS | null;
+  try {
+    re = RE2JS.compile(pattern, caseSensitive ? 0 : RE2JS.CASE_INSENSITIVE);
+  } catch {
+    re = null;
+  }
+  if (compiledPatterns.size >= 1000) compiledPatterns.clear();
+  compiledPatterns.set(key, re);
+  return re;
+}
+
+/** Why a pattern cannot be saved, or null. */
+export function regexProblem(pattern: string): string | null {
+  if (pattern.length > RULE_REGEX_MAX_LENGTH) return `A pattern may be at most ${RULE_REGEX_MAX_LENGTH} characters`;
+  try {
+    RE2JS.compile(pattern);
+    return null;
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    // "error parsing regexp: invalid or unsupported Perl syntax: `(?=`" → the part after the prefix.
+    const detail = raw.replace(/^error parsing regexp:\s*/i, "").slice(0, 120);
+    return `Not a pattern this app can run (${detail}). Look-ahead, look-behind and back-references are not supported`;
+  }
+}
+
+export interface RuleInputProblem {
+  code: "invalid_regex" | "invalid_amount_range";
+  message: string;
+}
+
+/**
+ * What a rule must satisfy beyond its stored shape before it is created or edited (audit
+ * a6-text-rules-accounts-16): a pattern compiles for RE2 and is at most 200 characters; an
+ * amount range has a bound, and its minimum is not above its maximum. A day range may wrap
+ * past the month end (28 to 3), and a day past the end of a month means its last day.
+ */
+export function ruleInputProblem(conditions: RuleConditions, _actions?: RuleActions): RuleInputProblem | null {
+  for (const [field, m] of [
+    ["payee", conditions.payee],
+    ["description", conditions.description],
+  ] as const) {
+    if (m?.op !== "regex") continue;
+    const problem = regexProblem(m.value);
+    if (problem) return { code: "invalid_regex", message: `The ${field} pattern: ${problem}` };
+  }
+  const amount = conditions.amount;
+  if (amount) {
+    if (amount.minCents === undefined && amount.maxCents === undefined) return { code: "invalid_amount_range", message: "An amount condition needs a minimum, a maximum or both" };
+    if (amount.minCents !== undefined && amount.maxCents !== undefined && BigInt(amount.minCents) > BigInt(amount.maxCents)) {
+      return { code: "invalid_amount_range", message: "The amount range's minimum is above its maximum (amounts are signed: spending is negative)" };
+    }
+  }
+  return null;
+}
+
+/** Case-insensitive comparison form: NFKC, Latin accents folded, lower case. */
+function foldForMatch(text: string): string {
+  return foldLatinAccents(text.normalize("NFKC")).toLowerCase();
+}
+
+type Fold = (text: string) => string;
+
+/** A fold that remembers its answers for one evaluation (each row's payee and description are folded once, not once per rule). */
+function memoFold(): Fold {
+  const seen = new Map<string, string>();
+  return (text) => {
+    let out = seen.get(text);
+    if (out === undefined) {
+      out = foldForMatch(text);
+      seen.set(text, out);
+    }
+    return out;
+  };
+}
+
+/**
+ * Whether `value` satisfies `cond`. Case-insensitive by default, where both sides are compared
+ * in NFKC with Latin accents folded ("Café" equals "cafe", "İSTANBUL" contains "istanbul");
+ * case-sensitive comparisons still use one Unicode spelling (NFC) of each side. Patterns run on
+ * RE2 (linear time) over the NFC text.
+ */
+export function matchString(cond: StringMatch, value: string, fold: Fold = foldForMatch): boolean {
   const cs = cond.caseSensitive === true;
-  const a = cs ? value : value.toLowerCase();
-  const b = cs ? cond.value : cond.value.toLowerCase();
+  if (cond.op === "regex") {
+    const re = compilePattern(cond.value, cs);
+    return re !== null && re.test(value.normalize("NFC"));
+  }
+  const a = cs ? value.normalize("NFC") : fold(value);
+  const b = cs ? cond.value.normalize("NFC") : fold(cond.value);
   switch (cond.op) {
     case "equals":
       return a === b;
@@ -79,28 +192,34 @@ export function matchString(cond: StringMatch, value: string): boolean {
       return a.includes(b);
     case "startsWith":
       return a.startsWith(b);
-    case "regex": {
-      try {
-        return new RegExp(cond.value, cs ? "" : "i").test(value);
-      } catch {
-        return false;
-      }
-    }
   }
 }
 
-export function ruleMatches(conditions: RuleConditions, ctx: RuleContext): boolean {
-  if (conditions.payee && !matchString(conditions.payee, ctx.payee)) return false;
-  if (conditions.description && !matchString(conditions.description, ctx.description)) return false;
+function daysInMonthOf(date: IsoDate): number {
+  return new Date(Date.UTC(Number(date.slice(0, 4)), Number(date.slice(5, 7)), 0)).getUTCDate();
+}
+
+/** Day-of-month range: a day past the month's end is its last day; min above max wraps past the end (28 to 3). */
+function dayInRange(range: { min: number; max: number }, date: IsoDate): boolean {
+  const last = daysInMonthOf(date);
+  const min = Math.min(range.min, last);
+  const max = Math.min(range.max, last);
+  const d = dayOfMonth(date);
+  return min <= max ? d >= min && d <= max : d >= min || d <= max;
+}
+
+export function ruleMatches(conditions: RuleConditions, ctx: RuleContext, fold: Fold = foldForMatch): boolean {
+  if (conditions.payee) {
+    const cond = conditions.payee;
+    if (!matchString(cond, ctx.payee, fold) && !(ctx.payeeAliases ?? []).some((alias) => matchString(cond, alias, fold))) return false;
+  }
+  if (conditions.description && !matchString(conditions.description, ctx.description, fold)) return false;
   if (conditions.amount) {
     if (conditions.amount.minCents !== undefined && ctx.amountCents < BigInt(conditions.amount.minCents)) return false;
     if (conditions.amount.maxCents !== undefined && ctx.amountCents > BigInt(conditions.amount.maxCents)) return false;
   }
   if (conditions.accountId !== undefined && conditions.accountId !== ctx.accountId) return false;
-  if (conditions.dayOfMonth) {
-    const d = dayOfMonth(ctx.date);
-    if (d < conditions.dayOfMonth.min || d > conditions.dayOfMonth.max) return false;
-  }
+  if (conditions.dayOfMonth && !dayInRange(conditions.dayOfMonth, ctx.date)) return false;
   return true;
 }
 
@@ -109,14 +228,16 @@ export function evaluateRules(rules: readonly RuleLike[], input: RuleContext): R
   const ctx: RuleContext = { ...input };
   const outcome: RuleOutcome = { tags: [], matchedRuleIds: [] };
   const tagSet = new Set<string>();
+  const fold = memoFold();
 
   for (const rule of ordered) {
-    if (!ruleMatches(rule.conditions, ctx)) continue;
+    if (!ruleMatches(rule.conditions, ctx, fold)) continue;
     outcome.matchedRuleIds.push(rule.id);
     const a = rule.actions;
     if (a.setPayee !== undefined) {
       outcome.payee = a.setPayee;
       ctx.payee = a.setPayee;
+      ctx.payeeAliases = [];
     }
     if (a.setCategoryId !== undefined) outcome.categoryId = a.setCategoryId;
     for (const t of a.addTags ?? []) tagSet.add(t);
