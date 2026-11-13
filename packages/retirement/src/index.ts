@@ -15,3 +15,8 @@ export { EngineInputError, EngineInvariantError, EngineRuntimeError } from "./er
 export type { EngineRuntimeCode } from "./errors.js";
 export { TAX_DATA_FIRST_YEAR, TaxDataError, fullRetirementAgeTable, listTaxRuleSets, loadTaxData, pendingLimits, taxDataStale } from "./tax/index.js";
 export type { TaxData, TaxDataErrorCode } from "./tax/index.js";
+export {
+  TR, PR, TI, TO, TAX_REC, PROG_REC, TAX_IN, TAX_OUT, taxOffset, progOffset,
+  compileTaxLaw, fillPathTables, federalTaxInto, effectiveMarginalRates, assertTaxInput, computeFederalTax, taxYearDetail, TaxInputError,
+} from "./tax/index.js";
+export type { CompiledTaxLaw, CompileTaxLawOptions, FillOptions, FederalTaxInput, FederalTaxResult, FilingStatusIndex, TaxInputErrorCode } from "./tax/index.js";
