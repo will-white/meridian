@@ -77,6 +77,7 @@ export function toSubscriptionRow(r: SubscriptionRecord): SubscriptionsResponse[
     amountMode: r.amountMode,
     consecutiveMissed: r.consecutiveMissed,
     status: r.status,
+    statusReason: r.statusReason,
   };
 }
 

@@ -47,7 +47,7 @@ import { auditContext, serverToday, usePlanErrors } from "./plan.js";
  * Recurring items (detected suggestions and hand-made bills), their charge links, the
  * Subscriptions page and alerts (recurring design, "api"). `today` is always the
  * server's household date: these routes take no client date. Typed service failures
- * (RecurringError: invalid_transition, category_required, validation, conflict,
+ * (RecurringError: invalid_transition, category_required, account_required, validation, conflict,
  * not_found) are rendered by the plan error handler with their own status codes.
  */
 
@@ -184,7 +184,7 @@ export async function recurringRoutes(app: FastifyInstance): Promise<void> {
 
   r.get("/recurring/:id", { schema: { params: UuidParams, response: { 200: RecurringView } } }, async (request) => view(request.params.id));
 
-  /** Edits lock what they touch (amount / schedule); `status` runs the transition matrix (400 invalid_transition, category_required). */
+  /** Edits lock what they touch (amount / schedule); `status` runs the transition matrix (400 invalid_transition, category_required, account_required). */
   r.patch("/recurring/:id", { schema: { params: UuidParams, body: UpdateRecurringBody, response: { 200: RecurringView } } }, async (request) => {
     const current = await getRecurring(app.db, request.params.id);
     if (!current) throw notFound("Recurring item not found");
@@ -212,10 +212,14 @@ export async function recurringRoutes(app: FastifyInstance): Promise<void> {
     return { items: result.items.map(toTransactionView), nextCursor: result.nextCursor };
   });
 
-  /** Manual link: same payee and direction, not a transfer, not linked elsewhere, and a free period (409 otherwise). */
+  /**
+   * Manual link: same payee and direction, not a transfer, and a free period (409 otherwise). A charge
+   * linked to another item is 409 unless `move` is set: then it leaves that item (refreshed) and joins this one.
+   */
   r.post("/recurring/:id/link", { schema: { params: UuidParams, body: LinkTransactionBody, response: { 200: RecurringView } } }, async (request) => {
     const today = await serverToday(app);
-    await app.db.transaction((tx) => linkTransaction(tx, request.params.id, request.body.transactionId, today, app.now()));
+    const move = request.body.move === true;
+    await app.db.transaction((tx) => linkTransaction(tx, request.params.id, request.body.transactionId, today, app.now(), { move }));
     return view(request.params.id);
   });
 

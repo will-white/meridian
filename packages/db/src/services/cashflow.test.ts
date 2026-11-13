@@ -25,13 +25,18 @@ import { updateHouseholdSetting } from "./settings.js";
  * Checking on the 25th with statement day 5. Hand numbers:
  * - openings: Checking 320000, Savings 300000, Visa −45000 + pending −2500 = −47500;
  * - Visa rows after the 10-05 close: −8000 (10-07), +30000 (10-08), −4500 (10-12),
- *   −2500 (10-13 pending) = +15000 → statement balance −47500 − 15000 = −62500;
+ *   −2500 (10-13 pending) = +15000 → statement balance −47500 − 15000 = −62500; the 30000
+ *   paid on 10-08 is already in both balances, so 62500 − 30000 = 32500 is still owed on the
+ *   10-25 payment (knownStatementBalanceCents −32500, phase 2 plan audit decision A7);
  * - spending remaining Oct: Groceries max(0, 50000 + 10000 − 54500) = 5500, Dining
  *   max(0, 20000 − 20000) = 0, Fuel 15000 − 5500 = 9500, Old Hobby 0, Shopping 0 → 15000;
  *   Nov: Groceries 50000 (row) + Dining 26000 + Fuel 6000 + Old Hobby 2000 + Shopping 0
  *   (3-month averages: the ledger opens on 2026-08-20, so August is a partial month and
  *   September is the only complete one) = 84000; Dec, Jan: 40000 + 26000 + 6000 + 2000 = 74000;
- * - spending outflows in [2026-07-16, 2026-10-13]: Checking 152000, Visa 10500, Savings 0.
+ * - spending outflows in [2026-07-16, 2026-10-13]: Checking 152000, Visa 10500, Savings 0;
+ * - planned without a schedule (audit decision A14): Paycheck is typed at 500000 a month with no
+ *   recurring item (Oct: 500000 − 250000 received = 250000 still expected, Nov 500000), and the
+ *   Emergency Fund goal plans 50000 a month with no recurring transfer (Oct 50000 − 30000 = 20000).
  */
 
 describe("pure helpers", () => {
@@ -177,7 +182,7 @@ describe.skipIf(!TEST_DATABASE_URL)("cash-flow loader on the grid-and-api seed",
     });
     expect(byName.get("Internet")).toMatchObject({ nextDueDate: "2026-10-20", amountCents: -7999n });
 
-    expect(input.cardPayments).toEqual([{ cardAccountId: S.accounts.visa, fromAccountId: S.accounts.checking, payDay: 25, statementDay: 5, knownStatementBalanceCents: -62500n }]);
+    expect(input.cardPayments).toEqual([{ cardAccountId: S.accounts.visa, fromAccountId: S.accounts.checking, payDay: 25, statementDay: 5, knownStatementBalanceCents: -32500n }]);
     expect(input.spendingPlan).toEqual([
       { month: "2026-10", remainingCents: 15000n },
       { month: "2026-11", remainingCents: 84000n },
@@ -188,7 +193,16 @@ describe.skipIf(!TEST_DATABASE_URL)("cash-flow loader on the grid-and-api seed",
     ]);
     expect(input.primaryAccountId).toBeNull();
     expect(input.defaultThresholdCents).toBe(0n);
-    expect(input.warnings).toEqual(["1 month uses 3-month averages for unplanned spending categories"]);
+    expect(input.unscheduled.map((u) => [u.month, u.categoryName, u.bucket, u.amountCents])).toEqual([
+      ["2026-10", "Paycheck", "income", 250000n],
+      ["2026-10", "Emergency Fund", "savings", 20000n],
+      ["2026-11", "Paycheck", "income", 500000n],
+      ["2026-11", "Emergency Fund", "savings", 50000n],
+    ]);
+    expect(input.warnings).toEqual([
+      "4 planned amounts have no recurring schedule and are not in the projection: Paycheck, Emergency Fund",
+      "1 month uses 3-month averages for unplanned spending categories",
+    ]);
   });
 
   it("maps transfers, income and spending-category charges, excludes transfers into a paid card, warns on items without an account", async () => {
@@ -232,7 +246,18 @@ describe.skipIf(!TEST_DATABASE_URL)("cash-flow loader on the grid-and-api seed",
     });
     // Items arrive in id order (the engine's determinism rule).
     expect(input.recurring.map((r) => r.id)).toEqual([...input.recurring.map((r) => r.id)].sort());
-    expect(input.warnings).toEqual(["recurring item Orphan bill has no account and was skipped", "1 month uses 3-month averages for unplanned spending categories"]);
+    // The Salary item now dates the typed Paycheck plan (Oct 15, Nov 1, Nov 15). Music's 999 in November is
+    // planned by the orphan bill itself (an item, so not "without a schedule"; it has its own warning), and
+    // Auto-save has no category, so the goal stays unscheduled.
+    expect(input.unscheduled.map((u) => [u.month, u.categoryName, u.amountCents])).toEqual([
+      ["2026-10", "Emergency Fund", 20000n],
+      ["2026-11", "Emergency Fund", 50000n],
+    ]);
+    expect(input.warnings).toEqual([
+      "recurring item Orphan bill has no account and was skipped",
+      "2 planned amounts have no recurring schedule and are not in the projection: Emergency Fund",
+      "1 month uses 3-month averages for unplanned spending categories",
+    ]);
 
     // Once the card loses its payment day, the autopay transfer is a dated event again and the card has no payment entry.
     await t.db.update(account).set({ paymentDay: null, paymentFromAccountId: null, statementDay: null }).where(eq(account.id, S.accounts.visa));
@@ -263,7 +288,7 @@ describe.skipIf(!TEST_DATABASE_URL)("cash-flow loader on the grid-and-api seed",
     // A horizon that ends before the first payment skips the ledger read.
     await t.db.update(account).set({ statementDay: 5 }).where(eq(account.id, S.accounts.visa));
     expect((await loadCashFlowInput(t.db, { today, horizonDays: 5 })).cardPayments[0]).toMatchObject({ statementDay: 5, knownStatementBalanceCents: null });
-    expect((await loadCashFlowInput(t.db, { today, horizonDays: 12 })).cardPayments[0]).toMatchObject({ statementDay: 5, knownStatementBalanceCents: -62500n });
+    expect((await loadCashFlowInput(t.db, { today, horizonDays: 12 })).cardPayments[0]).toMatchObject({ statementDay: 5, knownStatementBalanceCents: -32500n });
   });
 
   it("restricts to accountIds, rejects unknown or off-budget ids, and warns on a missing balance", async () => {
@@ -302,7 +327,11 @@ describe.skipIf(!TEST_DATABASE_URL)("cash-flow loader on the grid-and-api seed",
     expect(result.dates).toHaveLength(31);
     expect(result.accounts.map((a) => a.name)).toEqual(["Checking", "Savings", "Visa"]);
     expect(result.combined.openingCents).toBe(572500n);
-    expect(result.warnings).toEqual(["1 month uses 3-month averages for unplanned spending categories"]);
+    expect(result.warnings).toEqual([
+      "4 planned amounts have no recurring schedule and are not in the projection: Paycheck, Emergency Fund",
+      "1 month uses 3-month averages for unplanned spending categories",
+    ]);
+    expect(result.unscheduled).toHaveLength(4);
 
     // Oct 15000 and Nov 84000 split 152000 : 10500 by largest remainder
     // (84000 × 152000 / 162500 = 78572.31, 84000 × 10500 / 162500 = 5427.69: the odd cent goes to Visa).
@@ -320,8 +349,8 @@ describe.skipIf(!TEST_DATABASE_URL)("cash-flow loader on the grid-and-api seed",
       .sort((a, b) => (a[0] === b[0] ? (a[1] < b[1] ? -1 : 1) : a[0] < b[0] ? -1 : 1));
     expect(applied).toEqual([
       ["2026-10-20", "bill", "Internet", -7999n],
-      ["2026-10-25", "card_payment_in", "Visa payment", 62500n],
-      ["2026-10-25", "card_payment_out", "Visa payment", -62500n],
+      ["2026-10-25", "card_payment_in", "Visa payment", 32500n],
+      ["2026-10-25", "card_payment_out", "Visa payment", -32500n],
       ["2026-11-01", "bill", "Rent", -180000n],
       ["2026-11-05", "bill", "Netflix", -1549n],
     ]);

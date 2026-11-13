@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,7 +9,7 @@ import { createDb, type Db, type DbClient } from "../index.js";
 import { migrationsFolder, runMigrations } from "../migrate.js";
 import { account, category, investmentTxn, security, transaction } from "../schema/index.js";
 import { loadFlowRows } from "../services/performance.js";
-import { TEST_DATABASE_URL } from "./db.js";
+import { TEST_DATABASE_URL, testDatabaseName } from "./db.js";
 
 /**
  * Migration `linked_cash_transfers` on a database whose trade history was imported before the
@@ -19,7 +18,7 @@ import { TEST_DATABASE_URL } from "./db.js";
  * locked one stays; rows linked to income, and rows nothing is linked to, are left alone.
  */
 describe.skipIf(!TEST_DATABASE_URL)("migration linked_cash_transfers on links made before it", () => {
-  const databaseName = `meridian_test_${randomBytes(6).toString("hex")}`;
+  const databaseName = testDatabaseName();
   let db: Db;
   let client: DbClient;
   let before: string;

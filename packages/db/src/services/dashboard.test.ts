@@ -82,6 +82,8 @@ const ZERO_BREAKDOWN = { investmentsCents: 0n, investmentsAsOf: null, cashCents:
       "account Checking has no known balance",
       "account Savings has no known balance",
       "account Visa has no known balance",
+      // The typed paycheck and the goal contribution have no recurring schedule (audit decision A14).
+      "4 planned amounts have no recurring schedule and are not in the projection: Paycheck, Emergency Fund",
       "1 month uses 3-month averages for unplanned spending categories",
       "card Visa has no payment day",
     ]);

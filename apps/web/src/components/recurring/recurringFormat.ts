@@ -1,4 +1,4 @@
-import type { AlertKind, AlertView, Cadence } from "@meridian/shared";
+import type { AlertKind, AlertView, Cadence, RecurringStatus, RecurringView, TransactionView } from "@meridian/shared";
 import { dayDiff, periodMonths } from "@meridian/shared";
 import { money, shortDate } from "../../lib/format.js";
 
@@ -122,6 +122,42 @@ export function confidenceLabel(confidence: number | null): string {
 /** Magnitude of a signed cents string. */
 export function absCents(cents: string): string {
   return cents.startsWith("-") ? cents.slice(1) : cents;
+}
+
+/**
+ * The Subscriptions page's "auto-paused" badge: the refresh paused the item after three missed
+ * charges. It reads `statusReason`, which stays 'missed_3' while `consecutiveMissed` goes back to
+ * 0 on the next nightly refresh of a paused item.
+ */
+export function isAutoPaused(row: { status: RecurringStatus; statusReason: string | null; consecutiveMissed: number }): boolean {
+  return row.status === "paused" && row.statusReason === "missed_3";
+}
+
+/**
+ * The Recurring list's totals line. With both directions listed the figure is a net, so it says
+ * which way it goes ("net out", "net in"); a one-direction list shows magnitudes.
+ */
+export function recurringTotalsLabel(count: number, totals: { monthlyEquivalentCents: string; yearlyCents: string }, direction: "" | "inflow" | "outflow"): string {
+  const items = `${count} item${count === 1 ? "" : "s"}`;
+  const amounts = `${money(absCents(totals.monthlyEquivalentCents))}/mo · ${money(absCents(totals.yearlyCents))}/yr`;
+  if (direction !== "") return `${items} · ${amounts}`;
+  const yearly = BigInt(totals.yearlyCents);
+  const net = yearly < 0n ? "net out" : yearly > 0n ? "net in" : "net";
+  return `${items} · ${net} ${amounts}`;
+}
+
+/**
+ * What the Charges panel's search can do with a transaction for `item`, mirroring the link route:
+ * a charge of the item's payee in its direction (not a transfer, not zero) can be linked, or moved
+ * here when another item holds it; anything else would be refused, so nothing is offered.
+ */
+export function chargeLinkAction(
+  t: Pick<TransactionView, "payeeId" | "amountCents" | "recurringId" | "isTransfer">,
+  item: Pick<RecurringView, "id" | "payeeId" | "expectedCents">,
+): "link" | "move" | null {
+  if (t.recurringId === item.id || t.isTransfer || t.payeeId !== item.payeeId) return null;
+  if (t.amountCents === "0" || t.amountCents.startsWith("-") !== item.expectedCents.startsWith("-")) return null;
+  return t.recurringId ? "move" : "link";
 }
 
 /** "$15.49" for fixed items, "~$120.00 ± $15.00" for variable ones (band omitted when unknown or zero). Magnitudes; the sign is shown separately. */

@@ -32,6 +32,8 @@ import {
 export const LOOKBACK_MONTHS = 36;
 export const MIN_CHARGES = 3;
 export const MIN_CHARGES_VARIABLE = 4;
+/** A variable series whose amounts are dispersed (beyond ×2 of the median) needs this many charges, each on-cycle. */
+export const MIN_CHARGES_DISPERSED = 6;
 export const MIN_HITS = 2;
 export const MIN_ON_CYCLE = 3;
 export const MIN_SCORE_BP = 6000;
@@ -92,6 +94,8 @@ export interface Detection {
   lastTransactionId: string;
   /** Account of the last on-cycle charge. */
   accountId: string;
+  /** Account of the first on-cycle charge: its history start is the new-series guard (B9). */
+  firstAccountId: string;
   chargeCount: number;
   nextDueDate: IsoDate;
 }
@@ -300,20 +304,27 @@ function fixedTolerance(amountAbs: bigint): bigint {
   return maxBig(FIXED_TOL_MIN_CENTS, truncDiv(amountAbs * BigInt(FIXED_TOL_PCT), 100n));
 }
 
+/** The amounts lie within max($1, 1% of their upper median) of each other. */
+function withinFixedBand(amounts: readonly bigint[]): boolean {
+  return maxOf(amounts) - minOf(amounts) <= fixedTolerance(upperMedian(amounts));
+}
+
 /**
- * Fixed iff the last three amounts lie within max($1, 1% of their median): expected = the
- * last amount (a price change shows immediately), tolerance = max($1, 1%). Otherwise
- * variable: expected = upper median of the last six, tolerance = the band half-width that
- * covers them. `dispersed` flags any amount below half or above twice the series median.
+ * Fixed iff the last three amounts lie within max($1, 1% of their median), or the series
+ * moved to a new price: the newest one or two amounts agree with each other and the three
+ * before them were fixed (a price increase or a cheaper plan; audit decision A8). Fixed:
+ * expected = the last amount (a price change shows immediately, on its first charge),
+ * tolerance = max($1, 1%). Otherwise variable: expected = upper median of the last six,
+ * tolerance = the band half-width that covers them. `dispersed` flags any amount below half
+ * or above twice the series median.
  */
 export function classifyAmounts(absAmounts: readonly bigint[]): AmountClassification {
   const n = absAmounts.length;
   if (n === 0) throw new Error("classifyAmounts of an empty list");
   const medianAll = upperMedian(absAmounts);
   const dispersed = absAmounts.some((a) => 2n * a < medianAll || a > 2n * medianAll);
-  const last3 = absAmounts.slice(-3);
-  const tolFixed = fixedTolerance(upperMedian(last3));
-  if (maxOf(last3) - minOf(last3) <= tolFixed) {
+  const newLevel = [1, 2].some((run) => n >= run + 3 && withinFixedBand(absAmounts.slice(n - run)) && withinFixedBand(absAmounts.slice(n - run - 3, n - run)));
+  if (withinFixedBand(absAmounts.slice(-3)) || newLevel) {
     const expectedAbs = absAmounts[n - 1]!;
     return { mode: "fixed", expectedAbs, toleranceCents: fixedTolerance(expectedAbs), dispersed };
   }
@@ -343,12 +354,22 @@ function isAccepted(score: CadenceScore): boolean {
  * One series from one set of charges (same payee and sign). Undefined when there are too
  * few charges (3, or 4 for variable amounts), the amounts are dispersed, no cadence is
  * accepted, or the last on-cycle charge is older than two periods.
+ *
+ * `allowDispersed` (the last fallback of `detectRecurring`) accepts dispersed variable amounts
+ * when there are at least six charges and every one of them is on-cycle on the chosen cadence
+ * (no extra, no miss): one bill whose amount swings with the season, not two series mixed.
+ *
+ * The amounts of the detection (mode, expected, tolerance) are classified over the on-cycle
+ * charges, the ones that are linked, so an extra or a miss never sets the expected amount and
+ * the refresh after a confirm reproduces them (audit decision A8).
  */
-export function detectSeries(charges: readonly ChargeLike[], today: IsoDate): Detection | undefined {
+export function detectSeries(charges: readonly ChargeLike[], today: IsoDate, opts: { allowDispersed?: boolean } = {}): Detection | undefined {
   if (charges.length < MIN_CHARGES) return undefined;
   const sorted = sortCharges(charges);
-  const amounts = classifyAmounts(sorted.map((c) => absBig(c.amountCents)));
-  if (amounts.mode === "variable" && (sorted.length < MIN_CHARGES_VARIABLE || amounts.dispersed)) return undefined;
+  const all = classifyAmounts(sorted.map((c) => absBig(c.amountCents)));
+  const dispersedVariable = all.mode === "variable" && all.dispersed;
+  if (all.mode === "variable" && sorted.length < MIN_CHARGES_VARIABLE) return undefined;
+  if (dispersedVariable && !(opts.allowDispersed && sorted.length >= MIN_CHARGES_DISPERSED)) return undefined;
 
   const dates = sorted.map((c) => c.date);
   const ids = sorted.map((c) => c.id);
@@ -358,6 +379,7 @@ export function detectSeries(charges: readonly ChargeLike[], today: IsoDate): De
     if (!schedule) continue;
     const score = scoreCadence(dates, ids, schedule);
     if (!isAccepted(score)) continue;
+    if (dispersedVariable && score.onCycle !== score.n) continue;
     if (!best || compareScores(score, best) < 0) best = score;
   }
   if (!best) return undefined;
@@ -367,6 +389,7 @@ export function detectSeries(charges: readonly ChargeLike[], today: IsoDate): De
   const first = onCycle[0]!;
   const last = onCycle[onCycle.length - 1]!;
   if (dayDiff(last.date, today) > 2 * nominalPeriodDays(best.cadence)) return undefined;
+  const amounts = classifyAmounts(onCycle.map((c) => absBig(c.amountCents)));
 
   const weekBased = isWeekBased(best.cadence);
   const schedule: Schedule = weekBased ? { cadence: best.cadence, anchorDate: last.date } : best.schedule;
@@ -387,6 +410,7 @@ export function detectSeries(charges: readonly ChargeLike[], today: IsoDate): De
     lastChargeCents: last.amountCents,
     lastTransactionId: last.id,
     accountId: last.accountId,
+    firstAccountId: first.accountId,
     chargeCount: best.onCycleIds.length,
     nextDueDate,
   };
@@ -431,7 +455,10 @@ function byDetectionOrder(a: Detection, b: Detection): number {
 /**
  * Detections for one (payee, sign) group: the whole group; else, when it spans several
  * accounts, each account; else amount clusters of ≥ 3 charges. Levels are never combined.
- * Ordered by chargeCount desc, firstChargeDate asc, first on-cycle id asc.
+ * When those fallbacks yield fewer than two series, a whole group whose amounts are dispersed
+ * but whose every charge is on-cycle on one cadence is one variable series (a seasonal
+ * utility bill; audit decision A9). Ordered by chargeCount desc, firstChargeDate asc, first
+ * on-cycle id asc.
  */
 export function detectRecurring(group: readonly ChargeLike[], today: IsoDate): Detection[] {
   const whole = detectSeries(group, today);
@@ -456,6 +483,10 @@ export function detectRecurring(group: readonly ChargeLike[], today: IsoDate): D
       const d = detectSeries(cluster, today);
       if (d) results.push(d);
     }
+  }
+  if (results.length < 2) {
+    const seasonal = detectSeries(group, today, { allowDispersed: true });
+    if (seasonal) return [seasonal];
   }
   return results.sort(byDetectionOrder);
 }

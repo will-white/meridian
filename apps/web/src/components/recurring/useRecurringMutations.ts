@@ -24,7 +24,9 @@ export function useRecurringMutations() {
     onSuccess: invalidate,
   });
   const link = useMutation({
-    mutationFn: ({ id, transactionId }: { id: string; transactionId: string }) => api<RecurringView>(`/recurring/${id}/link`, { method: "POST", body: { transactionId } }),
+    /** `move`: take the charge from the item it is linked to (else the server answers 409). */
+    mutationFn: ({ id, transactionId, move }: { id: string; transactionId: string; move?: boolean }) =>
+      api<RecurringView>(`/recurring/${id}/link`, { method: "POST", body: move ? { transactionId, move: true } : { transactionId } }),
     onSuccess: invalidate,
   });
   const unlink = useMutation({

@@ -12,6 +12,17 @@ export interface TestDb {
 
 export const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 
+/**
+ * Throwaway databases are named `<prefix><12 hex digits>`. TEST_DATABASE_PREFIX (default
+ * `meridian_test_`) lets several checkouts share one server without touching each other's
+ * databases; it must be a lower-case identifier.
+ */
+export function testDatabaseName(): string {
+  const prefix = process.env.TEST_DATABASE_PREFIX || "meridian_test_";
+  if (!/^[a-z_][a-z0-9_]{0,40}$/.test(prefix)) throw new Error("TEST_DATABASE_PREFIX must be a lower-case identifier of at most 41 characters");
+  return `${prefix}${randomBytes(6).toString("hex")}`;
+}
+
 function withDatabase(url: string, name: string): string {
   const u = new URL(url);
   u.pathname = `/${name}`;
@@ -25,7 +36,7 @@ function withDatabase(url: string, name: string): string {
  */
 export async function createTestDb(): Promise<TestDb> {
   if (!TEST_DATABASE_URL) throw new Error("TEST_DATABASE_URL is not set");
-  const databaseName = `meridian_test_${randomBytes(6).toString("hex")}`;
+  const databaseName = testDatabaseName();
   const admin = postgres(TEST_DATABASE_URL, { max: 1, onnotice: () => {} });
   await admin.unsafe(`create database "${databaseName}"`);
   await admin.end();

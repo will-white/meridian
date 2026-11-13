@@ -73,7 +73,7 @@ The worker syncs each SimpleFIN connection every 6 hours (`SYNC_INTERVAL_HOURS`)
 | Command | What |
 | --- | --- |
 | `pnpm dev` | run api, worker and web with hot reload |
-| `pnpm test` | unit tests; integration suites skip without `TEST_DATABASE_URL` |
+| `pnpm test` | unit tests; integration suites skip without `TEST_DATABASE_URL` (their throwaway databases are named `TEST_DATABASE_PREFIX`, default `meridian_test_`, plus a random suffix) |
 | `pnpm test:db` | all tests against a local Postgres (creates throwaway databases) |
 | `pnpm typecheck`, `pnpm lint` | type and lint checks across the workspace |
 | `pnpm db:generate` | generate a migration after editing `packages/db/src/schema` |

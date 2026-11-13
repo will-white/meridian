@@ -61,7 +61,11 @@ export interface CashFlowCardPayment {
   payDay: number;
   /** Statement close day (1..31, clamped); null = the balance as of the day before the payment. */
   statementDay: number | null;
-  /** Ledger-derived balance at the last close before today, when the loader could compute it. */
+  /**
+   * Ledger-derived unpaid part of the statement that closed before today, as a balance (negative =
+   * owed): the balance at that close plus the payments and credits posted to the card since, which
+   * today's balances already hold. Null when the loader could not compute it.
+   */
   knownStatementBalanceCents: bigint | null;
 }
 

@@ -23,7 +23,7 @@ interface BaseProps {
 
 type Props = BaseProps &
   (
-    | { mode: "create"; onSubmit: (body: CreateBody) => void }
+    | { mode: "create"; onSubmit: (body: CreateBody) => void; /** Prefilled fields (a deep link from the Cash flow page). */ initial?: RecurringFormState }
     | {
         /** `confirm` activates a suggestion (or re-activates a dismissed/cancelled item): the category becomes required and `status: 'active'` is sent. */
         mode: "edit" | "confirm";
@@ -34,7 +34,7 @@ type Props = BaseProps &
 
 export function RecurringForm(props: Props) {
   const { categories, accounts, pending, error, onCancel } = props;
-  const [form, setForm] = useState<RecurringFormState>(() => (props.mode === "create" ? emptyForm() : formFromItem(props.item)));
+  const [form, setForm] = useState<RecurringFormState>(() => (props.mode === "create" ? (props.initial ?? emptyForm()) : formFromItem(props.item)));
   const [showDetails, setShowDetails] = useState(props.mode !== "confirm");
   const [formError, setFormError] = useState<string | null>(null);
   const set = <K extends keyof RecurringFormState>(key: K, value: RecurringFormState[K]) => setForm((f) => ({ ...f, [key]: value }));
@@ -106,7 +106,7 @@ export function RecurringForm(props: Props) {
           {chosenCategory && <span className="muted small">{categoryPlanHint(chosenCategory.bucket)}</span>}
         </label>
         <label>
-          Account
+          Account{(props.mode !== "edit" || props.item.status === "active") && <span className="muted small"> (required)</span>}
           <select value={form.accountId} onChange={(e) => set("accountId", e.target.value)} className={form.accountId ? "" : "unset"}>
             <option value="">— choose an account —</option>
             {visibleAccounts.map((a) => (
@@ -228,6 +228,7 @@ export function RecurringForm(props: Props) {
           {item && !(item.amountLocked && item.scheduleLocked) && (
             <p className="muted small">Editing the schedule or the amount locks that part to your values; the detector keeps refreshing the rest.</p>
           )}
+          {item && <p className="muted small">An account you pick is kept until a later charge posts; the item then follows the account that charge came from.</p>}
         </>
       )}
 

@@ -27,13 +27,14 @@ describe.skipIf(!TEST_DATABASE_URL)("cash-flow loader and dashboard review probe
     await t?.cleanup();
   });
 
-  it("B1. payment day = today: the close before it is read from the ledger and the payment posts on day 0", async () => {
+  it("B1. payment day = today: the close before it is read from the ledger and the unpaid rest posts on day 0", async () => {
     await t.db.update(account).set({ paymentDay: 13 }).where(eq(account.id, S.accounts.visa));
     const input = await loadCashFlowInput(t.db, { today, horizonDays: 10 });
-    expect(input.cardPayments[0]).toMatchObject({ payDay: 13, statementDay: 5, knownStatementBalanceCents: -62500n });
+    // The 10-05 statement is −62500; the 30000 paid on 10-08 leaves 32500 (audit decision A7).
+    expect(input.cardPayments[0]).toMatchObject({ payDay: 13, statementDay: 5, knownStatementBalanceCents: -32500n });
     const r = await projectForHousehold(t.db, { today, horizonDays: 10 });
     const pay = r.events.filter((e) => e.kind === "card_payment_out");
-    expect(pay.map((e) => [e.date, e.amountCents])).toEqual([[today, -62500n]]);
+    expect(pay.map((e) => [e.date, e.amountCents])).toEqual([[today, -32500n]]);
     await t.db.update(account).set({ paymentDay: 25 }).where(eq(account.id, S.accounts.visa));
   });
 

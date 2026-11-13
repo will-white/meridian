@@ -1,5 +1,5 @@
 import type { BucketTotals, CashFlowProjectionResponse, CashFlowResult, CashFlowSeries, DashboardView } from "@meridian/shared";
-import type { DashboardInvestmentsBlock, DashboardResult } from "@meridian/db";
+import type { DashboardInvestmentsBlock, DashboardResult, UnscheduledPlan } from "@meridian/db";
 
 /**
  * Cash-flow and dashboard view mappers: the engines' bigint results → the wire
@@ -29,7 +29,7 @@ function toSeriesView(s: CashFlowSeries): SeriesView {
 }
 
 /** The projection on the wire: every bigint a decimal string, events decorated with their account's name. */
-export function toCashFlowProjectionView(r: CashFlowResult): CashFlowProjectionResponse {
+export function toCashFlowProjectionView(r: CashFlowResult & { unscheduled?: UnscheduledPlan[] }): CashFlowProjectionResponse {
   const nameOf = new Map(r.accounts.map((a) => [a.accountId, a.name]));
   const toEvent = (e: CashFlowResult["events"][number]): EventView => ({
     date: e.date,
@@ -65,6 +65,7 @@ export function toCashFlowProjectionView(r: CashFlowResult): CashFlowProjectionR
     spreads: r.spreads.map(toSpread),
     whatIfs: r.whatIfs.map(toReport),
     warnings: r.warnings,
+    unscheduled: (r.unscheduled ?? []).map((u) => ({ month: u.month, categoryId: u.categoryId, categoryName: u.categoryName, bucket: u.bucket, amountCents: cents(u.amountCents) })),
   };
 }
 

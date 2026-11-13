@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { dayDiff } from "@meridian/shared";
 import type { CashFlowProjectionResponse } from "@meridian/shared";
 import { api } from "../lib/api.js";
@@ -11,6 +11,7 @@ import { EChart, useChartTheme } from "../components/charts/EChart.js";
 import { cashFlowChartOption, seriesColor, type CashFlowChartSeries } from "../components/charts/chartOptions.js";
 import { EventsTable } from "../components/cashflow/EventsTable.js";
 import { WhatIfDrawer } from "../components/cashflow/WhatIfDrawer.js";
+import { unscheduledRows } from "../components/cashflow/unscheduled.js";
 import {
   addMove,
   HORIZONS,
@@ -128,6 +129,7 @@ export function CashFlowPage() {
     });
 
   const endCents = p?.combined.points[p.combined.points.length - 1];
+  const unscheduled = useMemo(() => unscheduledRows(p?.unscheduled ?? []), [p?.unscheduled]);
   const combinedBelow = p ? p.combined.thresholdCents !== null && BigInt(p.combined.minCents) < BigInt(p.combined.thresholdCents) : false;
 
   return (
@@ -185,6 +187,27 @@ export function CashFlowPage() {
                     <li key={w}>{w}</li>
                   ))}
                 </ul>
+              )}
+              {unscheduled.length > 0 && (
+                <div className="cf-unscheduled" role="note" aria-label="Planned amounts not in the projection">
+                  <p className="small">
+                    <strong>Not in the projection:</strong> these amounts are planned in the grid, but no recurring item gives them a date.
+                  </p>
+                  <table className="table small">
+                    <tbody>
+                      {unscheduled.map((r) => (
+                        <tr key={r.categoryId}>
+                          <td>{r.categoryName}</td>
+                          <td className="muted">{r.months}</td>
+                          <td className={`num nowrap ${r.totalCents.startsWith("-") ? "neg" : "pos"}`}>{money(r.totalCents)}</td>
+                          <td className="nowrap">
+                            <Link to={r.link}>Add a recurring item</Link>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
               <div className="cf-legend" role="group" aria-label="Series">
                 <label className="inline">

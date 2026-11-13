@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, lt, lte, sql } from "drizzle-orm";
 import {
   addDays,
   addMonths,
@@ -23,6 +23,7 @@ import {
   type IsoDate,
   type MonthKey,
   type PlanCategoryRowResult,
+  type PlanResult,
   type RecurringKind,
   type Schedule,
 } from "@meridian/shared";
@@ -37,7 +38,7 @@ import { getHouseholdSetting, householdToday } from "./settings.js";
  * "Loader reads"). Six reads, no writes: projected accounts with opening = posted balance +
  * pending, active recurring items mapped to engine items (every bucket: a recurring charge in
  * a spending category is a dated event too), card payment entries with the ledger-derived
- * statement balance, the remaining spending plan per month (current month from the grid's
+ * unpaid part of the last statement, the remaining spending plan per month (current month from the grid's
  * remaining, future months from explicit rows or 3-month averages, each category less the
  * dated charges of its own recurring items so nothing is counted twice), trailing 90-day
  * spending weights, and the household defaults. The engine itself is pure
@@ -61,9 +62,25 @@ export interface LoadCashFlowInputQuery {
   accountIds?: string[];
 }
 
+/**
+ * A planned income, bills or savings amount the projection does not hold because no recurring
+ * schedule dates it (a value typed into the grid, a goal contribution without a transfer item).
+ * Phase 2 plan, audit decision A14.
+ */
+export interface UnscheduledPlan {
+  month: MonthKey;
+  categoryId: string;
+  categoryName: string;
+  bucket: "income" | "bills" | "savings";
+  /** Bucket-natural magnitude (> 0) planned for the month and not forecast. */
+  amountCents: bigint;
+}
+
 /** The engine's input minus the what-ifs, plus the loader's own notes (merged into the result's warnings). */
 export interface CashFlowLoad extends Omit<CashFlowInput, "whatIfs"> {
   warnings: string[];
+  /** Planned non-spending amounts without a schedule, by month (also summarised in `warnings`). */
+  unscheduled: UnscheduledPlan[];
 }
 
 // ---- Helpers ----
@@ -115,6 +132,22 @@ export async function cardStatementBalance(db: DbOrTx, cardAccountId: string, op
     .select({ cents: sql<bigint>`coalesce(sum(${transaction.amountCents}), 0)::bigint` })
     .from(transaction)
     .where(and(eq(transaction.accountId, cardAccountId), gt(transaction.date, statementDate), lte(transaction.date, today)));
+  return openingCents - (row?.cents ?? 0n);
+}
+
+/**
+ * What is still unpaid of the statement that closed on `statementDate`, as a balance (negative =
+ * owed): the balance at the close plus every payment and credit (positive row, posted or
+ * pending) posted to the card since, through today. Those payments are already in today's
+ * balances, so the projection must not pay them again (phase 2 plan, audit decision A7). Equal
+ * to opening − Σ of the card's charges (negative rows) after the close: the charges after the
+ * close belong to the next statement.
+ */
+export async function cardUnpaidStatementBalance(db: DbOrTx, cardAccountId: string, openingCents: bigint, statementDate: IsoDate, today: IsoDate): Promise<bigint> {
+  const [row] = await db
+    .select({ cents: sql<bigint>`coalesce(sum(${transaction.amountCents}), 0)::bigint` })
+    .from(transaction)
+    .where(and(eq(transaction.accountId, cardAccountId), lt(transaction.amountCents, 0n), gt(transaction.date, statementDate), lte(transaction.date, today)));
   return openingCents - (row?.cents ?? 0n);
 }
 
@@ -179,10 +212,17 @@ export interface SpendingDatedItem {
  * that month (never below 0), so the gym on the 20th is one event of 40.00 and the rest of
  * the Health envelope is spread, instead of the charge being spread and posted.
  */
-export async function spendingRemainingByMonth(db: DbOrTx, today: IsoDate, endDate: IsoDate, datedItems: readonly SpendingDatedItem[] = []): Promise<SpendingRemainingResult> {
+export async function spendingRemainingByMonth(
+  db: DbOrTx,
+  today: IsoDate,
+  endDate: IsoDate,
+  datedItems: readonly SpendingDatedItem[] = [],
+  /** The grid over [month of today, month of endDate], when the caller has read it already. */
+  preloaded?: PlanResult,
+): Promise<SpendingRemainingResult> {
   const currentMonth = monthKey(today);
   const lastMonth = monthKey(endDate);
-  const plan = await getPlan(db, { from: currentMonth, to: lastMonth, today });
+  const plan = preloaded ?? (await getPlan(db, { from: currentMonth, to: lastMonth, today }));
   const spendingRows = plan.rows.filter((r): r is PlanCategoryRowResult => r.kind === "category" && r.bucket === "spending");
 
   // Dated charges per (category, month they post in): overdue ones post today.
@@ -225,6 +265,72 @@ export async function spendingRemainingByMonth(db: DbOrTx, today: IsoDate, endDa
     months.push({ month, remainingCents });
   }
   return { months, monthsOnAverages, averageMonthsWithData };
+}
+
+/** A recurring item whose occurrences the projection dates, as far as its category's plan is concerned. */
+export interface ScheduledPlanItem {
+  categoryId: string;
+  schedule: Schedule;
+  nextDueDate: IsoDate;
+  /** Signed like the item's expected amount. */
+  amountCents: bigint;
+}
+
+const PLAN_BUCKET_ORDER: Record<UnscheduledPlan["bucket"], number> = { income: 0, bills: 1, savings: 2 };
+
+/**
+ * The income, bills and savings planned in the grid that no dated recurring event covers (audit
+ * decision A14): a typed (or averaged) plan and a goal's contribution. A cell planned
+ * automatically from recurring items is their schedule by definition and is skipped (an
+ * occurrence it holds that the projection does not post was missed, which its alert reports).
+ * Per category and month: what is still expected (the current month: planned less what already
+ * happened, never below 0; later months: planned) less the bucket-natural amount of the
+ * category's own scheduled occurrences that post in that month (an overdue one posts today;
+ * occurrences after the horizon but inside its last month count, since the plan is monthly).
+ * A positive rest is not forecast. Pure; ordered by month, bucket, category name.
+ */
+export function unscheduledPlans(plan: PlanResult, today: IsoDate, scheduled: readonly ScheduledPlanItem[]): UnscheduledPlan[] {
+  const currentMonth = monthKey(today);
+  const lastMonth = plan.months[plan.months.length - 1];
+  if (lastMonth === undefined) return [];
+  const rows = plan.rows.filter((r): r is PlanCategoryRowResult & { bucket: UnscheduledPlan["bucket"] } => r.kind === "category" && r.bucket !== "spending");
+  const bucketOf = new Map(rows.map((r) => [r.categoryId, r.bucket]));
+  const covered = new Map<string, bigint>();
+  for (const item of scheduled) {
+    const bucket = bucketOf.get(item.categoryId);
+    if (bucket === undefined) continue;
+    const natural = bucket === "income" ? item.amountCents : -item.amountCents;
+    for (const original of projectedOccurrenceDates(item.schedule, item.nextDueDate, today, monthEnd(lastMonth))) {
+      const key = `${item.categoryId}|${monthKey(original < today ? today : original)}`;
+      covered.set(key, (covered.get(key) ?? 0n) + natural);
+    }
+  }
+  const out: UnscheduledPlan[] = [];
+  for (const [i, month] of plan.months.entries()) {
+    for (const row of rows) {
+      const cell = row.cells[i];
+      if (!cell || (cell.source === "recurring" && !cell.hasExplicitPlan)) continue;
+      const expected = month === currentMonth ? maxBig(0n, cell.plannedCents - cell.actualCents) : cell.plannedCents;
+      const missing = expected - (covered.get(`${row.categoryId}|${month}`) ?? 0n);
+      if (missing > 0n) out.push({ month, categoryId: row.categoryId, categoryName: row.name, bucket: row.bucket, amountCents: missing });
+    }
+  }
+  return out.sort(
+    (a, b) =>
+      (a.month < b.month ? -1 : a.month > b.month ? 1 : 0) ||
+      PLAN_BUCKET_ORDER[a.bucket] - PLAN_BUCKET_ORDER[b.bucket] ||
+      a.categoryName.localeCompare(b.categoryName) ||
+      (a.categoryId < b.categoryId ? -1 : a.categoryId > b.categoryId ? 1 : 0),
+  );
+}
+
+/** One warning for the unscheduled amounts, naming each category once. */
+export function unscheduledWarning(items: readonly UnscheduledPlan[]): string | null {
+  if (items.length === 0) return null;
+  const names = [...new Set(items.map((u) => u.categoryName))].join(", ");
+  return items.length === 1
+    ? `1 planned amount has no recurring schedule and is not in the projection: ${names}`
+    : `${items.length} planned amounts have no recurring schedule and are not in the projection: ${names}`;
 }
 
 // ---- The loader ----
@@ -304,9 +410,16 @@ export async function loadCashFlowInput(db: DbOrTx, q: LoadCashFlowInputQuery): 
     .orderBy(asc(recurring.id));
   const recurringItems: CashFlowRecurring[] = [];
   const spendingDated: SpendingDatedItem[] = [];
+  const scheduledForPlan: ScheduledPlanItem[] = [];
   for (const item of items) {
     const kind = recurringKind(item);
-    if (kind === "transfer" && item.transferAccountId !== null && cardsWithPaymentDay.has(item.transferAccountId)) continue;
+    if (kind === "transfer" && item.transferAccountId !== null && cardsWithPaymentDay.has(item.transferAccountId)) {
+      // The card payment model forecasts it, so its plan is not "without a schedule".
+      if (item.categoryId !== null && item.nextDueDate !== null && validateSchedule(scheduleOf(item)) === null) {
+        scheduledForPlan.push({ categoryId: item.categoryId, schedule: scheduleOf(item), nextDueDate: item.nextDueDate, amountCents: item.expectedCents });
+      }
+      continue;
+    }
     if (item.accountId === null) {
       warnings.push(`recurring item ${item.name} has no account and was skipped`);
       continue;
@@ -331,6 +444,7 @@ export async function loadCashFlowInput(db: DbOrTx, q: LoadCashFlowInputQuery): 
       nextDueDate: item.nextDueDate,
       amountCents: item.expectedCents,
     });
+    if (item.categoryId !== null) scheduledForPlan.push({ categoryId: item.categoryId, schedule, nextDueDate: item.nextDueDate, amountCents: item.expectedCents });
     // A spending-category charge is posted on its date, so it must come out of that category's spread.
     if (item.bucket === "spending" && item.categoryId !== null) {
       spendingDated.push({ categoryId: item.categoryId, schedule, nextDueDate: item.nextDueDate, amountCents: item.expectedCents });
@@ -345,13 +459,18 @@ export async function loadCashFlowInput(db: DbOrTx, q: LoadCashFlowInputQuery): 
     if (a.statementDay !== null) {
       const payDate = nextPaymentDate(today, a.paymentDay);
       const close = statementCloseBefore(payDate, a.statementDay);
-      if (payDate <= endDate && close < today) knownStatementBalanceCents = await cardStatementBalance(db, a.id, openingOf.get(a.id) ?? 0n, close, today);
+      if (payDate <= endDate && close < today) knownStatementBalanceCents = await cardUnpaidStatementBalance(db, a.id, openingOf.get(a.id) ?? 0n, close, today);
     }
     cardPayments.push({ cardAccountId: a.id, fromAccountId: a.paymentFromAccountId, payDay: a.paymentDay, statementDay: a.statementDay, knownStatementBalanceCents });
   }
 
-  // 4. Remaining spending per month, less the spending-category charges posted as dated events.
-  const spending = await spendingRemainingByMonth(db, today, endDate, spendingDated);
+  // 4. Remaining spending per month, less the spending-category charges posted as dated events;
+  //    and the planned income, bills and savings that no schedule dates (one read of the grid).
+  const plan = await getPlan(db, { from: monthKey(today), to: monthKey(endDate), today });
+  const spending = await spendingRemainingByMonth(db, today, endDate, spendingDated, plan);
+  const unscheduled = unscheduledPlans(plan, today, scheduledForPlan);
+  const unscheduledNote = unscheduledWarning(unscheduled);
+  if (unscheduledNote !== null) warnings.push(unscheduledNote);
   if (spending.monthsOnAverages > 0) {
     const n = spending.monthsOnAverages;
     if (spending.averageMonthsWithData === 0) {
@@ -381,6 +500,7 @@ export async function loadCashFlowInput(db: DbOrTx, q: LoadCashFlowInputQuery): 
     primaryAccountId: setting.primaryAccountId,
     defaultThresholdCents: setting.lowBalanceThresholdCents,
     warnings,
+    unscheduled,
   };
 }
 
@@ -399,11 +519,16 @@ export interface ProjectForHouseholdInput {
   now?: Date;
 }
 
+/** The engine's result plus the loader's list of planned amounts the projection does not hold. */
+export interface HouseholdCashFlowResult extends CashFlowResult {
+  unscheduled: UnscheduledPlan[];
+}
+
 /** Load the household's input and run the engine; loader notes come first in `warnings`. No writes. */
-export async function projectForHousehold(db: DbOrTx, body: ProjectForHouseholdInput = {}): Promise<CashFlowResult> {
+export async function projectForHousehold(db: DbOrTx, body: ProjectForHouseholdInput = {}): Promise<HouseholdCashFlowResult> {
   const setting = await getHouseholdSetting(db, body.today);
   const today = body.today ?? householdToday(setting, body.now);
-  const { warnings, ...input } = await loadCashFlowInput(db, {
+  const { warnings, unscheduled, ...input } = await loadCashFlowInput(db, {
     today,
     horizonDays: body.horizonDays ?? setting.projectionDefaultDays,
     ...(body.accountIds === undefined ? {} : { accountIds: body.accountIds }),
@@ -413,7 +538,7 @@ export async function projectForHousehold(db: DbOrTx, body: ProjectForHouseholdI
     defaultThresholdCents: body.thresholdCents ?? input.defaultThresholdCents,
     whatIfs: body.whatIfs ?? [],
   });
-  return { ...result, warnings: [...warnings, ...result.warnings] };
+  return { ...result, warnings: [...warnings, ...result.warnings], unscheduled };
 }
 
 // ---- View ----
@@ -431,7 +556,7 @@ function seriesView(s: CashFlowSeries) {
 }
 
 /** The wire shape: every bigint as a decimal string, events decorated with their account's name. */
-export function toCashFlowProjectionView(r: CashFlowResult): CashFlowProjectionResponse {
+export function toCashFlowProjectionView(r: CashFlowResult & { unscheduled?: UnscheduledPlan[] }): CashFlowProjectionResponse {
   const nameOf = new Map(r.accounts.map((a) => [a.accountId, a.name]));
   return {
     today: r.today,
@@ -463,5 +588,6 @@ export function toCashFlowProjectionView(r: CashFlowResult): CashFlowProjectionR
     })),
     whatIfs: r.whatIfs.map((w) => (w.reason === undefined ? { index: w.index, applied: w.applied } : { index: w.index, applied: w.applied, reason: w.reason })),
     warnings: r.warnings,
+    unscheduled: (r.unscheduled ?? []).map((u) => ({ ...u, amountCents: u.amountCents.toString() })),
   };
 }

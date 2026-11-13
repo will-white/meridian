@@ -204,7 +204,9 @@ export function updateBodyFromForm(f: RecurringFormState, item: RecurringView, s
   const name = f.name.trim();
   if (!name) return { ok: false, error: "Enter a name." };
   if (status === "active" && !f.categoryId) return { ok: false, error: "Choose a category to activate this item." };
-  if (status === "active" && !f.accountId) return { ok: false, error: "Choose the account it is charged to." };
+  // An active item keeps an account (the server answers 400 account_required otherwise).
+  const staysActive = status === "active" || (status === undefined && item.status === "active");
+  if (staysActive && !f.accountId) return { ok: false, error: "Choose the account it is charged to." };
   const schedule = scheduleFromForm(f);
   if (!schedule.ok) return schedule;
   const amount = amountFromForm(f);

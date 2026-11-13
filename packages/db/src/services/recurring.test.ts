@@ -270,10 +270,11 @@ describe.skipIf(!TEST_DATABASE_URL)("refresh and matcher (TC7, TC8, TC17, manual
     expect(alerts).toHaveLength(1);
     expect(alerts[0]).toMatchObject({ kind: "price_increase", dedupeKey: `price:${id}:${tx}`, transactionId: tx, oldCents: -1549n, newCents: -1799n });
     const row = await item(f.db, id);
-    // last3 {1549, 1549, 1799} spread 250 > 100 → variable; upper median of the last 6 is 1549, band 250.
-    expect(row.amountMode).toBe("variable");
-    expect(row.expectedCents).toBe(-1549n);
-    expect(row.toleranceCents).toBe(250n);
+    // last3 {1549, 1549, 1799} spread 250 > 100, but the three before the new charge were fixed: 1799 is the
+    // new price, fixed −1799 ± max(100, 17) = 100 at once (phase 2 plan, audit decision A8).
+    expect(row.amountMode).toBe("fixed");
+    expect(row.expectedCents).toBe(-1799n);
+    expect(row.toleranceCents).toBe(100n);
     expect(row.lastChargeCents).toBe(-1799n);
     expect(row.chargeCount).toBe(6);
 

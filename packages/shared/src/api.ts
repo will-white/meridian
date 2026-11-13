@@ -846,7 +846,8 @@ export const UpdateRecurringBody = z.object({
   notes: z.string().max(2000).nullable().optional(),
   status: z.enum(["active", "paused", "cancelled", "dismissed"]).optional(),
 });
-export const LinkTransactionBody = z.object({ transactionId: z.string().uuid() });
+/** `move`: a charge linked to another item of the same payee leaves it and joins this one (else 409 conflict). */
+export const LinkTransactionBody = z.object({ transactionId: z.string().uuid(), move: z.boolean().optional() });
 export const SubscriptionRow = z.object({
   id: z.string().uuid(),
   name: z.string(),
@@ -862,6 +863,8 @@ export const SubscriptionRow = z.object({
   amountMode: AmountMode,
   consecutiveMissed: z.number().int(),
   status: RecurringStatus,
+  /** 'missed_3' for an item the refresh auto-paused after three missed charges; it outlives consecutiveMissed. */
+  statusReason: z.string().nullable(),
 });
 export const SubscriptionsResponse = z.object({
   items: z.array(SubscriptionRow),
@@ -962,6 +965,10 @@ export const CashFlowProjectionResponse = z.object({
   spreads: z.array(CashFlowSpreadView),
   whatIfs: z.array(z.object({ index: z.number().int(), applied: z.boolean(), reason: z.string().optional() })),
   warnings: z.array(z.string()),
+  /** Planned income, bills and savings that no recurring schedule dates, so the projection does not hold them. */
+  unscheduled: z.array(
+    z.object({ month: MonthString, categoryId: z.string().uuid(), categoryName: z.string(), bucket: z.enum(["income", "bills", "savings"]), amountCents: NonNegCentsString }),
+  ),
 });
 export type CashFlowProjectionResponse = z.infer<typeof CashFlowProjectionResponse>;
 

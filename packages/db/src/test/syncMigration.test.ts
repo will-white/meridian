@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,7 +7,7 @@ import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDb, type Db, type DbClient } from "../index.js";
 import { migrationsFolder, runMigrations } from "../migrate.js";
-import { TEST_DATABASE_URL } from "./db.js";
+import { TEST_DATABASE_URL, testDatabaseName } from "./db.js";
 
 /**
  * Migration `sync_attempts` on a database that already has connections: the scheduler now
@@ -16,7 +15,7 @@ import { TEST_DATABASE_URL } from "./db.js";
  * connections that were syncing a value, or every one of them would be due at once.
  */
 describe.skipIf(!TEST_DATABASE_URL)("migration sync_attempts on existing connections", () => {
-  const databaseName = `meridian_test_${randomBytes(6).toString("hex")}`;
+  const databaseName = testDatabaseName();
   let db: Db;
   let client: DbClient;
   let before: string;

@@ -4,6 +4,7 @@ import type { RecurringView, TransactionList, TransactionView } from "@meridian/
 import { api, query } from "../../lib/api.js";
 import { money, shortDate } from "../../lib/format.js";
 import { Badge, Empty, ErrorText } from "../ui.js";
+import { chargeLinkAction } from "./recurringFormat.js";
 import type { RecurringMutations } from "./useRecurringMutations.js";
 
 function useDebounced<T>(value: T, ms: number): T {
@@ -50,8 +51,11 @@ export function ChargesPanel({ item, mutations }: { item: RecurringView; mutatio
   });
 
   const linked = charges.data?.pages.flatMap((p) => p.items) ?? [];
-  const outflow = item.expectedCents.startsWith("-");
-  const linkable = (candidates.data?.items ?? []).filter((t) => t.recurringId !== item.id && t.amountCents.startsWith("-") === outflow && t.amountCents !== "0");
+  // Only what the link route accepts: the item's payee and direction; a charge of another item is moved.
+  const linkable = (candidates.data?.items ?? []).flatMap((t) => {
+    const action = chargeLinkAction(t, item);
+    return action === null ? [] : [{ t, action }];
+  });
 
   return (
     <div className="rec-charges">
@@ -101,13 +105,18 @@ export function ChargesPanel({ item, mutations }: { item: RecurringView; mutatio
           {linkable.length > 0 && (
             <table className="table small register rec-charge-table">
               <tbody>
-                {linkable.map((t) => (
+                {linkable.map(({ t, action }) => (
                   <ChargeRow
                     key={t.id}
                     t={t}
                     action={
-                      <button className="link small" onClick={() => mutations.link.mutate({ id: item.id, transactionId: t.id })} disabled={mutations.link.isPending}>
-                        {t.recurringId ? "move here" : "link"}
+                      <button
+                        className="link small"
+                        onClick={() => mutations.link.mutate({ id: item.id, transactionId: t.id, move: action === "move" })}
+                        disabled={mutations.link.isPending}
+                        title={action === "move" ? "Linked to another recurring item: moves it to this one" : undefined}
+                      >
+                        {action === "move" ? "move here" : "link"}
                       </button>
                     }
                   />

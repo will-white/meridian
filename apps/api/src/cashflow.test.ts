@@ -339,8 +339,9 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /api/cashflow/projection on the grid-a
       .sort((a, b) => (a[0] === b[0] ? (a[1] < b[1] ? -1 : 1) : a[0] < b[0] ? -1 : 1));
     expect(applied).toEqual([
       ["2026-10-20", "bill", "Checking", "Internet", "-7999"],
-      ["2026-10-25", "card_payment_in", "Visa", "Visa payment", "62500"],
-      ["2026-10-25", "card_payment_out", "Checking", "Visa payment", "-62500"],
+      // The 10-05 statement of 62500 less the 30000 paid on 10-08 (audit decision A7).
+      ["2026-10-25", "card_payment_in", "Visa", "Visa payment", "32500"],
+      ["2026-10-25", "card_payment_out", "Checking", "Visa payment", "-32500"],
       ["2026-11-01", "bill", "Checking", "Rent", "-180000"],
       ["2026-11-05", "bill", "Checking", "Netflix", "-1549"],
     ]);
@@ -350,7 +351,17 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /api/cashflow/projection on the grid-a
       ["2026-11", S.accounts.checking, "78572"],
       ["2026-11", S.accounts.visa, "5428"],
     ]);
-    expect(body.warnings).toEqual(["1 month uses 3-month averages for unplanned spending categories"]);
+    expect(body.warnings).toEqual([
+      "4 planned amounts have no recurring schedule and are not in the projection: Paycheck, Emergency Fund",
+      "1 month uses 3-month averages for unplanned spending categories",
+    ]);
+    // The typed paycheck (2500.00 still due in October) and the goal contribution have no recurring schedule (audit decision A14).
+    expect(body.unscheduled.map((u) => [u.month, u.categoryName, u.bucket, u.amountCents])).toEqual([
+      ["2026-10", "Paycheck", "income", "250000"],
+      ["2026-10", "Emergency Fund", "savings", "20000"],
+      ["2026-11", "Paycheck", "income", "500000"],
+      ["2026-11", "Emergency Fund", "savings", "50000"],
+    ]);
   });
 
   it("accountIds restricts the projection to a subset, in name order; unknown, off-budget and closed ids are 400", async () => {
@@ -507,7 +518,7 @@ describe.skipIf(!TEST_DATABASE_URL)("POST /api/cashflow/projection on the grid-a
       expect(on.statusCode).toBe(200);
       expect(on.json()).toMatchObject({ paymentDay: 25, paymentFromAccountId: S.accounts.checking, statementDay: 5 });
       const paid = await project(t, { today: TODAY, horizonDays: 30 });
-      expect(paid.events.filter((e) => e.kind === "card_payment_out").map((e) => [e.date, e.amountCents])).toEqual([["2026-10-25", "-62500"]]);
+      expect(paid.events.filter((e) => e.kind === "card_payment_out").map((e) => [e.date, e.amountCents])).toEqual([["2026-10-25", "-32500"]]);
       expect(paid.warnings).not.toContain("card Visa has no payment day");
       expect((await patch(S.accounts.visa, { paymentFromAccountId: S.accounts.savings })).json()).toMatchObject({ paymentDay: 25, paymentFromAccountId: S.accounts.savings });
 

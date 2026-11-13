@@ -3,6 +3,7 @@ import { alias } from "drizzle-orm/pg-core";
 import {
   AUTO_PAUSE_AFTER_MISSED,
   LOOKBACK_MONTHS,
+  MIN_CHARGES,
   addDays,
   addMonthsClamped,
   classifyAmounts,
@@ -62,7 +63,7 @@ export class RecurringError extends PlanError {
   }
 }
 
-export type RecurringErrorCode = "invalid_transition" | "category_required" | "validation" | "not_found" | "conflict";
+export type RecurringErrorCode = "invalid_transition" | "category_required" | "account_required" | "validation" | "not_found" | "conflict";
 
 const LIVE_STATUSES: readonly RecurringStatus[] = ["active", "paused", "dismissed"];
 
@@ -312,12 +313,62 @@ export interface UpsertStats {
   alertsCreated: number;
 }
 
+/** The occurrence after the period of `lastChargeDate` on `schedule`, or `fallback` when the schedule is not valid. */
+function nextDueAfter(schedule: Schedule, lastChargeDate: IsoDate, fallback: IsoDate): IsoDate {
+  if (validateSchedule(schedule) !== null) return fallback;
+  return occurrence(schedule, periodIndex(schedule, lastChargeDate).k + 1);
+}
+
+/**
+ * The rewrite of a mapped suggestion (audit decision A10): the detector refreshes what the owner
+ * has not taken over. A locked amount keeps expected, tolerance and mode; a locked schedule keeps
+ * cadence and anchors (next due follows the locked schedule); a category is only filled when the
+ * row has none; the account follows the detection only when its last charge is a new one, so an
+ * account the owner chose stands until a later charge arrives.
+ */
+function suggestionRewrite(best: StoredRecurring, d: Detection, chargeCount: number, categoryId: string | null): RecurringPatch {
+  const set: RecurringPatch = { ...detectionColumns(d, chargeCount) };
+  if (best.amountLocked) {
+    delete set.expectedCents;
+    delete set.toleranceCents;
+    delete set.amountMode;
+  }
+  if (best.scheduleLocked) {
+    delete set.cadence;
+    delete set.anchorDay;
+    delete set.anchorDay2;
+    delete set.anchorMonth;
+    delete set.anchorDate;
+    set.nextDueDate = nextDueAfter(scheduleOf(best), d.lastChargeDate, d.nextDueDate);
+  }
+  if (best.categoryId === null) set.categoryId = categoryId;
+  if (best.accountId !== null && best.lastTransactionId === d.lastTransactionId) delete set.accountId;
+  return set;
+}
+
+/**
+ * A cancelled row keeps the series it was cancelled with, so a detection that maps to it is the
+ * old subscription. Charges dated after the cancel that the row does not hold are a new series
+ * (the household subscribed again): they are detected on their own and suggested anew (audit
+ * decision A11). Dismissed rows stay sticky: their links keep absorbing the series.
+ */
+function resubscriptionDetections(cancelled: RecurringRowWithLinks, groupCharges: readonly ChargeLike[], today: IsoDate): Detection[] {
+  const cancelledOn = cancelled.statusChangedAt.toISOString().slice(0, 10);
+  const held = new Set(cancelled.linkedIds);
+  const after = groupCharges.filter((c) => c.date > cancelledOn && !held.has(c.id));
+  return after.length >= MIN_CHARGES ? detectRecurring(after, today) : [];
+}
+
 /**
  * Map one group's detections onto its existing rows by link overlap (largest overlap wins,
  * tie → oldest row; each row is claimed once). A mapped suggestion is rewritten in place
- * and relinked; a mapped row of any other status only gets `detected_at` (its parameters
- * and links belong to the user and the matcher); an unmapped detection inserts a new
- * suggestion, with a `new_recurring` alert for a new outflow series.
+ * (keeping what the owner locked or chose, `suggestionRewrite`) and relinked, but only while it
+ * is still a suggestion: a row confirmed or dismissed since the run read it only gets
+ * `detected_at`, as a mapped row of any other status does (its parameters and links belong to
+ * the user and the matcher). A mapped cancelled row hands the charges after its cancel to a
+ * detection of their own (`resubscriptionDetections`). An unmapped detection inserts a new
+ * suggestion, with a `new_recurring` alert for a new outflow series. `groupCharges` is the
+ * group the detections came from.
  */
 export async function upsertDetections(
   tx: DbOrTx,
@@ -328,6 +379,7 @@ export async function upsertDetections(
   runStart: Date,
   today: IsoDate,
   historyStartByAccount: ReadonlyMap<string, IsoDate>,
+  groupCharges: readonly ChargeLike[] = [],
 ): Promise<UpsertStats> {
   const stats: UpsertStats = { created: 0, updated: 0, alertsCreated: 0 };
   if (detections.length === 0) return stats;
@@ -339,7 +391,10 @@ export async function upsertDetections(
   const [payeeRow] = await tx.select({ name: payee.name, defaultCategoryId: payee.defaultCategoryId }).from(payee).where(eq(payee.id, payeeId));
   if (!payeeRow) return stats;
 
-  for (const d of detections) {
+  // Detections to place; a mapped cancelled row may append the detection of its resubscription.
+  const queue: Detection[] = [...detections];
+  for (let i = 0; i < queue.length; i++) {
+    const d = queue[i]!;
     const onCycle = new Set(d.onCycleIds);
     let best: RecurringRowWithLinks | undefined;
     let bestOverlap = 0;
@@ -358,14 +413,21 @@ export async function upsertDetections(
       claimed.add(best.id);
       if (best.status !== "suggested") {
         await tx.update(recurring).set({ detectedAt: runStart }).where(eq(recurring.id, best.id));
+        if (best.status === "cancelled") queue.push(...resubscriptionDetections(best, groupCharges, today));
         continue;
       }
       const linkIds = d.onCycleIds.filter((id) => !protectedIds.has(id));
-      const categoryId = (await modalCategory(tx, linkIds)) ?? payeeRow.defaultCategoryId ?? best.categoryId;
-      await tx
+      const categoryId = best.categoryId ?? (await modalCategory(tx, linkIds)) ?? payeeRow.defaultCategoryId ?? null;
+      // Conditional on the row still being a suggestion: a confirm that raced this run wins.
+      const rewritten = await tx
         .update(recurring)
-        .set({ ...detectionColumns(d, linkIds.length), categoryId, detectedAt: runStart, updatedAt: runStart })
-        .where(eq(recurring.id, best.id));
+        .set({ ...suggestionRewrite(best, d, linkIds.length, categoryId), detectedAt: runStart, updatedAt: runStart })
+        .where(and(eq(recurring.id, best.id), eq(recurring.status, "suggested")))
+        .returning({ id: recurring.id });
+      if (rewritten.length === 0) {
+        await tx.update(recurring).set({ detectedAt: runStart }).where(eq(recurring.id, best.id));
+        continue;
+      }
       const drop = best.linkedIds.filter((id) => !onCycle.has(id));
       if (drop.length > 0) await tx.update(transaction).set({ recurringId: null }).where(and(inArray(transaction.id, drop), eq(transaction.recurringId, best.id)));
       if (linkIds.length > 0) await tx.update(transaction).set({ recurringId: best.id }).where(inArray(transaction.id, linkIds));
@@ -395,7 +457,8 @@ export async function upsertDetections(
     const id = inserted!.id;
     if (linkIds.length > 0) await tx.update(transaction).set({ recurringId: id }).where(inArray(transaction.id, linkIds));
     stats.created++;
-    const historyStart = historyStartByAccount.get(d.accountId) ?? d.firstChargeDate;
+    // B9: the history of the account the series started on, not the one it is charged to now.
+    const historyStart = historyStartByAccount.get(d.firstAccountId) ?? d.firstChargeDate;
     if (d.expectedCents < 0n && isNewSeries(d.firstChargeDate, historyStart, today)) {
       if (await raiseAlert(tx, { kind: "new_recurring", dedupeKey: `new:${id}`, recurringId: id, payeeId })) stats.alertsCreated++;
     }
@@ -448,7 +511,7 @@ export async function runRecurringDetection(db: Db, opts: DetectionRunOptions): 
         opts.onGroupError?.(payeeId, error);
         continue;
       }
-      const r = await upsertDetections(tx, payeeId, sign, detections, existingByKey.get(key) ?? [], runStart, today, input.historyStartByAccount);
+      const r = await upsertDetections(tx, payeeId, sign, detections, existingByKey.get(key) ?? [], runStart, today, input.historyStartByAccount, charges);
       stats.suggestionsCreated += r.created;
       stats.suggestionsUpdated += r.updated;
       stats.alertsCreated += r.alertsCreated;
@@ -532,16 +595,22 @@ async function matchOne(tx: DbOrTx, item: StoredRecurring, siblings: readonly Si
   if (candidates.length === 0) return [];
 
   const expectedAbs = absBig(item.expectedCents);
-  const gate = item.amountMode === "fixed" ? 2n : 3n;
-  const kLast = item.lastChargeDate ? periodIndex(schedule, item.lastChargeDate).k : Number.NEGATIVE_INFINITY;
   const linked = await loadLinks(tx, item.id);
+  // Amount gate: fixed → ½× to 2× the expected amount; variable → ⅓× the smallest to 3× the
+  // largest of the expected amount and the last six linked charges, so a seasonal bill whose
+  // winter charges swing past 3× its median keeps matching (audit decision A9).
+  const gate = item.amountMode === "fixed" ? 2n : 3n;
+  const band = item.amountMode === "fixed" ? [] : linked.slice(-6).map((l) => absBig(l.amountCents));
+  const gateLow = band.reduce((m, a) => (a < m ? a : m), expectedAbs);
+  const gateHigh = band.reduce((m, a) => (a > m ? a : m), expectedAbs);
+  const kLast = item.lastChargeDate ? periodIndex(schedule, item.lastChargeDate).k : Number.NEGATIVE_INFINITY;
   const taken = new Set(linked.map((l) => periodIndex(schedule, l.date).k));
   const grace = graceDays(item.cadence);
 
   const bestByPeriod = new Map<number, { id: string; date: IsoDate; residual: number }>();
   for (const c of candidates) {
     const a = absBig(c.amountCents);
-    if (gate * a < expectedAbs || a > gate * expectedAbs) continue;
+    if (gate * a < gateLow || a > gate * gateHigh) continue;
     const { k, residualDays } = periodIndex(schedule, c.date);
     if (!(k > kLast) || taken.has(k)) continue;
     const onTime = Math.abs(residualDays) <= grace;
@@ -600,11 +669,12 @@ export interface RefreshResult {
 
 /**
  * Recompute the derived state of one item from its links, its locks and `today` (C3):
- * charge summary and account; amounts (unless amount_locked); anchors (unless
- * schedule_locked); missed evaluation with one `missed_charge` alert per missed occurrence
- * and auto-pause after three (active items); `next_due_date`; `price_increase` alerts for
- * fixed items on newly linked charges; and resolution of the missed alert a late charge
- * belongs to. Idempotent.
+ * charge summary; the account, which follows the last charge when that charge is newly
+ * linked (so an account the owner chose stands until a later charge arrives, audit decision
+ * A12); amounts (unless amount_locked); anchors (unless schedule_locked); missed evaluation
+ * with one `missed_charge` alert per missed occurrence and auto-pause after three (active
+ * items); `next_due_date`; `price_increase` alerts for fixed outflows on newly linked charges;
+ * and resolution of the missed alert a late charge belongs to. Idempotent.
  */
 export async function refreshRecurringItem(tx: DbOrTx, id: string, today: IsoDate, now: Date, opts: { newlyLinkedIds?: string[] } = {}): Promise<RefreshResult> {
   const result: RefreshResult = { alertsCreated: 0, autoPaused: false };
@@ -620,6 +690,7 @@ export async function refreshRecurringItem(tx: DbOrTx, id: string, today: IsoDat
   const sign = signOf(row.expectedCents);
   let schedule = previousSchedule;
   let lastChargeDate: IsoDate | null = null;
+  const newlyLinked = new Set(opts.newlyLinkedIds ?? []);
 
   const last = links[links.length - 1];
   if (last) {
@@ -629,7 +700,7 @@ export async function refreshRecurringItem(tx: DbOrTx, id: string, today: IsoDat
     set.lastChargeCents = last.amountCents;
     set.lastTransactionId = last.id;
     set.chargeCount = links.length;
-    set.accountId = last.accountId;
+    if (newlyLinked.has(last.id)) set.accountId = last.accountId;
     if (!row.amountLocked) {
       const amounts = classifyAmounts(links.map((l) => absBig(l.amountCents)));
       set.expectedCents = sign * amounts.expectedAbs;
@@ -690,12 +761,12 @@ export async function refreshRecurringItem(tx: DbOrTx, id: string, today: IsoDat
     result.autoPaused = true;
   }
 
-  const newlyLinked = new Set(opts.newlyLinkedIds ?? []);
   if (newlyLinked.size > 0) {
     let baseline = previousLastCents;
     for (const l of links) {
       if (!newlyLinked.has(l.id)) continue;
-      if (row.status === "active" && previousMode === "fixed" && baseline !== null && (previousLastDate === null || l.date >= previousLastDate)) {
+      // Price increases are about charges (spec step 5): a raise on a paycheck is not one.
+      if (row.status === "active" && sign < 0n && previousMode === "fixed" && baseline !== null && (previousLastDate === null || l.date >= previousLastDate)) {
         if (absBig(l.amountCents) - absBig(baseline) > previousTolerance) {
           const raised = await raiseAlert(tx, {
             kind: "price_increase",
@@ -738,7 +809,7 @@ export interface StatusOptions {
 }
 
 /**
- * Move an item to a new status. suggested → active (confirm) needs a category, starts the
+ * Move an item to a new status. suggested → active (confirm) needs a category and an account, starts the
  * missed clock at the last charge, resolves the new_recurring alert and fills the payee's
  * default category; suggested → dismissed keeps the links so the series stays dismissed;
  * paused/cancelled/dismissed → active start the missed clock today; cancel clears
@@ -754,6 +825,7 @@ export async function setRecurringStatus(tx: DbOrTx, id: string, status: Recurri
   const set: RecurringPatch = { status, statusReason: null, statusChangedAt: now, updatedAt: now };
   if (status === "active") {
     if (!row.categoryId) throw new RecurringError(400, "category_required", "Pick a category before activating");
+    if (!row.accountId) throw new RecurringError(400, "account_required", "Pick the account it is charged to before activating");
     set.consecutiveMissed = 0;
     set.missedFromDate = row.status === "suggested" ? (row.lastChargeDate ?? today) : today;
     await tx.update(payee).set({ defaultCategoryId: row.categoryId }).where(and(eq(payee.id, row.payeeId), isNull(payee.defaultCategoryId)));
@@ -854,7 +926,9 @@ export async function createManualRecurring(tx: DbOrTx, input: CreateRecurringIn
     payeeId = (await resolvePayee(tx, input.payeeName!)).id;
   }
   await assertCategory(tx, input.categoryId);
-  if (input.accountId) await assertAccount(tx, input.accountId, "Account");
+  // The item is active from the start, and an active item needs an account (plan decision 12).
+  if (!input.accountId) throw new RecurringError(400, "account_required", "Pick the account it is charged to");
+  await assertAccount(tx, input.accountId, "Account");
   if (input.transferAccountId) await assertAccount(tx, input.transferAccountId, "Transfer account");
   const anchors = normalizeSchedule({
     cadence: input.cadence,
@@ -870,7 +944,7 @@ export async function createManualRecurring(tx: DbOrTx, input: CreateRecurringIn
     .values({
       payeeId,
       categoryId: input.categoryId,
-      accountId: input.accountId ?? null,
+      accountId: input.accountId,
       transferAccountId: input.transferAccountId ?? null,
       name,
       cadence: input.cadence,
@@ -917,8 +991,10 @@ export interface UpdateRecurringInput {
 
 /**
  * Apply a user edit. Amount fields set amount_locked, schedule fields set schedule_locked
- * (the merged schedule is validated), a status goes through `setRecurringStatus`, and every
- * edit ends with a refresh so next_due_date is current.
+ * (the merged schedule is validated), a chosen account stands until a later charge is linked,
+ * an active item keeps a category and an account (400 category_required, account_required), a
+ * status goes through `setRecurringStatus`, and every edit ends with a refresh so
+ * next_due_date is current.
  */
 export async function updateRecurring(tx: DbOrTx, id: string, patch: UpdateRecurringInput, today: IsoDate, now: Date, opts: { audit?: AuditContext } = {}): Promise<void> {
   const row = await loadRow(tx, id);
@@ -975,7 +1051,10 @@ export async function updateRecurring(tx: DbOrTx, id: string, patch: UpdateRecur
 
   const finalStatus = patch.status ?? row.status;
   const finalCategory = patch.categoryId !== undefined ? patch.categoryId : row.categoryId;
+  const finalAccount = patch.accountId !== undefined ? patch.accountId : row.accountId;
   if (finalStatus === "active" && !finalCategory) throw new RecurringError(400, "category_required", "An active item needs a category");
+  // Plan decision 12: account_id is required to activate, so an active item keeps one.
+  if (finalStatus === "active" && !finalAccount) throw new RecurringError(400, "account_required", "An active item needs the account it is charged to");
 
   if (Object.keys(set).length > 0) {
     set.updatedAt = now;
@@ -1001,8 +1080,13 @@ export async function deleteRecurring(tx: DbOrTx, id: string, opts: { audit?: Au
 
 // ---- Links ----
 
-/** Manual link: same payee and sign, not a transfer, not linked elsewhere, and a free period (409 otherwise). */
-export async function linkTransaction(tx: DbOrTx, id: string, transactionId: string, today: IsoDate, now: Date): Promise<void> {
+/**
+ * Manual link: same payee and sign, not a transfer, and a free period (409 otherwise). A charge
+ * linked to another item is a 409 too, unless `move` is set: then, once every check above has
+ * passed, it leaves that item (which is refreshed) and joins this one, in the caller's
+ * transaction.
+ */
+export async function linkTransaction(tx: DbOrTx, id: string, transactionId: string, today: IsoDate, now: Date, opts: { move?: boolean } = {}): Promise<void> {
   const row = await loadRow(tx, id);
   const [t] = await tx
     .select({ id: transaction.id, payeeId: transaction.payeeId, amountCents: transaction.amountCents, date: transaction.date, isTransfer: transaction.isTransfer, recurringId: transaction.recurringId })
@@ -1010,7 +1094,7 @@ export async function linkTransaction(tx: DbOrTx, id: string, transactionId: str
     .where(eq(transaction.id, transactionId));
   if (!t) throw new RecurringError(404, "not_found", "Transaction not found");
   if (t.recurringId === id) return;
-  if (t.recurringId) throw new RecurringError(409, "conflict", "That transaction is linked to another recurring item");
+  if (t.recurringId && !opts.move) throw new RecurringError(409, "conflict", "That transaction is linked to another recurring item");
   if (t.payeeId !== row.payeeId) throw new RecurringError(400, "validation", "The transaction's payee differs from the item's");
   if (t.isTransfer) throw new RecurringError(400, "validation", "Transfers cannot be linked");
   if (t.amountCents === 0n || signOf(t.amountCents) !== signOf(row.expectedCents)) throw new RecurringError(400, "validation", "The transaction's direction differs from the item's");
@@ -1021,6 +1105,7 @@ export async function linkTransaction(tx: DbOrTx, id: string, transactionId: str
     if (links.some((l) => periodIndex(schedule, l.date).k === k)) throw new RecurringError(409, "conflict", "That period already has a charge");
   }
   await tx.update(transaction).set({ recurringId: id }).where(eq(transaction.id, transactionId));
+  if (t.recurringId) await refreshRecurringItem(tx, t.recurringId, today, now);
   await refreshRecurringItem(tx, id, today, now, { newlyLinkedIds: [transactionId] });
 }
 
@@ -1229,6 +1314,8 @@ export interface SubscriptionRecord {
   amountMode: AmountMode;
   consecutiveMissed: number;
   status: RecurringStatus;
+  /** 'missed_3' when the item was auto-paused; consecutive_missed goes back to 0 on the next refresh, this stays. */
+  statusReason: string | null;
 }
 
 export interface SubscriptionsResult {
@@ -1246,13 +1333,18 @@ function compareSubscription(a: SubscriptionRecord, b: SubscriptionRecord): numb
   return a.name.localeCompare(b.name) || (a.id < b.id ? -1 : 1);
 }
 
+/**
+ * Active and paused recurring outflows (B11). A transfer item (transfer_account_id set) moves
+ * money between the household's own accounts and is not spending (plan decision 12), so it is
+ * neither listed nor counted (audit decision A13).
+ */
 export async function listSubscriptions(db: DbOrTx): Promise<SubscriptionsResult> {
   const rows = await db
     .select({ row: recurring, payeeName: payee.name, categoryName: category.name })
     .from(recurring)
     .innerJoin(payee, eq(payee.id, recurring.payeeId))
     .leftJoin(category, eq(category.id, recurring.categoryId))
-    .where(and(inArray(recurring.status, ["active", "paused"]), lt(recurring.expectedCents, 0n)));
+    .where(and(inArray(recurring.status, ["active", "paused"]), lt(recurring.expectedCents, 0n), isNull(recurring.transferAccountId)));
   const records: SubscriptionRecord[] = rows.map(({ row, payeeName, categoryName }) => ({
     id: row.id,
     name: row.name,
@@ -1268,6 +1360,7 @@ export async function listSubscriptions(db: DbOrTx): Promise<SubscriptionsResult
     amountMode: row.amountMode,
     consecutiveMissed: row.consecutiveMissed,
     status: row.status,
+    statusReason: row.statusReason,
   }));
   const items = records.filter((r) => r.status === "active").sort(compareSubscription);
   const pausedItems = records.filter((r) => r.status === "paused").sort(compareSubscription);

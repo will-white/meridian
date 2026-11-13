@@ -5,7 +5,7 @@ import type { SubscriptionsResponse } from "@meridian/shared";
 import { api } from "../lib/api.js";
 import { money, shortDate } from "../lib/format.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
-import { CADENCE_LABELS, absCents, dueLabel, expectedLabel, localToday, percentLabel, shareBp } from "../components/recurring/recurringFormat.js";
+import { CADENCE_LABELS, absCents, dueLabel, expectedLabel, isAutoPaused, localToday, percentLabel, shareBp } from "../components/recurring/recurringFormat.js";
 import { useRecurringMutations } from "../components/recurring/useRecurringMutations.js";
 import "./SubscriptionsPage.css";
 
@@ -162,7 +162,11 @@ export function SubscriptionsPage() {
                     <td className="num nowrap">{money(absCents(row.yearlyCents))}</td>
                     <td className="subs-col-last nowrap">{row.lastChargeDate ? shortDate(row.lastChargeDate) : "—"}</td>
                     <td className="nowrap">
-                      {row.consecutiveMissed >= 3 && <Badge tone="warn">auto-paused</Badge>}
+                      {isAutoPaused(row) && (
+                        <span title="Paused automatically after three missed charges">
+                          <Badge tone="warn">auto-paused</Badge>
+                        </span>
+                      )}
                       <button className="link" onClick={() => mutations.update.mutate({ id: row.id, status: "active" })} disabled={mutations.update.isPending}>
                         Resume
                       </button>

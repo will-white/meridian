@@ -8,7 +8,8 @@ import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
 import { ChargesPanel } from "../components/recurring/ChargesPanel.js";
 import { RecurringForm } from "../components/recurring/RecurringForm.js";
 import { SuggestionCard, type Panel } from "../components/recurring/SuggestionCard.js";
-import { absCents, dueLabel, expectedLabel, localToday, scheduleSummary } from "../components/recurring/recurringFormat.js";
+import { absCents, dueLabel, expectedLabel, localToday, recurringTotalsLabel, scheduleSummary } from "../components/recurring/recurringFormat.js";
+import { emptyForm, type RecurringFormState } from "../components/recurring/recurringForm.js";
 import { useRecurringMutations } from "../components/recurring/useRecurringMutations.js";
 import "./RecurringPage.css";
 
@@ -43,7 +44,12 @@ export function RecurringPage() {
   const [direction, setDirection] = useState<Direction>("");
   const [sort, setSort] = useState<Sort>("due");
   const [open, setOpen] = useState<{ id: string; panel: Panel } | null>(null);
-  const [adding, setAdding] = useState(false);
+  // /recurring?new=1&category=<id>&direction=inflow|outflow (from the Cash flow page's "not forecast" notice) opens the add form prefilled.
+  const [adding, setAdding] = useState(() => searchParams.get("new") === "1");
+  const addInitial = useMemo<RecurringFormState>(() => {
+    const direction = searchParams.get("direction");
+    return emptyForm({ categoryId: searchParams.get("category") ?? "", ...(direction === "inflow" || direction === "outflow" ? { direction } : {}) });
+  }, [searchParams]);
   const mutations = useRecurringMutations();
 
   const suggestions = useQuery({
@@ -160,6 +166,7 @@ export function RecurringPage() {
           <p className="muted small">For bills the detector cannot see yet (a yearly renewal, a new lease). The item starts active and links its charges as they post.</p>
           <RecurringForm
             mode="create"
+            initial={addInitial}
             categories={cats}
             accounts={accts}
             payees={payees.data}
@@ -213,10 +220,7 @@ export function RecurringPage() {
           <option value="name">By name</option>
         </select>
         {totals && items.length > 0 && (
-          <span className="muted small rec-totals">
-            {items.length} item{items.length === 1 ? "" : "s"} · {direction === "" ? "net " : ""}
-            {money(absCents(totals.monthlyEquivalentCents))}/mo · {money(absCents(totals.yearlyCents))}/yr
-          </span>
+          <span className="muted small rec-totals">{recurringTotalsLabel(items.length, totals, direction)}</span>
         )}
       </div>
       <ErrorText error={list.error} />

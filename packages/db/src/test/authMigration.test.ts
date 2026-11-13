@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDb, type Db, type DbClient } from "../index.js";
 import { migrationsFolder, runMigrations } from "../migrate.js";
 import { findLiveSession, sessionIdOf } from "../services/sessions.js";
-import { TEST_DATABASE_URL } from "./db.js";
+import { TEST_DATABASE_URL, testDatabaseName } from "./db.js";
 
 /**
  * Migration `auth_hardening` on a database that already has people signed in: the
@@ -18,7 +18,7 @@ import { TEST_DATABASE_URL } from "./db.js";
  * previous schema.
  */
 describe.skipIf(!TEST_DATABASE_URL)("migration auth_hardening on existing sessions", () => {
-  const databaseName = `meridian_test_${randomBytes(6).toString("hex")}`;
+  const databaseName = testDatabaseName();
   let db: Db;
   let client: DbClient;
   let before: string;

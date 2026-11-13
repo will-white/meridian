@@ -102,6 +102,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /api/dashboard", () => {
       "account Checking has no known balance",
       "account Savings has no known balance",
       "account Visa has no known balance",
+      "4 planned amounts have no recurring schedule and are not in the projection: Paycheck, Emergency Fund",
       "1 month uses 3-month averages for unplanned spending categories",
       "card Visa has no payment day",
     ]);
