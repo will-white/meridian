@@ -1,0 +1,19 @@
+{
+  "name": "@meridian/retirement",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@meridian/shared": "workspace:*",
+    "zod": "^3.24.1"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/node/index.ts",
+    "./testing": "./src/testing/index.ts"
+  }
+}

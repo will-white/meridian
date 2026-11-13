@@ -281,3 +281,48 @@ export const ReconcileRowStatus = z.enum([
   "unknown_ticker",
 ]);
 export type ReconcileRowStatus = z.infer<typeof ReconcileRowStatus>;
+
+// ---- Phase 4: retirement planner ----
+// The planner's enums (docs/design/phase-4/inputs-and-data.md §2.5). The additions to `JobType`
+// (`retirement.simulate`) and `AuditEntity` (`plan_profile`, `plan_baseline`, `scenario`, `sim_run`)
+// land together with their database mirrors `JOB_TYPES` and `AUDIT_ENTITIES` (Stage B), because a
+// test asserts the two lists are equal.
+
+/** The planner's account groups, derived from the tax treatment (`planBucketOf`); bank accounts are `cash`. */
+export const PlanBucket = z.enum(["taxable", "pre_tax", "roth", "hsa", "cash"]);
+export type PlanBucket = z.infer<typeof PlanBucket>;
+
+/** The one or two people of the household. */
+export const PersonId = z.enum(["p1", "p2"]);
+export type PersonId = z.infer<typeof PersonId>;
+
+/** Who owns an account in the plan; pre-tax, Roth and HSA accounts are never `joint`. */
+export const OwnerId = z.enum(["p1", "p2", "joint"]);
+export type OwnerId = z.infer<typeof OwnerId>;
+
+/** `sim_run.status`. */
+export const SimRunStatus = z.enum(["queued", "running", "done", "failed", "cancelled"]);
+export type SimRunStatus = z.infer<typeof SimRunStatus>;
+
+/**
+ * Kinds of income stream in the plan. Named `PlanIncomeKind` (the design's `IncomeKind`) because
+ * Phase 3 already exports `IncomeKind` (dividend or interest) from api.ts.
+ */
+export const PlanIncomeKind = z.enum(["salary", "part_time", "pension", "annuity", "rental", "other"]);
+export type PlanIncomeKind = z.infer<typeof PlanIncomeKind>;
+
+/** An issue of a resolved plan: an error blocks a run, a warning does not. */
+export const PlanIssueSeverity = z.enum(["error", "warning"]);
+export type PlanIssueSeverity = z.infer<typeof PlanIssueSeverity>;
+
+/** How much of a taxable account's cost basis is known; `manual` = typed by the owner. */
+export const BasisCoverage = z.enum(["full", "partial", "none", "manual"]);
+export type BasisCoverage = z.infer<typeof BasisCoverage>;
+
+/** Where a frozen account's six-class allocation came from (inputs design §3.4 R4 and R5). */
+export const AllocationSource = z.enum(["holdings", "override", "profile_default", "household_target", "household_actual", "assumed", "cash", "pretax_mix"]);
+export type AllocationSource = z.infer<typeof AllocationSource>;
+
+/** Whether an amount is in today's dollars at the plan start or as quoted (`nominal`). */
+export const DollarBasis = z.enum(["today", "nominal"]);
+export type DollarBasis = z.infer<typeof DollarBasis>;
