@@ -111,7 +111,7 @@ export {
 } from "./tax/index.js";
 export type { CompiledTaxLaw, CompileTaxLawOptions, FillOptions, FederalTaxInput, FederalTaxResult, FilingStatusIndex, TaxInputErrorCode } from "./tax/index.js";
 export {
-  RB, RB_REC, RW, RW_REC, HW, HW_REC, MONTHS_59_HALF, MONTHS_65, monthIndex, periodStartIndex, periodMonths,
+  RB, RB_REC, RW, RW_REC, HW, HW_REC, MONTHS_59_HALF, MONTHS_65, birthMonthIndex,
   earlyFraction, earlyFractionBefore59Half, earlyFractionBefore65, isEmployerPlan, separatedAt55, preTaxPenaltyShare, preTaxPenaltyBase,
   hsaPenaltyShare, hsaWithdraw,
   seedRoth, rothRollYear, addRothContribution, addRothConversion, rothFiveYearMet, rothWithdraw, rothFreeAmount, mergeRothAtDeath,

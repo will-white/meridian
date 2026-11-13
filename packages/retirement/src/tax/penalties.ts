@@ -9,8 +9,21 @@
  * conversions never enter a penalty base (§3.7.2); the caller passes only withdrawals.
  */
 
-import { MONTHS_59_HALF, MONTHS_65 } from "./calendar.js";
 import { HW } from "./layout.js";
+
+/** 59½ in months: the 10% additional tax applies to the part of a period before this age (§3.7.1). */
+export const MONTHS_59_HALF = 714;
+/** 65 in months: the HSA's 20% additional tax applies to the part of a period before this age (§3.7.1). */
+export const MONTHS_65 = 780;
+
+/**
+ * A person's birth month as a month number of the plan clock (clock.ts: `year × 12 + month − 1`),
+ * so the person reaches an age of `a` months at `birthMonthIndex + a` (tax-rmd-ss §3.1,
+ * inputs-and-data decision 20). Periods come from clock.ts's `periodStart` and `periodMonths`.
+ */
+export function birthMonthIndex(birthYear: number, birthMonth: number): number {
+  return birthYear * 12 + (birthMonth - 1);
+}
 
 /**
  * The share of a period of `periodMonths` months starting at month index `periodStart` that lies

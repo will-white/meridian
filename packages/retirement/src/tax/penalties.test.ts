@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { MONTHS_59_HALF, MONTHS_65, monthIndex, periodMonths, periodStartIndex } from "./calendar.js";
+import { monthIndex, periodMonths, periodStart, planClock } from "../clock.js";
 import { HW, HW_REC, TO } from "./layout.js";
 import {
+  MONTHS_59_HALF,
+  MONTHS_65,
+  birthMonthIndex,
   earlyFraction,
   earlyFractionBefore59Half,
   earlyFractionBefore65,
@@ -30,29 +33,31 @@ function tax(year: 2026 | 2027, status: 0 | 1, fields: Partial<Record<TaxInputNa
   return taxOn(published, year, status, taxInput(fields));
 }
 
-/** The 12-month period of a calendar year: [its January's month index, 12]. */
-const year = (y: number) => [monthIndex(y, 1), 12] as const;
+/** The 12-month period of a calendar year: [the month number of its January, 12]. */
+const year = (y: number) => [monthIndex(`${y}-01`), 12] as const;
 
-describe("calendar (tax-rmd-ss §3.1)", () => {
-  it("month indexes, the ages in months and the plan periods", () => {
-    // 2026 × 12 + 6 = 24,318 for July 2026 (§3.7.1's example).
-    expect(monthIndex(2026, 7)).toBe(24318);
+/** A plan whose first year is November and December 2026 (firstYearMonths 2). */
+const novemberStart = planClock({ startYear: 2026, startMonth: "2026-11", firstYearMonths: 2, endYear: 2040, stepsPerYear: 1, currency: "USD" });
+
+describe("the month numbers (tax-rmd-ss §3.1, clock.ts)", () => {
+  it("birth months, the ages in months and the plan clock's periods share one numbering", () => {
+    // 2026 × 12 + 6 = 24,318 for July 2026 (§3.7.1's example), in both spellings.
+    expect(monthIndex("2026-07")).toBe(24318);
+    expect(birthMonthIndex(2026, 7)).toBe(24318);
     expect(MONTHS_59_HALF).toBe(59 * 12 + 6);
     expect(MONTHS_65).toBe(65 * 12);
-    // A first year of November and December 2026: firstYearMonths 2 starts at 2026 × 12 + 10 = 24,322.
-    expect(periodStartIndex(2026, 2, 0)).toBe(24322);
-    expect(periodMonths(2, 0)).toBe(2);
-    // Later years start in January: plan year 3 of a 2026 start is 2029, index 24,348.
-    expect(periodStartIndex(2026, 2, 3)).toBe(monthIndex(2029, 1));
-    expect(periodMonths(2, 3)).toBe(12);
-    // A full first year starts in January.
-    expect(periodStartIndex(2027, 12, 0)).toBe(monthIndex(2027, 1));
+    // A person born in January 1967 is 59½ in July 2026.
+    expect(birthMonthIndex(1967, 1) + MONTHS_59_HALF).toBe(monthIndex("2026-07"));
+    // The first year of November and December 2026 starts at 2026 × 12 + 10 = 24,322.
+    expect(periodStart(novemberStart, 0)).toBe(24322);
+    expect(periodMonths(novemberStart, 0)).toBe(2);
+    expect(periodStart(novemberStart, 3)).toBe(monthIndex("2029-01"));
   });
 });
 
 describe("E2 earlyFraction (§3.7.1)", () => {
   it("E2 born January 1967 (59½ in July 2026, index 24,318): 1 for 2025, 0.5 for 2026, 0 for 2027", () => {
-    const birth = monthIndex(1967, 1);
+    const birth = birthMonthIndex(1967, 1);
     expect(birth + MONTHS_59_HALF).toBe(24318);
     // (24,318 − 24,300) / 12 = 1.5 → 1; (24,318 − 24,312) / 12 = 0.5; (24,318 − 24,324) / 12 < 0 → 0.
     expect(earlyFractionBefore59Half(birth, ...year(2025))).toBe(1);
@@ -62,24 +67,25 @@ describe("E2 earlyFraction (§3.7.1)", () => {
 
   it("E2 born September 1967 (59½ in March 2027): 2/12 for 2027", () => {
     // 1967 × 12 + 8 + 714 = 24,326 = March 2027; (24,326 − 24,324) / 12 = 2/12.
-    const birth = monthIndex(1967, 9);
-    expect(birth + MONTHS_59_HALF).toBe(monthIndex(2027, 3));
+    const birth = birthMonthIndex(1967, 9);
+    expect(birth + MONTHS_59_HALF).toBe(monthIndex("2027-03"));
     frac(earlyFractionBefore59Half(birth, ...year(2027)), 2 / 12);
   });
 
   it("E2 a first year of November and December 2026: born June 1967 gives 0.5, born March 1967 gives 0", () => {
-    const start = periodStartIndex(2026, 2, 0);
+    const start = periodStart(novemberStart, 0);
+    const months = periodMonths(novemberStart, 0);
     // June 1967 + 714 months = December 2026 (24,323): (24,323 − 24,322) / 2 = 0.5.
-    expect(earlyFractionBefore59Half(monthIndex(1967, 6), start, 2)).toBe(0.5);
+    expect(earlyFractionBefore59Half(birthMonthIndex(1967, 6), start, months)).toBe(0.5);
     // March 1967 + 714 = September 2026 (24,320), before the period: 0.
-    expect(earlyFractionBefore59Half(monthIndex(1967, 3), start, 2)).toBe(0);
+    expect(earlyFractionBefore59Half(birthMonthIndex(1967, 3), start, months)).toBe(0);
   });
 
   it("E2 HSA: born July 1961 (65 in July 2026) gives 0.5 for 2026", () => {
     // 1961 × 12 + 6 + 780 = 24,318 = July 2026.
-    expect(earlyFractionBefore65(monthIndex(1961, 7), ...year(2026))).toBe(0.5);
-    expect(earlyFractionBefore65(monthIndex(1961, 7), ...year(2025))).toBe(1);
-    expect(earlyFractionBefore65(monthIndex(1961, 7), ...year(2027))).toBe(0);
+    expect(earlyFractionBefore65(birthMonthIndex(1961, 7), ...year(2026))).toBe(0.5);
+    expect(earlyFractionBefore65(birthMonthIndex(1961, 7), ...year(2025))).toBe(1);
+    expect(earlyFractionBefore65(birthMonthIndex(1961, 7), ...year(2027))).toBe(0);
   });
 
   it("E2 the threshold month itself is not early; a degenerate period is a step", () => {
@@ -95,7 +101,7 @@ describe("E2 earlyFraction (§3.7.1)", () => {
 describe("E1 an early pre-tax withdrawal (§3.7.2)", () => {
   // Single, 55 all year, 2026: born June 1971, so 59½ is December 2030 and 2026 is wholly early.
   const birthYear = 1971;
-  const early = earlyFractionBefore59Half(monthIndex(birthYear, 6), ...year(2026));
+  const early = earlyFractionBefore59Half(birthMonthIndex(birthYear, 6), ...year(2026));
 
   it("E1 from an IRA: AGI 70,000; taxable 53,900; 6,570 + 10% × 20,000 = 8,570.00", () => {
     expect(early).toBe(1);
@@ -121,7 +127,7 @@ describe("E1 an early pre-tax withdrawal (§3.7.2)", () => {
 describe("E3 separation at 55 (Form 5329 exception 01)", () => {
   // Born 1970; retirementMonth 2026-03 is in the year of 56 (1970 + 56). A 30,000 withdrawal in 2027
   // at 57: 59½ is in 2029 or 2030 whatever the birth month, so 2027 is wholly early.
-  const early2027 = earlyFractionBefore59Half(monthIndex(1970, 12), ...year(2027));
+  const early2027 = earlyFractionBefore59Half(birthMonthIndex(1970, 12), ...year(2027));
 
   it("E3 in 2027 at 57: a 401k's base is 0; an IRA's is 30,000 (additional tax 3,000)", () => {
     expect(early2027).toBe(1);
@@ -140,7 +146,7 @@ describe("E3 separation at 55 (Form 5329 exception 01)", () => {
   });
 
   it("E3 a withdrawal in 2025, before retiring in 2026: base 30,000", () => {
-    const early2025 = earlyFractionBefore59Half(monthIndex(1970, 12), ...year(2025));
+    const early2025 = earlyFractionBefore59Half(birthMonthIndex(1970, 12), ...year(2025));
     expect(separatedAt55(1970, 2026, 2025)).toBe(false);
     expect(preTaxPenaltyBase(30000, early2025, true, separatedAt55(1970, 2026, 2025))).toBe(30000);
   });
@@ -157,7 +163,7 @@ describe("C33 the penalty shares", () => {
   it("C33 born September 1967, 2027: attained age 60, yet 2/12 of the year is early (tier 7, partial penalty)", () => {
     // The order's old test "under 60" would call this owner not early (2027 − 1967 = 60). The share is
     // (24,326 − 24,324) / 12 = 2/12, so 6,000 withdrawn from an IRA has a base of 1,000.
-    const e = earlyFractionBefore59Half(monthIndex(1967, 9), ...year(2027));
+    const e = earlyFractionBefore59Half(birthMonthIndex(1967, 9), ...year(2027));
     frac(preTaxPenaltyShare(e, false, false), 2 / 12);
     near(preTaxPenaltyBase(6000, e, false, false), 1000);
     // A 401k after separation at 55 is penalty-free whatever the age (tier 4).
@@ -170,9 +176,9 @@ describe("C33 the penalty shares", () => {
   });
 
   it("C33 the HSA share is the early fraction before 65: born July 1961 gives 0.5 in 2026", () => {
-    const e65 = earlyFractionBefore65(monthIndex(1961, 7), ...year(2026));
+    const e65 = earlyFractionBefore65(birthMonthIndex(1961, 7), ...year(2026));
     expect(hsaPenaltyShare(e65)).toBe(0.5);
-    expect(hsaPenaltyShare(earlyFractionBefore65(monthIndex(1961, 7), ...year(2027)))).toBe(0);
+    expect(hsaPenaltyShare(earlyFractionBefore65(birthMonthIndex(1961, 7), ...year(2027)))).toBe(0);
   });
 });
 
@@ -206,7 +212,7 @@ describe("E9 HSA withdrawals (§3.7.4)", () => {
   });
 
   it("E9 in the year of turning 65 in July (earlyFrac65 0.5): base 2,000", () => {
-    hsaWithdraw(10000, 6000, earlyFractionBefore65(monthIndex(1961, 7), ...year(2026)), out);
+    hsaWithdraw(10000, 6000, earlyFractionBefore65(birthMonthIndex(1961, 7), ...year(2026)), out);
     expect(out[HW.TAXABLE]).toBe(4000);
     expect(out[HW.PENALTY_BASE]).toBe(2000);
   });
@@ -222,9 +228,9 @@ describe("E9 HSA withdrawals (§3.7.4)", () => {
 describe("HC-T16 the additional taxes, with the bases derived by penalties.ts", () => {
   it("HC-T16 pre-tax 16,737.50 at 50: 1,673.75; HSA non-medical 10,000 at 60: 2,000.00; 2027 single 57 with 50,000 early: 3,752.00 + 5,000.00", () => {
     // At 50 and at 57 all of the year is before 59½; at 60 all of it is before 65.
-    const at50 = earlyFractionBefore59Half(monthIndex(1976, 1), ...year(2026));
-    const at57 = earlyFractionBefore59Half(monthIndex(1970, 1), ...year(2027));
-    const at60 = earlyFractionBefore65(monthIndex(1966, 1), ...year(2026));
+    const at50 = earlyFractionBefore59Half(birthMonthIndex(1976, 1), ...year(2026));
+    const at57 = earlyFractionBefore59Half(birthMonthIndex(1970, 1), ...year(2027));
+    const at60 = earlyFractionBefore65(birthMonthIndex(1966, 1), ...year(2026));
     expect([at50, at57, at60]).toEqual([1, 1, 1]);
     const base10 = preTaxPenaltyBase(16737.5, at50, false, false);
     near(tax(2026, S, { TRAD_DIST: 16737.5, PEN10_BASE: base10 })[TO.PEN10]!, 1673.75);

@@ -16,9 +16,8 @@ export {
 export type { CompiledTaxLaw, CompileTaxLawOptions, CompileWarning, FillOptions } from "./compile.js";
 export { federalTaxInto, effectiveMarginalRates, assertTaxInput, computeFederalTax, taxYearDetail, taxYearDetailCents, TaxInputError } from "./federalTax.js";
 export type { FederalTaxInput, FederalTaxResult, FederalTaxLine, TaxInputErrorCode, TaxYearDetailCents } from "./federalTax.js";
-export { MONTHS_59_HALF, MONTHS_65, monthIndex, periodStartIndex, periodMonths } from "./calendar.js";
 export {
-  earlyFraction, earlyFractionBefore59Half, earlyFractionBefore65, isEmployerPlan, separatedAt55, preTaxPenaltyShare, preTaxPenaltyBase,
+  MONTHS_59_HALF, MONTHS_65, birthMonthIndex, earlyFraction, earlyFractionBefore59Half, earlyFractionBefore65, isEmployerPlan, separatedAt55, preTaxPenaltyShare, preTaxPenaltyBase,
   hsaPenaltyShare, hsaWithdraw,
 } from "./penalties.js";
 export {
