@@ -1,0 +1,255 @@
+{
+  "schemaVersion": 1,
+  "retirementFraMonths": [
+    [1937, 780], [1938, 782], [1939, 784], [1940, 786], [1941, 788], [1942, 790],
+    [1954, 792], [1955, 794], [1956, 796], [1957, 798], [1958, 800], [1959, 802], [9999, 804]
+  ],
+  "survivorFraBirthYearShift": 2,
+  "earliestRetirementMonths": 744,
+  "latestCreditMonths": 840,
+  "earlyReduction": { "firstMonths": 36, "first": "5/900", "later": "5/1200" },
+  "spousalReduction": { "firstMonths": 36, "first": "25/3600", "later": "5/1200" },
+  "delayedCreditPerMonth": "1/150",
+  "spousalShare": "1/2",
+  "survivor": { "earliestMonths": 720, "maxReduction": "285/1000", "widowLimitShare": "825/1000" },
+  "earningsTest": { "withholdUnderFra": "1/2", "withholdFraYear": "1/3" },
+  "colaStep": 0.001,
+  "colaHistory": {
+    "2017": 0.003, "2018": 0.020, "2019": 0.028, "2020": 0.016, "2021": 0.013,
+    "2022": 0.059, "2023": 0.087, "2024": 0.032, "2025": 0.025
+  },
+  "verification": {
+    "retirementFraMonths.1937": { "status": "secondary", "sources": ["SSA EN-05-10035", "Maximize My Social Security FRA chart"] },
+    "retirementFraMonths.1938": { "status": "secondary", "sources": ["SSA EN-05-10035", "Maximize My Social Security FRA chart"] },
+    "retirementFraMonths.1939": { "status": "unverified", "sources": [], "note": "65 and 4 months: no search result listed the year; it follows the two-month steps of the 1983 amendments" },
+    "retirementFraMonths.1940": { "status": "unverified", "sources": [], "note": "65 and 6 months: as 1939" },
+    "retirementFraMonths.1941": { "status": "unverified", "sources": [], "note": "65 and 8 months: as 1939" },
+    "retirementFraMonths.1942": { "status": "unverified", "sources": [], "note": "65 and 10 months: as 1939" },
+    "retirementFraMonths.1954": { "status": "secondary", "sources": ["SSA EN-05-10035", "Maximize My Social Security FRA chart"], "note": "66 for 1943 to 1954" },
+    "retirementFraMonths.1955": { "status": "secondary", "sources": ["SSA EN-05-10035", "Maximize My Social Security FRA chart"] },
+    "retirementFraMonths.1956": { "status": "secondary", "sources": ["SSA EN-05-10035", "Maximize My Social Security FRA chart"] },
+    "retirementFraMonths.1957": { "status": "secondary", "sources": ["SSA EN-05-10035", "Maximize My Social Security FRA chart"] },
+    "retirementFraMonths.1958": { "status": "secondary", "sources": ["SSA EN-05-10035", "Maximize My Social Security FRA chart"] },
+    "retirementFraMonths.1959": { "status": "secondary", "sources": ["SSA EN-05-10035", "Maximize My Social Security FRA chart"] },
+    "retirementFraMonths.9999": { "status": "secondary", "sources": ["SSA EN-05-10035", "Maximize My Social Security FRA chart"], "note": "67 for 1960 and later" },
+    "survivorFraBirthYearShift": {
+      "status": "unverified",
+      "sources": [],
+      "note": "67 for survivors born in 1962 or later is confirmed by the survivor sources below; no result gave the 1957 to 1961 rows, and one summary described 'about 66 and some months for 1955 through 1961', which disagrees with the shift for 1955 and 1956. Check against https://www.ssa.gov/benefits/survivors/survivorchartred.html"
+    },
+    "earliestRetirementMonths": { "status": "secondary", "sources": ["SSA Handbook 724", "SSA EN-05-10035"], "note": "a retirement benefit from 62" },
+    "latestCreditMonths": { "status": "secondary", "sources": ["SSA Annual Statistical Supplement 2025", "FedWeek delayed credits"], "note": "credits stop at 70" },
+    "earlyReduction": { "status": "secondary", "sources": ["SSA Handbook 724", "Maximize My Social Security FRA chart"], "note": "5/9 of 1% a month for 36 months, then 5/12 of 1%" },
+    "spousalReduction": { "status": "secondary", "sources": ["SSA Handbook 724", "Motley Fool spousal rules 2026"], "note": "25/36 of 1% a month for 36 months, then 5/12 of 1%" },
+    "delayedCreditPerMonth": { "status": "secondary", "sources": ["SSA Annual Statistical Supplement 2025", "FedWeek delayed credits"], "note": "2/3 of 1% a month (8% a year) for people born in 1943 or later" },
+    "spousalShare": { "status": "secondary", "sources": ["Motley Fool spousal rules 2026", "QuantCalc spousal benefits"], "note": "up to 50% of the worker's PIA" },
+    "survivor.earliestMonths": { "status": "secondary", "sources": ["SSA Bulletin: Widows and Social Security", "Maximize My Social Security survivor benefits"], "note": "a widow(er)'s benefit from 60" },
+    "survivor.maxReduction": { "status": "secondary", "sources": ["SSA Bulletin: Widows and Social Security", "Maximize My Social Security survivor benefits"], "note": "71.5% of the PIA at 60; the reduction is capped at 28.5% whatever the full retirement age" },
+    "survivor.widowLimitShare": { "status": "secondary", "sources": ["CRS IF12091", "Maximize My Social Security survivor benefits"], "note": "the widow(er)'s limit: the larger of the deceased's benefit and 82.5% of the deceased's PIA" },
+    "earningsTest": { "status": "secondary", "sources": ["Motley Fool earnings test", "Kiplinger earnings test guide"], "note": "1 dollar for every 2 above the lower amount; 1 for every 3 above the higher amount in the year full retirement age is reached" },
+    "colaStep": { "status": "secondary", "sources": ["SSA latest COLA", "CRS 94-803"], "note": "an increase is rounded to the nearest tenth of 1%; no increase, no COLA" },
+    "colaHistory.2017": { "status": "secondary", "sources": ["APWU COLA table", "cpichart COLA history", "InvestmentNews 2020 COLA"], "note": "0.3% first paid January 2017" },
+    "colaHistory.2018": { "status": "secondary", "sources": ["APWU COLA table", "cpichart COLA history"], "note": "2.0% first paid January 2018" },
+    "colaHistory.2019": { "status": "secondary", "sources": ["CRS 94-803", "InvestmentNews 2020 COLA"], "note": "2.8% payable January 2019 (CRS edition of 2018-11-19)" },
+    "colaHistory.2020": { "status": "secondary", "sources": ["InvestmentNews 2020 COLA", "WICPA 2020 COLA"], "note": "1.6% from January 2020" },
+    "colaHistory.2021": { "status": "secondary", "sources": ["CBS News 2021 COLA", "AARP 2021 COLA"], "note": "1.3% from January 2021" },
+    "colaHistory.2022": { "status": "secondary", "sources": ["CRS 94-803", "Motley Fool COLA history"], "note": "5.9% (CRS edition of 2021-10-14)" },
+    "colaHistory.2023": { "status": "secondary", "sources": ["CRS 94-803", "Motley Fool COLA history"], "note": "8.7% (CRS edition of 2022-10-13)" },
+    "colaHistory.2024": { "status": "secondary", "sources": ["CRS 94-803", "Motley Fool COLA history"], "note": "3.2% (CRS edition of 2023-11-02)" },
+    "colaHistory.2025": { "status": "secondary", "sources": ["CRS 94-803", "NBC San Diego 2025 COLA", "Fox Business 2025 COLA"], "note": "2.5% (CRS edition of 2025-01-15)" }
+  },
+  "sources": [
+    {
+      "title": "SSA Handbook 724",
+      "url": "https://www.ssa.gov/OP_Home/handbook/handbook.07/handbook-0724.html",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "724, Basic reduction formulas",
+      "note": "www.ssa.gov refuses automated requests; read only as quoted by web search on 2026-11-13, so it counts as one secondary source."
+    },
+    {
+      "title": "SSA EN-05-10035",
+      "url": "https://www.ssa.gov/pubs/EN-05-10035.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Retirement Benefits (2026): full retirement age by year of birth",
+      "note": "Not fetched (host refused); as quoted by web search."
+    },
+    {
+      "title": "Maximize My Social Security FRA chart",
+      "url": "https://www.maximizemysocialsecurity.com/blog/social-security-full-retirement-age-by-birth-year",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Social Security full retirement age by birth year (2026); reduction for early claiming",
+      "note": "Web search result."
+    },
+    {
+      "title": "SSA Annual Statistical Supplement 2025",
+      "url": "https://www.ssa.gov/policy/docs/statcomps/supplement/2025/apnc.html",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Appendix C: 8 percent a year (16/24 of 1 percent a month) for people born in 1943 and later",
+      "note": "Not fetched (host refused); as quoted by web search."
+    },
+    {
+      "title": "FedWeek delayed credits",
+      "url": "https://www.fedweek.com/retirement-financial-planning/how-delayed-ssa-retirement-credits-actually-work-by-the-numbers/",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "How delayed SSA retirement credits actually work by the numbers",
+      "note": "Web search result."
+    },
+    {
+      "title": "Motley Fool spousal rules 2026",
+      "url": "https://www.fool.com/retirement/2026/04/01/3-social-security-spousal-benefit-rules-married/",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "3 Social Security spousal benefit rules every married retiree should know in 2026",
+      "note": "Web search result."
+    },
+    {
+      "title": "QuantCalc spousal benefits",
+      "url": "https://quantcalc.app/social-security-spousal-benefits/",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Social Security spousal benefits: up to 50% of your spouse's PIA",
+      "note": "Web search result."
+    },
+    {
+      "title": "SSA Bulletin: Widows and Social Security",
+      "url": "https://www.ssa.gov/policy/docs/ssb/v70n3/v70n3p89.html",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Social Security Bulletin vol. 70 no. 3: an aged widow who takes benefits at 60 receives 71.5 percent of the PIA",
+      "note": "Not fetched (host refused); as quoted by web search."
+    },
+    {
+      "title": "Maximize My Social Security survivor benefits",
+      "url": "https://www.maximizemysocialsecurity.com/blog/social-security-survivor-benefits-explained",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Social Security survivor benefits: 2026 rules and amounts; the widow(er)'s limit (RIB-LIM)",
+      "note": "Web search result."
+    },
+    {
+      "title": "CRS IF12091",
+      "url": "https://www.everycrsreport.com/reports/IF12091.html",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Social Security: The Widow(er)'s Limit Provision",
+      "note": "Web search result."
+    },
+    {
+      "title": "Motley Fool earnings test",
+      "url": "https://www.fool.com/retirement/social-security/earnings-test",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "How does the Social Security earnings test work?",
+      "note": "Web search result."
+    },
+    {
+      "title": "Kiplinger earnings test guide",
+      "url": "https://www.kiplinger.com/retirement/social-security/expert-guide-to-the-social-security-earnings-test",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Still working while receiving Social Security? A financial adviser's guide to the earnings test",
+      "note": "Web search result."
+    },
+    {
+      "title": "SSA latest COLA",
+      "url": "https://www.ssa.gov/oact/COLA/latestCOLA.html",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Automatic determinations: the increase is rounded to the nearest tenth of one percent; no increase or a rounded increase of zero gives no COLA",
+      "note": "Not fetched (host refused); as quoted by web search."
+    },
+    {
+      "title": "CRS 94-803",
+      "url": "https://www.congress.gov/crs-product/94-803",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Social Security: Cost-of-Living Adjustments, editions of 2018-11-19, 2021-10-14, 2022-10-13, 2023-11-02, 2025-01-15 and 2026-05-27 (Table 1: the COLA payable each January)",
+      "note": "Web search results; congress.gov is not fetched from the build environment."
+    },
+    {
+      "title": "APWU COLA table",
+      "url": "https://apwu.org/cola-for-social-security-recipients/",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "COLA for Social Security recipients (by payment year)",
+      "note": "Web search result."
+    },
+    {
+      "title": "cpichart COLA history",
+      "url": "https://cpichart.com/cola-calculator/",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "COLA history: 2016 determination paid from January 2017 (0.3%), 2017 determination paid from January 2018 (2.0%)",
+      "note": "Web search result."
+    },
+    {
+      "title": "InvestmentNews 2020 COLA",
+      "url": "https://www.investmentnews.com/ria-news/social-security-cola-for-2020-will-be-16-percent/170379",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Social Security COLA for 2020 will be 1.6 percent (the smallest since the 0.3% of 2017; after 2.8% for 2019)",
+      "note": "Web search result."
+    },
+    {
+      "title": "WICPA 2020 COLA",
+      "url": "https://www.wicpa.org/news/articles/483:social-security-benefits-to-increase-16-in-2020",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Social Security benefits to increase 1.6% in 2020",
+      "note": "Web search result."
+    },
+    {
+      "title": "CBS News 2021 COLA",
+      "url": "https://www.cbsnews.com/miami/news/social-security-administration-cola-increase-2021",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Social Security Administration announces 1.3% benefit increase for 2021",
+      "note": "Web search result."
+    },
+    {
+      "title": "AARP 2021 COLA",
+      "url": "https://www.aarp.org/social-security/cola-set-for-2021/",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "COLA set for 2021 (1.3% from January 2021)",
+      "note": "Web search result."
+    },
+    {
+      "title": "Motley Fool COLA history",
+      "url": "https://www.fool.com/retirement/2024/07/03/heres-the-average-social-security-cola-from-1975-t",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Here's the average Social Security COLA from 1975: 5.9%, 8.7% and 3.2% passed along from 2022 through 2024",
+      "note": "Web search result."
+    },
+    {
+      "title": "NBC San Diego 2025 COLA",
+      "url": "https://www.nbcsandiego.com/news/business/money-report/social-security-administration-announces-2-5-cost-of-living-adjustment-for-2025/3645027",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Social Security Administration announces 2.5% cost-of-living adjustment for 2025",
+      "note": "Web search result (CNBC report)."
+    },
+    {
+      "title": "Fox Business 2025 COLA",
+      "url": "https://www.foxbusiness.com/personal-finance/social-security-cost-of-living-adjustment-2025",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Social Security cost-of-living adjustment will be 2.5% in 2025",
+      "note": "Web search result."
+    },
+    {
+      "title": "SSA COLA series",
+      "url": "https://www.ssa.gov/oact/cola/colaseries.html",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Cost-of-living adjustments, automatic determinations (the primary table for colaHistory)",
+      "note": "Not reached: www.ssa.gov refuses automated requests. The owner checks colaHistory against it before the gate (docs/phase-4-gate.md)."
+    }
+  ]
+}

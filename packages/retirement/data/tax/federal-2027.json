@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 1,
+  "taxYear": 2027,
+  "ordinary": {
+    "rates": [0.10, 0.12, 0.22, 0.24, 0.32, 0.35, 0.37],
+    "thresholds": {
+      "single": [0, 12800, 52025, 109125, 208325, 264550, 661375],
+      "mfj": [0, 25600, 104050, 218250, 416650, 529100, 793650]
+    }
+  },
+  "standardDeduction": { "single": 16600, "mfj": 33200 },
+  "additionalAged": { "single": 2100, "mfj": 1700 },
+  "seniorDeduction": {
+    "amountPerPerson": 6000,
+    "minAge": 65,
+    "phaseoutRate": 0.06,
+    "phaseoutStart": { "single": 75000, "mfj": 150000 }
+  },
+  "capitalGains": {
+    "rates": [0, 0.15, 0.20],
+    "zeroRateMax": { "single": 51050, "mfj": 102100 },
+    "fifteenRateMax": { "single": 563200, "mfj": 633600 },
+    "netLossLimit": 3000
+  },
+  "niit": { "rate": 0.038, "threshold": { "single": 200000, "mfj": 250000 } },
+  "socialSecurityTaxation": {
+    "base1": { "single": 25000, "mfj": 32000 },
+    "base2": { "single": 34000, "mfj": 44000 },
+    "rate1": 0.5,
+    "rate2": 0.85,
+    "maxShare": 0.85
+  },
+  "additionalTaxes": { "earlyDistributionRate": 0.10, "hsaNonQualifiedRate": 0.20 },
+  "contributionLimits": {
+    "employeeDeferral": 24500,
+    "catchUp50": 8000,
+    "catchUp60to63": 11250,
+    "annualAdditions": 72000,
+    "ira": 7500,
+    "iraCatchUp50": 1100,
+    "hsaSelf": 4500,
+    "hsaFamily": 9000,
+    "hsaCatchUp55": 1000,
+    "pending": ["employeeDeferral", "catchUp50", "catchUp60to63", "annualAdditions", "ira", "iraCatchUp50"]
+  },
+  "payroll": {
+    "oasdiRate": 0.062,
+    "oasdiWageBase": 192300,
+    "medicareRate": 0.0145,
+    "additionalMedicareRate": 0.009,
+    "additionalMedicareThreshold": { "single": 200000, "mfj": 250000 }
+  },
+  "socialSecurity": { "cola": 0.036, "earningsTestUnderFra": 25560, "earningsTestFraYear": 67920 },
+  "sources": [
+    {
+      "title": "Rev. Proc. 2026-35",
+      "url": "https://www.irs.gov/pub/irs-drop/rp-26-35.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": "87b383c6ce6e616fd006a61f5eed46fe67099b9c23fb1e1c42ff5359474513b8",
+      "section": "3.01 Tables 1 and 3 (ordinary rates and thresholds); 3.03 (maximum zero and 15 percent rate amounts); 3.15(1) and (3) (standard deduction, additional amount for the aged)",
+      "note": "Same SHA-256 as the copy read during design on 2026-11-10. Section 1 of the PDF as retrieved still reads 'as in effect on [Release Date, 2026]' (an unfilled placeholder); re-fetch and re-hash if the IRS replaces the file."
+    },
+    {
+      "title": "Rev. Proc. 2026-24",
+      "url": "https://www.irs.gov/pub/irs-drop/rp-26-24.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": "bcb6b41a835b84d4315f738a7250801831021829e39d70225424e2f45afcb715",
+      "section": "section 3.01(1): HSA self-only 4,500, family 9,000"
+    },
+    {
+      "title": "IRS COLA increases for dollar limitations on benefits and contributions",
+      "url": "https://www.irs.gov/retirement-plans/cola-increases-for-dollar-limitations-on-benefits-and-contributions",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "2026 is the newest column: the 2027 plan and IRA limits are not published",
+      "note": "Web page, last reviewed 2026-08-24. The six fields under contributionLimits.pending carry the 2026 amounts of Notice 2025-67 until the IRS notice for 2027 appears; no forecast is stored. A web search on 2026-11-13 found only forecasts (Milliman, Marsh: deferral 25,500)."
+    },
+    {
+      "title": "Notice 2025-67",
+      "url": "https://www.irs.gov/pub/irs-drop/n-25-67.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": "1eea8f141b0cddd182f9f09b3bc8ffad683d27ceb806dfc6da126811dc0a1f8d",
+      "section": "the 2026 amounts carried for the six pending fields"
+    },
+    {
+      "title": "Publication 969 (2025), Health Savings Accounts and Other Tax-Favored Health Plans",
+      "url": "https://www.irs.gov/pub/irs-pdf/p969.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": "d51681ecae43d517415500efe6f7dcc1bba65fed09b48d416f18d6407a5b522f",
+      "section": "Additional contribution at 55 (1,000; § 223(b)(3), not indexed); Additional tax (20%)"
+    },
+    {
+      "title": "Schedule 1-A (Form 1040) 2025",
+      "url": "https://www.irs.gov/pub/irs-pdf/f1040s1a.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": "64f97b38ff4218e2f188fd55a8aab7043556687487c82bbefe0b6dd1a956ecd4",
+      "section": "Part V lines 31 to 37 (statutory amounts of P.L. 119-21, not indexed)"
+    },
+    {
+      "title": "IRS Fact Sheet FS-2025-03, Working Families Tax Cuts: tax deductions for working Americans and seniors",
+      "url": "https://www.irs.gov/newsroom/working-families-tax-cuts-tax-deductions-for-working-americans-and-seniors",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "Deduction for Seniors: effective for 2025 through 2028",
+      "note": "Web page."
+    },
+    {
+      "title": "Publication 915 (2025), Social Security and Equivalent Railroad Retirement Benefits",
+      "url": "https://www.irs.gov/pub/irs-pdf/p915.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": "44c4053dab046c737e4eadff7cf8a8d23fe55d6147bde995c6055b55af6db22b",
+      "section": "Base amounts 25,000 / 32,000 and 34,000 / 44,000; 50% and 85% (§ 86, not indexed)"
+    },
+    {
+      "title": "Instructions for Form 8960 (2025)",
+      "url": "https://www.irs.gov/pub/irs-pdf/i8960.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": "b10fbb23ff4a053db197285497a00914c558e3ae0cdf5c956b7c0c7867376428",
+      "section": "3.8%; thresholds 250,000 joint and 200,000 single (§ 1411, not indexed)"
+    },
+    {
+      "title": "Instructions for Form 5329 (2025)",
+      "url": "https://www.irs.gov/pub/irs-pdf/i5329.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": "aec3d325edb26a0d20d3b81030feb97cf62ecc97fa90c9abd91d83dd22749146",
+      "section": "the 10% additional tax on early distributions (§ 72(t))"
+    },
+    {
+      "title": "Instructions for Schedule D (Form 1040) 2025",
+      "url": "https://www.irs.gov/pub/irs-pdf/i1040sd.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": "650643a686378b7573e4f4476ee4e7c9f9bab1384314dca32dc336f7b2276002",
+      "section": "Capital Losses: 3,000 (§ 1211(b), not indexed)"
+    },
+    {
+      "title": "IRS Topic no. 751, Social Security and Medicare withholding rates",
+      "url": "https://www.irs.gov/taxtopics/tc751",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "6.2% social security and 1.45% Medicare for the employee (statutory rates)",
+      "note": "Web page."
+    },
+    {
+      "title": "IRS Topic no. 560, Additional Medicare Tax",
+      "url": "https://www.irs.gov/taxtopics/tc560",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "0.9% over 250,000 (married filing jointly) or 200,000 (single); not indexed",
+      "note": "Web page."
+    },
+    {
+      "title": "SSA fact sheet, 2027 Social Security changes",
+      "url": "https://www.ssa.gov/news/en/cola/factsheets/2027.html",
+      "retrieved": "2026-11-13",
+      "sha256": null,
+      "section": "COLA 3.6% first paid January 2027; taxable maximum 192,300; earnings test 25,560 a year under full retirement age, 67,920 in the year it is reached",
+      "note": "www.ssa.gov refuses automated requests. Secondary, by web search on 2026-11-13: the fact sheet as quoted in the search results, Kiplinger ('9 changes coming to Social Security in 2027') and NAPA ('2027 Social Security COLA largest increase in 5 years') agree on 3.6%, 192,300 and 25,560. 67,920 appears in BenefitsUSA's summary of the fact sheet and in the countrytaxcalc.com table recorded by the design (tax-rmd-ss 10.2); it is the least confirmed of the four."
+    }
+  ]
+}

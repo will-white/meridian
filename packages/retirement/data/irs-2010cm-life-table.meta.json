@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "file": "irs-2010cm-life-table.csv",
+  "description": "IRS Table 2010CM: survivors l_x out of 100,000 births at each age 0 to 110 (unisex); the fallback mortality table while no SSA period life table is installed",
+  "provenance": "re-extracted on 2026-11-13 from table-2010cm-final.xlsx; the CSV reproduces the SHA-256 pinned by seams §8 D3 byte for byte",
+  "label": "irs_2010cm_fallback (unisex; sex has no effect while this table is used; runs carry the warning mortality_fallback_table)",
+  "sources": [
+    {
+      "title": "IRS Table 2010CM (table-2010cm-final.xlsx)",
+      "url": "https://www.irs.gov/pub/irs-tege/table-2010cm-final.xlsx",
+      "retrieved": "2026-11-13",
+      "sha256": "51de7bde99fd2693994ac3ac3e894311048ed6009572679e9303d1a4d931e931",
+      "section": "Sheet1, the three column pairs (Age x, l_x) in columns B:C, F:G and J:K",
+      "note": "Equal to the pinned SHA-256. Table 2010CM is the mortality table of the section 7520 regulations (Publication 1457); that description is from the IRS actuarial-tables page as summarized during design, not re-read here."
+    }
+  ],
+  "extraction": {
+    "sheet": "Sheet1",
+    "ages": "0-110 (all 111 present exactly once)",
+    "format": "%d,%.5f; header age,lx; LF line endings; trailing newline"
+  },
+  "derived": "The engine derives q[x] = 1 - lx[x+1] / lx[x] for x = 0..108 and sets q[109] = 1 (lx[110] = 0)."
+}

@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "classes": {
+    "us_stock": { "dividendYield": 0.013, "qualifiedShare": 0.95, "interest": "none", "interestSpread": 0, "taxExemptShare": 0, "gainDistributionRate": 0 },
+    "intl_stock": { "dividendYield": 0.028, "qualifiedShare": 0.75, "interest": "none", "interestSpread": 0, "taxExemptShare": 0, "gainDistributionRate": 0 },
+    "bonds": { "dividendYield": 0, "qualifiedShare": 0, "interest": "prior_bill_plus_spread", "interestSpread": 0.010, "taxExemptShare": 0, "gainDistributionRate": 0 },
+    "cash": { "dividendYield": 0, "qualifiedShare": 0, "interest": "bill_return", "interestSpread": 0, "taxExemptShare": 0, "gainDistributionRate": 0 },
+    "real_estate": { "dividendYield": 0.035, "qualifiedShare": 0, "interest": "none", "interestSpread": 0, "taxExemptShare": 0, "gainDistributionRate": 0 },
+    "other": { "dividendYield": 0, "qualifiedShare": 0, "interest": "none", "interestSpread": 0, "taxExemptShare": 0, "gainDistributionRate": 0 }
+  },
+  "basisStepUp": {
+    "ownAccount": 1,
+    "jointAccount": 0.5,
+    "jointAccountCommunityProperty": 1,
+    "communityPropertyStates": ["AZ", "CA", "ID", "LA", "NV", "NM", "TX", "WA", "WI"]
+  },
+  "notes": [
+    "The yields, qualified shares, spread and gain distribution rates are modelling assumptions of this design (tax-rmd-ss 2.6; seams §9 item 7), not sourced figures. us_stock's 1.3% is rounded from the S&P 500 dividend yield of 2025 in the Damodaran workbook (1.34%).",
+    "Seams C17: the six classes are blended into the engine's three simulated assets per account and plan year with that year's target weights: a dividend yield and a qualified share for stocks, an interest spread and a tax-exempt share for bonds.",
+    "Seams C18: prior_bill_plus_spread pays max(0, previous plan year's bill return + interestSpread) on the post-trade bond balance (for year 0 the return model's starting bill rate). bill_return means the class is the simulated bill asset, which earns the whole actual bill return of the year, taxed with the next year (C17.5); its interestSpread is not read. The fallbackCashYield of the area design is removed: every return model has a bill series.",
+    "Seams C19: at the first death basis moves toward value by the share: 1 for the decedent's own account, 0 for the survivor's own, jointAccount (one half) for a joint account, jointAccountCommunityProperty when household.state is in communityPropertyStates."
+  ],
+  "sources": [
+    {
+      "title": "Publication 551 (Rev. December 2025), Basis of Assets",
+      "url": "https://www.irs.gov/pub/irs-pdf/p551.pdf",
+      "retrieved": "2026-11-13",
+      "sha256": "0fbd4f0d37d575f95bd3dbdff09be846a2bf62e882902e02f0318739c4f904d2",
+      "section": "Inherited Property (basis is the FMV at the date of death); Community Property (the nine states; the whole community property generally takes that basis); Qualified Joint Interest (one-half is included in the decedent's estate)"
+    },
+    {
+      "title": "Aswath Damodaran, Historical Returns on Stocks, Bonds and Bills: 1928-2025 (histretSP.xlsx)",
+      "url": "https://pages.stern.nyu.edu/~adamodar/pc/datasets/histretSP.xlsx",
+      "retrieved": "2026-11-13",
+      "sha256": "d7245bc8b09cd56cab5505188fe4aaddf6e0385b969310f33a4918019c321196",
+      "section": "sheet 'S&P 500 & Raw Data', the 2025 dividend yield behind the 1.3% assumption",
+      "note": "An assumption rounded from one year; the other yields have no source."
+    }
+  ]
+}
