@@ -67,6 +67,40 @@ export {
 } from "./mortality.js";
 export type { CompiledMortality, LifeTable, LifeTableId, LifeTables, MortalityPerson, MortalityPlan } from "./mortality.js";
 export type { EngineWarning } from "./warning.js";
+export { CASH_TOL } from "./constants.js";
+export { TRADE_FLOWS_ONLY, TRADE_FULL, createTradeResult, depositAtWeights, planTrades, tradeModeOf } from "./trades.js";
+export type { TradeMode, TradeResult } from "./trades.js";
+export { monthIndex, monthsInPeriod, periodMonths, periodStart, planClock, yearOfMonth, yearShare } from "./clock.js";
+export type { PlanClock } from "./clock.js";
+export {
+  RULE,
+  RULE_EVENTS,
+  SLOT,
+  STRATEGY,
+  STRATEGY_STATE_LENGTH,
+  createPlannedYear,
+  createSpendDecision,
+  createSpendingOutcome,
+  decideSpending,
+  everyLivingRetired,
+  fillNeeds,
+  plannedYear,
+  plannedYearOf,
+  prepareStrategies,
+  ruleEvents,
+  settleSpending,
+} from "./strategies/index.js";
+export type {
+  FloorCeilingParams,
+  GuardrailParams,
+  PlannedInput,
+  PlannedYear,
+  SpendDecision,
+  SpendingOutcome,
+  SpendingView,
+  StrategyIndex,
+  StrategyTables,
+} from "./strategies/index.js";
 export { EngineInputError, EngineInvariantError, EngineRuntimeError } from "./errors.js";
 export type { EngineRuntimeCode } from "./errors.js";
 export { TAX_DATA_FIRST_YEAR, TaxDataError, fullRetirementAgeTable, listTaxRuleSets, loadTaxData, pendingLimits, taxDataStale } from "./tax/index.js";

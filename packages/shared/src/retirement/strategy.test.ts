@@ -8,6 +8,7 @@ import {
   vpwParams,
   vpwPercentage,
   vpwRawPercentage,
+  vpwRawPercentageInto,
   WithdrawalOrderConfig,
 } from "./strategy.js";
 
@@ -150,5 +151,18 @@ describe("vpwPercentage (strategies-outputs-web §3.4 (d), decision 16, seams C4
     let growth = 1;
     for (let i = 0; i < 35; i++) growth *= 1 + g;
     expect(vpwRawPercentage(65, 0.6, p)).toBe(g / (1 - 1 / growth) / (1 + g));
+  });
+
+  it("vpwRawPercentageInto, the engine's allocation-free form, writes the same value into a record", () => {
+    const query = { age: 0, stockShare: 0 };
+    const out = { raw: Number.NaN };
+    for (const age of [40, 65, 89, 99, 104]) {
+      for (const share of [0, 0.4, 0.55, 1]) {
+        query.age = age;
+        query.stockShare = share;
+        vpwRawPercentageInto(query, p, out);
+        expect(out.raw).toBe(vpwRawPercentage(age, share, p));
+      }
+    }
   });
 });

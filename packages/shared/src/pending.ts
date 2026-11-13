@@ -25,6 +25,27 @@ export interface PostedIncoming {
 export interface MatchPendingOptions {
   /** Maximum calendar days between the pending date and the posted date. Default 5. */
   maxDays?: number;
+  /**
+   * Also match a posted amount that differs from the pending one (a tip added, a hold that
+   * settled for another amount): same direction, at most half again either way, and a strong
+   * description match (`STRONG_SIMILARITY`). Default true; duplicate detection across sources
+   * turns it off, because two rows of one purchase always carry the same amount.
+   */
+  changedAmounts?: boolean;
+  /** The least description similarity for an equal amount (always above 0). Default: anything above 0. */
+  minSimilarity?: number;
+}
+
+/** A description match strong enough to accept a changed amount (audit a5-ingest-transfers-06). */
+export const STRONG_SIMILARITY = 0.5;
+
+/** Same direction, and the posted amount within half of the pending amount either way (50% to 150%). */
+export function isChangedAmountMatch(pendingCents: bigint, postedCents: bigint): boolean {
+  if (pendingCents === postedCents || pendingCents === 0n || postedCents === 0n) return false;
+  if (pendingCents < 0n !== postedCents < 0n) return false;
+  const p = pendingCents < 0n ? -pendingCents : pendingCents;
+  const q = postedCents < 0n ? -postedCents : postedCents;
+  return 2n * q >= p && 2n * q <= 3n * p;
 }
 
 function tokens(text: string): Set<string> {
@@ -50,11 +71,17 @@ export function descriptionSimilarity(a: string, b: string): number {
 }
 
 /**
- * Returns a map of posted external id -> local pending row id. Greedy: posted
- * items are visited in date order; each takes the best unmatched pending row with
- * the same amount within the window, scoring description similarity first and
- * date distance second. Equal amount is required; similarity may be 0 when the
- * amount and window alone identify the item (one pending charge of that size).
+ * Returns a map of posted external id -> local pending row id. Greedy: posted items are visited
+ * in date order; each takes the best unmatched pending row within the window, scoring
+ * description similarity first and date distance second. Two passes:
+ *
+ * 1. Equal amount, and the descriptions share something (similarity above 0): a row whose
+ *    description has nothing in common with the posted item is another purchase, whatever its
+ *    amount (audit a5-ingest-transfers-07).
+ * 2. Unless `changedAmounts` is false, the posted items still unmatched may take a row of the
+ *    same merchant (similarity at least `STRONG_SIMILARITY`) whose amount is within half of
+ *    theirs in the same direction: a tip, or a hold that settled for another amount (audit
+ *    a5-ingest-transfers-06). The closest amount wins, then the date.
  */
 export function matchPendingToPosted(
   pending: readonly PendingRow[],
@@ -62,6 +89,7 @@ export function matchPendingToPosted(
   options: MatchPendingOptions = {},
 ): Map<string, string> {
   const maxDays = options.maxDays ?? 5;
+  const minSimilarity = options.minSimilarity ?? 0;
   const byAmount = new Map<string, PendingRow[]>();
   for (const p of pending) {
     const list = byAmount.get(p.amountCents.toString()) ?? [];
@@ -76,16 +104,46 @@ export function matchPendingToPosted(
     const list = byAmount.get(item.amountCents.toString());
     if (!list) continue;
     let best: PendingRow | undefined;
-    let bestScore = -1;
+    let bestScore = 0;
     let bestDistance = Number.POSITIVE_INFINITY;
     for (const row of list) {
       if (used.has(row.id)) continue;
       const distance = Math.abs(dayDiff(row.date, item.date));
       if (distance > maxDays) continue;
       const score = descriptionSimilarity(row.description, item.description);
-      if (score > bestScore || (score === bestScore && distance < bestDistance)) {
+      if (score < minSimilarity) continue;
+      if (score > bestScore || (score === bestScore && score > 0 && distance < bestDistance)) {
         best = row;
         bestScore = score;
+        bestDistance = distance;
+      }
+    }
+    if (best) {
+      used.add(best.id);
+      result.set(item.externalId, best.id);
+    }
+  }
+  if (options.changedAmounts === false) return result;
+
+  const abs = (v: bigint) => (v < 0n ? -v : v);
+  for (const item of ordered) {
+    if (result.has(item.externalId)) continue;
+    let best: PendingRow | undefined;
+    let bestScore = 0;
+    let bestGap = 0n;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const row of pending) {
+      if (used.has(row.id) || !isChangedAmountMatch(row.amountCents, item.amountCents)) continue;
+      const distance = Math.abs(dayDiff(row.date, item.date));
+      if (distance > maxDays) continue;
+      const score = descriptionSimilarity(row.description, item.description);
+      if (score < STRONG_SIMILARITY) continue;
+      const gap = abs(row.amountCents - item.amountCents);
+      const better = !best || score > bestScore || (score === bestScore && (gap < bestGap || (gap === bestGap && distance < bestDistance)));
+      if (better) {
+        best = row;
+        bestScore = score;
+        bestGap = gap;
         bestDistance = distance;
       }
     }

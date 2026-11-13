@@ -31,6 +31,8 @@ export const JOB_TYPES = [
   "prices.fetch",
   "investments.valuation",
   "investments.income_feed",
+  // Audit a5-ingest-transfers-13
+  "simplefin.reprocess_transactions",
 ] as const;
 
 /** A data source: a SimpleFIN access URL, a CSV mapping profile, or manual entry. */

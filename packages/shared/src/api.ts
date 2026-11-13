@@ -281,6 +281,10 @@ export const AccountView = z.object({
   investment: AccountInvestmentView.nullable(),
 });
 export type AccountView = z.infer<typeof AccountView>;
+/** Audit a5-ingest-transfers-02: this account (without a connection) takes over a feed account (`POST /api/accounts/:id/link-feed`). */
+export const LinkFeedAccountBody = z.object({ feedAccountId: z.string().uuid() });
+export const LinkFeedAccountResult = z.object({ merged: z.number().int(), moved: z.number().int(), dropped: z.number().int(), transfersPaired: z.number().int() });
+export type LinkFeedAccountResult = z.infer<typeof LinkFeedAccountResult>;
 export const UpdateAccountBody = z.object({
   name: z.string().min(1).max(100).optional(),
   type: AccountType.optional(),
@@ -385,6 +389,19 @@ export const UpdateTransactionBody = z.object({
   isTransfer: z.boolean().optional(),
   tags: z.array(z.string().min(1).max(50)).max(50).optional(),
 });
+/** Audit a5-ingest-transfers-12: pair a transaction with another one by hand (`POST /api/transactions/:id/pair`). */
+export const PairTransactionBody = z.object({ otherId: z.string().uuid() });
+/** A row a transaction could be paired with by hand: equal and opposite, another account, within 14 days, not paired. */
+export const TransferCandidateView = z.object({
+  id: z.string().uuid(),
+  accountId: z.string().uuid(),
+  accountName: z.string(),
+  date: IsoDateString,
+  amountCents: CentsString,
+  rawDescription: z.string(),
+  isTransfer: z.boolean(),
+});
+export type TransferCandidateView = z.infer<typeof TransferCandidateView>;
 /** Replace a transaction's split lines: two or more lines that add up to its amount, or none to remove the split. */
 export const SetTransactionSplitsBody = z.object({
   splits: z
@@ -476,10 +493,17 @@ export const ImportResult = z.object({
   replacedPending: z.number().int(),
   removedPending: z.number().int(),
   skipped: z.number().int(),
+  /** Rows the ledger already had from the feed or by hand, or that the household deleted (audit a5-ingest-transfers-01). */
+  duplicates: z.number().int().optional(),
   transfersPaired: z.number().int(),
+  /** The import's log row: `POST /api/import/csv/:id/undo` takes it back out (audit a5-ingest-transfers-09). */
+  importLogId: z.string().uuid().optional(),
   errors: z.array(z.object({ rowIndex: z.number().int().optional(), message: z.string() })),
 });
 export type ImportResult = z.infer<typeof ImportResult>;
+/** `POST /api/import/csv/:id/undo`: the rows the import created, removed; the ids it recorded for rows the ledger had, forgotten. */
+export const UndoImportResult = z.object({ removed: z.number().int(), forgotten: z.number().int() });
+export type UndoImportResult = z.infer<typeof UndoImportResult>;
 
 // ---- Jobs ----
 export const JobView = z.object({

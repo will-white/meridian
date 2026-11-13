@@ -7,6 +7,7 @@ import { runInvestmentsValuationJob } from "./investmentsValuation.js";
 import { runPricesFetchJob } from "./pricesFetch.js";
 import { runRecurringDetectJob } from "./recurringDetect.js";
 import { runReprocessHoldingsJob } from "./reprocessHoldings.js";
+import { runReprocessTransactionsJob } from "./reprocessTransactions.js";
 import { runSyncJob } from "./sync.js";
 
 export async function dispatchJob(ctx: JobContext, job: JobRow): Promise<unknown> {
@@ -24,6 +25,8 @@ export async function dispatchJob(ctx: JobContext, job: JobRow): Promise<unknown
       return runCloseMonthJob(ctx, job);
     case "simplefin.reprocess_holdings":
       return runReprocessHoldingsJob(ctx, job);
+    case "simplefin.reprocess_transactions":
+      return runReprocessTransactionsJob(ctx, job);
     case "prices.fetch":
       return runPricesFetchJob(ctx, job);
     case "investments.valuation":
@@ -35,4 +38,4 @@ export async function dispatchJob(ctx: JobContext, job: JobRow): Promise<unknown
   }
 }
 
-export { runClaimJob, runSyncJob, runPricesFetchJob, runInvestmentsValuationJob, runInvestmentIncomeFeedJob, runReprocessHoldingsJob };
+export { runClaimJob, runSyncJob, runPricesFetchJob, runInvestmentsValuationJob, runInvestmentIncomeFeedJob, runReprocessHoldingsJob, runReprocessTransactionsJob };

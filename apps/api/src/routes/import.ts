@@ -8,6 +8,7 @@ import {
   cashSecurity,
   connection,
   createSecurity,
+  csvDuplicateIds,
   enqueueJob,
   getSnapshot,
   HOLDING_SOURCE_RANK,
@@ -26,6 +27,7 @@ import {
   resolveSecurity,
   security,
   transaction,
+  undoCsvImport,
   type AuditContext,
   type DbOrTx,
   type SnapshotPosition,
@@ -61,6 +63,8 @@ import {
   TradesImportResult,
   TradesPreviewBody,
   TradesPreviewResponse,
+  UndoImportResult,
+  UuidParams,
   type CsvMappingInput,
   type Fixed8,
   type IsoDate,
@@ -365,18 +369,6 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   usePlanErrors(app);
 
-  async function existingIds(accountId: string, ids: string[]): Promise<Set<string>> {
-    const out = new Set<string>();
-    for (let i = 0; i < ids.length; i += 500) {
-      const rows = await app.db
-        .select({ externalId: transaction.externalId })
-        .from(transaction)
-        .where(and(eq(transaction.accountId, accountId), inArray(transaction.externalId, ids.slice(i, i + 500))));
-      for (const row of rows) if (row.externalId) out.add(row.externalId);
-    }
-    return out;
-  }
-
   r.post("/import/csv/preview", { bodyLimit: BODY_LIMIT.csvImport, schema: { body: CsvPreviewBody, response: { 200: CsvPreviewResponse } } }, async (request) => {
     const rows = parseCsv(request.body.csvText);
     if (rows.length === 0) throw badRequest("The file is empty", "empty_csv");
@@ -400,7 +392,8 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
     } catch (err) {
       throw badRequest((err as Error).message, "bad_mapping");
     }
-    const dupes = request.body.accountId ? await existingIds(request.body.accountId, mapped.rows.map((m) => m.externalId)) : new Set<string>();
+    // The rows a commit would not insert: the same id, or the same purchase from the feed or by hand (audit a5-ingest-transfers-01).
+    const dupes = request.body.accountId ? await csvDuplicateIds(app.db, request.body.accountId, mapped.rows) : new Set<string>();
     return {
       headers: mapping.hasHeader === false ? headers.map((_, i) => `Column ${i + 1}`) : headers,
       sampleRows,
@@ -415,7 +408,7 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
         duplicate: dupes.has(m.externalId),
       })),
       totalRows: mapped.rows.length,
-      duplicateCount: dupes.size,
+      duplicateCount: mapped.rows.filter((m) => dupes.has(m.externalId)).length,
       errors: mapped.errors.slice(0, 50),
     };
   });
@@ -467,7 +460,18 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
     }
     // The "match recurring" pipeline step runs for every ingest path (design C5); one queued job covers any number of commits.
     await enqueueJob(app.db, "recurring.detect", { reason: "ledger" }, { dedupe: true });
-    return { ...result, errors: mapped.errors };
+    return { ...result, importLogId: log!.id, errors: mapped.errors };
+  });
+
+  /**
+   * Audit a5-ingest-transfers-09: take a bank CSV import back out by its import log id (the
+   * commit's `importLogId`): the rows it created go, the ids it recorded for rows the ledger
+   * had are forgotten, so the file can be imported again. 409 `already_undone`.
+   */
+  r.post("/import/csv/:id/undo", { schema: { params: UuidParams, response: { 200: UndoImportResult } } }, async (request) => {
+    const result = await undoCsvImport(app.db, request.params.id, auditContext(request));
+    await enqueueJob(app.db, "recurring.detect", { reason: "ledger" }, { dedupe: true });
+    return result;
   });
 
   // ---- Phase 3: positions and trade-history CSV ----

@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { CsvDateFormat, type AccountView, type ConnectionView, type CsvKind, type CsvMappingInput, type CsvPreviewResponse, type ImportResult } from "@meridian/shared";
+import { CsvDateFormat, type AccountView, type ConnectionView, type CsvKind, type CsvMappingInput, type CsvPreviewResponse, type ImportResult, type UndoImportResult } from "@meridian/shared";
 import { api } from "../lib/api.js";
 import { money, shortDate } from "../lib/format.js";
 import { bankPreviewBody, bankResultText, CSV_KINDS, csvKindFromParam, type BankPreviewBody } from "../lib/importMapping.js";
+import { undoResultText } from "../lib/ledgerCorrections.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
 import { PositionsImport } from "../components/import/PositionsImport.js";
 import { TradesImport } from "../components/import/TradesImport.js";
@@ -100,6 +101,16 @@ function BankImport({ accounts: accountList, connections: connectionList }: { ac
     },
   });
 
+  // Audit a5-ingest-transfers-09: the import just committed can be taken back out.
+  const undo = useMutation({
+    mutationFn: (importLogId: string) => api<UndoImportResult>(`/import/csv/${importLogId}/undo`, { method: "POST", body: {} }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["transactions"] });
+      void qc.invalidateQueries({ queryKey: ["accounts"] });
+      void qc.invalidateQueries({ queryKey: PREVIEW_KEY });
+    },
+  });
+
   const onFile = async (file: File | undefined) => {
     if (!file) return;
     // Read first, then change everything in one render: the old file is never previewed under the new file's key.
@@ -108,6 +119,7 @@ function BankImport({ accounts: accountList, connections: connectionList }: { ac
     setMapping(null);
     setFileKey(nextFileKey());
     commit.reset();
+    undo.reset();
     setCsvText(text);
   };
 
@@ -250,7 +262,24 @@ function BankImport({ accounts: accountList, connections: connectionList }: { ac
             </button>
           </div>
           <ErrorText error={commit.error} />
-          {commit.data && <p className="notice">{bankResultText(commit.data, commit.variables?.alreadyImported ?? 0)}</p>}
+          {commit.data && (
+            <p className="notice">
+              {bankResultText(commit.data, commit.variables?.alreadyImported ?? 0)}{" "}
+              {commit.data.importLogId && !undo.data && (
+                <button
+                  className="link"
+                  disabled={undo.isPending}
+                  onClick={() => {
+                    if (window.confirm("Take this import back out? The rows it added are deleted; the file can be imported again.")) undo.mutate(commit.data!.importLogId!);
+                  }}
+                >
+                  Undo this import
+                </button>
+              )}
+            </p>
+          )}
+          {undo.data && <p className="notice">{undoResultText(undo.data)}</p>}
+          <ErrorText error={undo.error} />
         </Card>
       )}
     </>
