@@ -79,3 +79,11 @@ export {
   compileTaxLaw, fillPathTables, federalTaxInto, effectiveMarginalRates, assertTaxInput, computeFederalTax, taxYearDetail, TaxInputError,
 } from "./tax/index.js";
 export type { CompiledTaxLaw, CompileTaxLawOptions, FillOptions, FederalTaxInput, FederalTaxResult, FilingStatusIndex, TaxInputErrorCode } from "./tax/index.js";
+export {
+  RB, RB_REC, RW, RW_REC, HW, HW_REC, MONTHS_59_HALF, MONTHS_65, monthIndex, periodStartIndex, periodMonths,
+  earlyFraction, earlyFractionBefore59Half, earlyFractionBefore65, isEmployerPlan, separatedAt55, preTaxPenaltyShare, preTaxPenaltyBase,
+  hsaPenaltyShare, hsaWithdraw,
+  seedRoth, rothRollYear, addRothContribution, addRothConversion, rothFiveYearMet, rothWithdraw, rothFreeAmount, mergeRothAtDeath,
+  compileRmdTables, defaultRmdTables, rmdStartAge, firstRmdYear, rmdDivisor, requiredMinimumDistribution,
+} from "./tax/index.js";
+export type { RmdTables } from "./tax/index.js";

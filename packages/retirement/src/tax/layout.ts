@@ -243,6 +243,27 @@ export const RB = {
 } as const;
 export const RB_REC = 8;
 
+/** Output of `rothWithdraw` (rothBasis.ts), `Float64Array(RW_REC)` (tax-rmd-ss §3.7.3, §4.1). */
+export const RW = {
+  /** Non-qualified earnings distributed: to `TI.ROTH_TAXABLE`. */
+  TAXABLE: 0,
+  /** The part subject to the 10% additional tax: added to `TI.PEN10_BASE`. */
+  PENALTY_BASE: 1,
+  FROM_BASIS: 2,
+  FROM_CONVERSIONS: 3,
+  FROM_EARNINGS: 4,
+} as const;
+export const RW_REC = 5;
+
+/** Output of `hsaWithdraw` (penalties.ts), `Float64Array(HW_REC)` (tax-rmd-ss §3.7.4). */
+export const HW = {
+  /** The part above the year's qualified medical spending: to `TI.HSA_TAXABLE`. */
+  TAXABLE: 0,
+  /** The part subject to the 20% additional tax: to `TI.PEN20_BASE`. */
+  PENALTY_BASE: 1,
+} as const;
+export const HW_REC = 2;
+
 /** Social Security state per path, `Float64Array(SS_REC)`: slot + person (0 or 1). */
 export const SS = {
   /** Dollars a month, this year's. */
