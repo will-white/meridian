@@ -187,6 +187,46 @@ describe.skipIf(!TEST_DATABASE_URL)("members and authenticator steps", () => {
     await t.db.delete(user).where(sql`lower(${user.username}) like 'patn%'`);
   });
 
+  it("answers 409 username_taken when the name's unique index refuses the insert, which drizzle-orm wraps (decision 120)", async () => {
+    const [owner] = await t.db.select({ id: user.id }).from(user).where(eq(user.role, "owner"));
+    const ctx = { userId: owner!.id, batchId: randomUUID() };
+    // A writer that takes no member lock adds "Robin" and keeps its transaction open: the
+    // case-blind check cannot see the uncommitted row, so createViewer's insert waits on the
+    // unique index and fails with 23505 once the other commits. drizzle-orm 0.44 and later throw
+    // that as a DrizzleQueryError whose cause is the PostgresError carrying the code.
+    let inserted!: () => void;
+    let commit!: () => void;
+    const rowWritten = new Promise<void>((resolve) => (inserted = resolve));
+    const mayCommit = new Promise<void>((resolve) => (commit = resolve));
+    const other = t.client.begin(async (tx) => {
+      await tx`insert into "user" (username, password_hash, role) values ('Robin', 'hash', 'viewer')`;
+      inserted();
+      await mayCommit;
+    });
+    try {
+      await rowWritten;
+      const outcome = createViewer(t.db, { username: "Robin", passwordHash: "hash" }, ctx).then(
+        () => "created",
+        (error: unknown) => error,
+      );
+      // Commit only once createViewer's insert waits on the other's row, so its check has run.
+      for (let tries = 0; ; tries++) {
+        const [waiting] = await t.client<{ n: number }[]>`select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and query like 'insert into "user"%'`;
+        if (waiting!.n > 0) break;
+        if (tries > 500) throw new Error("createViewer's insert never waited on the other transaction");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      commit();
+      await other;
+      expect(await outcome).toMatchObject({ name: "PlanError", status: 409, code: "username_taken" });
+      expect(await t.db.select({ id: user.id }).from(user).where(eq(user.username, "Robin"))).toHaveLength(1);
+    } finally {
+      commit();
+      await other.catch(() => {});
+      await t.db.delete(user).where(eq(user.username, "Robin"));
+    }
+  });
+
   it("keeps sign-in activity newest first, counts the failures of the last 7 days, and drops what is older than 90 days", async () => {
     const [owner] = await t.db.select({ id: user.id }).from(user);
     const [sam] = await t.db.select({ id: user.id }).from(user).where(eq(user.username, "Sam"));
