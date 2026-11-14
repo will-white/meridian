@@ -3,6 +3,7 @@ import { fixtureBaseline, fixtureProfileDoc, fixtureResolveArgs, fixtureResolveC
 import { describe, expect, it } from "vitest";
 import {
   addGlidePoint,
+  COHORT_CHOICES,
   draftChanges,
   draftPatch,
   duplicateName,
@@ -246,6 +247,15 @@ describe("the run-settings form (§5.4, plan decisions 6 and 7)", () => {
     const parsed = parseRunSettingsForm(form, base);
     expect(parsed).toMatchObject({ ok: true, settings: { paths: 2500, returnModel: { kind: "historical", cohorts: "complete" } } });
     expect(pathsField({ model: "bootstrap" })).toEqual({ disabled: false });
+  });
+
+  it("the cohort choices say when auto picks complete stretches: every life a fixed age and at least 30 of them (plan decision 7)", () => {
+    // The engine's planCohorts: complete when allFixedLongevity && complete >= MIN_COMPLETE_COHORTS (30), wrap otherwise.
+    expect(COHORT_CHOICES).toEqual([
+      { value: "auto", label: "Complete stretches of history when every life is a fixed age and at least 30 stretches exist, else wrap around (default)" },
+      { value: "complete", label: "Complete stretches of history only" },
+      { value: "wrap", label: "Every start year, wrapping around to the first year of the record" },
+    ]);
   });
 
   it("strategies: the chosen kind from its fields, the others keep their defaults; a typed reserve in dollars", () => {

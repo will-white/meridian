@@ -384,7 +384,7 @@ export const RETURN_MODEL_CHOICES: ReadonlyArray<{ value: Exclude<ModelChoice, "
   { value: "parametric", label: "Parametric", summary: "Correlated lognormal returns from expected returns and volatilities." },
 ];
 export const COHORT_CHOICES: ReadonlyArray<{ value: HistoricalCohorts; label: string }> = [
-  { value: "auto", label: "Complete stretches of history when at least 30 exist, else wrap around (default)" },
+  { value: "auto", label: "Complete stretches of history when every life is a fixed age and at least 30 stretches exist, else wrap around (default)" },
   { value: "complete", label: "Complete stretches of history only" },
   { value: "wrap", label: "Every start year, wrapping around to the first year of the record" },
 ];

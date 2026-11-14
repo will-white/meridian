@@ -92,6 +92,29 @@ describe("fanMarkers (§5.5 item 3)", () => {
     ]);
   });
 
+  it("a person's markers stop at their last possible year (seams §2.2, C28: death at the year's end, the horizon at the last age)", () => {
+    const base = fixtureSimInput();
+    const withAlex = (alex: Partial<SimInput["household"]["people"][number]>) =>
+      SimInput.parse({ ...base, household: { ...base.household, people: [{ ...base.household.people[0]!, ...alex }, base.household.people[1]!] } });
+    const sams = [
+      { year: 2039, label: "Sam retires" },
+      { year: 2042, label: "Sam: Medicare" },
+      { year: 2044, label: "Sam: Social Security" },
+    ];
+    // A fixed life to 55: Alex's last year is 1975 + 55 = 2030, before his retirement (2035), Medicare (2040) and claim (2042).
+    expect(fanMarkers(withAlex({ longevity: { mode: "fixed", age: 55 } }))).toEqual(sams);
+    // To 60: alive through 2035, so the retirement in 2035-06 is kept; Medicare and the claim are not.
+    expect(fanMarkers(withAlex({ longevity: { mode: "fixed", age: 60 } }))).toEqual([{ year: 2035, label: "Alex retires" }, ...sams]);
+    // On the mortality table the last possible year is maxAge's: 1975 + 90 = 2065, so a retirement typed for 2066-01 never happens.
+    expect(fanMarkers(withAlex({ retirementMonth: "2066-01", longevity: { mode: "mortality", sex: "male", adjustYears: 0, maxAge: 90 } }))).toEqual([
+      { year: 2039, label: "Sam retires" },
+      { year: 2040, label: "Alex: Medicare" },
+      { year: 2042, label: "Alex: Social Security" },
+      { year: 2042, label: "Sam: Medicare" },
+      { year: 2044, label: "Sam: Social Security" },
+    ]);
+  });
+
   it("one person: labels carry no name", () => {
     const base = fixtureSimInput();
     const input = SimInput.parse({ ...base, household: { ...base.household, filingStatus: "single", people: [base.household.people[0]!] } });
