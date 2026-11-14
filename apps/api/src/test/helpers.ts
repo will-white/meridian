@@ -2,10 +2,11 @@ import type { InjectOptions, LightMyRequestResponse } from "fastify";
 import { randomBytes } from "node:crypto";
 import * as OTPAuth from "otpauth";
 import { createSession, user } from "@meridian/db";
-import { createTestDb, TEST_DATABASE_URL, type TestDb } from "@meridian/db/testing";
-import { generateSecretsKey } from "@meridian/shared";
+import { createTestDb, fakePlannerEngine, fakePlannerEnv, TEST_DATABASE_URL, type FakePlannerEngine, type TestDb } from "@meridian/db/testing";
+import { generateSecretsKey, type PlannerEnv } from "@meridian/shared";
 import { buildApp, type App } from "../app.js";
 import type { ApiConfig } from "../config.js";
+import { defaultPlanner, type Planner } from "../planner.js";
 
 export { TEST_DATABASE_URL };
 
@@ -25,6 +26,8 @@ export interface TestAppOptions {
   authNow?: () => Date;
   /** Config overrides, e.g. `webDistDir` (serve a built UI) or `trustProxy` (run behind a reverse proxy). */
   config?: Partial<ApiConfig>;
+  /** The retirement planner's engine (`app.planner`): the real engine unless given, e.g. `fakePlanner()`. */
+  planner?: Planner;
 }
 
 export async function createTestApp(options: TestAppOptions = {}): Promise<TestApp> {
@@ -43,7 +46,14 @@ export async function createTestApp(options: TestAppOptions = {}): Promise<TestA
     secureCookies: false,
     ...options.config,
   };
-  const app = await buildApp({ db: db.db, config, logger: false, ...(options.now ? { now: options.now } : {}), ...(options.authNow ? { authNow: options.authNow } : {}) });
+  const app = await buildApp({
+    db: db.db,
+    config,
+    logger: false,
+    ...(options.now ? { now: options.now } : {}),
+    ...(options.authNow ? { authNow: options.authNow } : {}),
+    ...(options.planner ? { planner: options.planner } : {}),
+  });
   await app.ready();
   const cookies: Record<string, string> = {};
   const call = async (opts: InjectOptions) => {
@@ -64,6 +74,33 @@ export async function createTestApp(options: TestAppOptions = {}): Promise<TestA
       await app.close();
       await db.cleanup();
     },
+  };
+}
+
+export interface FakePlanner extends Planner {
+  /** The fake `simulatePath`, which records the path indexes it was asked for. */
+  readonly engine: FakePlannerEngine;
+}
+
+/**
+ * The fake planner of the planner's API cases (docs/design/phase-4/inputs-and-data.md §7, cases 32
+ * to 37): the fake engine of packages/db's lifecycle cases, so that runs drained with
+ * `drainFakeRuns` are current under it (its engine and data versions; its `validateInput` refuses
+ * seed 4294967295) and `simulatePath` re-simulates their paths consistently; `engine` makes it
+ * disagree with the stored series when asked (`endingOffset`, `not_reproducible`). The meta's
+ * tables and routes 22 to 24 are the real engine's (pure, nothing to fake), with the rule sets
+ * narrowed to the fake environment's.
+ */
+export function fakePlanner(o: { env?: Partial<PlannerEnv>; engine?: FakePlannerEngine } = {}): FakePlanner {
+  const real = defaultPlanner();
+  const env = fakePlannerEnv(o.env);
+  const engine = o.engine ?? fakePlannerEngine();
+  return {
+    ...real,
+    env,
+    engine,
+    simulatePath: (input, pathIndex) => engine.simulatePath(input, pathIndex),
+    ruleSets: real.ruleSets.filter((r) => env.ruleSets.includes(r.id)),
   };
 }
 
