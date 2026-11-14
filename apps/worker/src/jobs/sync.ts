@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
-import { applyAccountSet, connection, enqueueJob, importLog, readHouseholdToday, requestPriceRefresh, type ConnectionError, type HoldingsStats, type JobRow } from "@meridian/db";
-import { addDays, decryptSecret, errorMessageText, highWaterMarkAfterSync, jsonbSafe, syncWindowStart, type IsoDate, type SyncWindowConfig } from "@meridian/shared";
+import { applyAccountSet, connection, enqueueJob, importLog, lastErrorsKeepingSyncGaps, readHouseholdToday, requestPriceRefresh, type ConnectionError, type HoldingsStats, type JobRow } from "@meridian/db";
+import { decryptSecret, errorMessageText, highWaterMarkAfterBalances, highWaterMarkAfterSync, jsonbSafe, syncGapRange, syncWindowStart, type IsoDate, type SyncWindowConfig } from "@meridian/shared";
 import { priceConfigOf } from "../env.js";
 import { fetchAccounts, readAccounts, SimplefinError } from "../simplefin/client.js";
 import type { JobContext } from "./context.js";
@@ -23,19 +23,22 @@ export interface SyncOutcome {
 export { syncWindowStart };
 
 /**
- * The entry a sync leaves on the connection when the window could not reach back to the
- * high-water mark: the mark is older than the most a sync asks for (a bank unreadable, or the
- * worker off, for longer than the first-sync window less the overlap), so the days between
- * the mark and the window were never requested. Null when the window reaches the mark.
+ * The entry a sync leaves on the connection when the window could not reach back as far as an
+ * ordinary sync would have asked: the mark is older than the most a sync asks for (a bank
+ * unreadable, or the worker off, for longer than the first-sync window less the overlap), so
+ * the days from the overlap before the mark to the window (`syncGapRange`) were not asked for
+ * again. It names them (`from`, `to`) and stays on the connection until it is dismissed (audit
+ * a3-sync-core, second round). Null when the window reaches that far.
  */
 export function syncGapNotice(previous: IsoDate | null, windowStart: IsoDate, config: SyncWindowConfig): ConnectionError | null {
-  if (previous === null) return null;
-  const from = addDays(previous, 1);
-  const to = addDays(windowStart, -1);
-  if (from > to) return null;
+  const range = syncGapRange(previous, windowStart, config);
+  if (!range) return null;
+  const overlap = `${config.overlapDays} ${config.overlapDays === 1 ? "day" : "days"}`;
   return {
     code: "sync.gap",
-    message: `The last complete sync was ${previous}. A sync asks the Bridge for at most ${config.initialWindowDays} days, so transactions from ${from} to ${to} were not requested. Import a CSV from the bank for that period if any are missing.`,
+    message: `Transactions dated ${range.from} to ${range.to} may be missing: the last complete sync was ${previous}, and a sync asks the Bridge for at most ${config.initialWindowDays} days, so those days were not asked for again (they start ${overlap} before that sync, for items that post late). Import a CSV from the bank for that period, then dismiss this notice.`,
+    from: range.from,
+    to: range.to,
   };
 }
 
@@ -52,6 +55,11 @@ export function syncGapNotice(previous: IsoDate | null, windowStart: IsoDate, co
  * whether it worked or not, records `last_attempt_at`, which is what the scheduler spaces
  * syncs from; a refusal that retrying cannot fix (403, 402) also pauses scheduled syncs, and
  * a failed run empties `last_errors`, which described the response before it.
+ *
+ * Audit a3-sync-core, second round: a Balances only refresh that finds an account (new, or
+ * attached again) clears the mark (`highWaterMarkAfterBalances`), so the next full sync asks
+ * for that account's history. And `sync.gap` notices stay in `last_errors` through every later
+ * run until they are dismissed (`lastErrorsKeepingSyncGaps`).
  *
  * Audit batch a4-sync-parse: the response is stored before it is read, whatever its shape
  * (one that is not JSON as `{ notJson }`), with NUL characters and unpaired surrogates made
@@ -97,7 +105,8 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
     const authError = applied.errors.some((e) => e.code === "con.auth");
     const mark =
       windowStart === undefined
-        ? undefined
+        ? // A refresh asks for no transactions: an account it is the first to see has none of its history yet.
+          highWaterMarkAfterBalances({ previous: conn.syncedThrough, today, accountsCreated: applied.accountsCreated + applied.accountsReattached, config: ctx.config })
         : highWaterMarkAfterSync({
             previous: conn.syncedThrough,
             today,
@@ -118,8 +127,9 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
         lastAttemptAt: finishedAt,
         // The Bridge answered: whatever paused the schedule is over.
         syncPaused: false,
-        ...(mark === undefined ? {} : { syncedThrough: mark }),
-        lastErrors: errors,
+        syncedThrough: mark,
+        // The notices of days never asked for again stay until the household dismisses them.
+        lastErrors: lastErrorsKeepingSyncGaps(errors),
         lastError: authError ? "The Bridge reports this bank connection needs to be re-authenticated." : null,
         updatedAt: finishedAt,
       })
@@ -178,8 +188,8 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
       .set({
         status,
         lastError: message,
-        // The entries of the last response describe a sync that is no longer the latest one.
-        lastErrors: [],
+        // The entries of the last response describe a sync that is no longer the latest one; the notices of days never asked for again stay.
+        lastErrors: lastErrorsKeepingSyncGaps([]),
         lastAttemptAt: ctx.now(),
         ...(paused ? { syncPaused: true } : {}),
         updatedAt: ctx.now(),

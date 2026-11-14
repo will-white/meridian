@@ -262,7 +262,14 @@ export const PasskeyView = z.object({
 export type PasskeyView = z.infer<typeof PasskeyView>;
 
 // ---- Connections ----
-export const ConnectionErrorView = z.object({ code: z.string(), message: z.string(), accountId: z.string().optional() });
+export const ConnectionErrorView = z.object({
+  code: z.string(),
+  message: z.string(),
+  accountId: z.string().optional(),
+  /** A `sync.gap` notice: the first and last day it names (audit a3-sync-core, second round). */
+  from: IsoDateString.optional(),
+  to: IsoDateString.optional(),
+});
 export const ConnectionView = z.object({
   id: z.string().uuid(),
   type: ConnectionType,
@@ -277,7 +284,7 @@ export const ConnectionView = z.object({
   /** The day through which every account's transactions are complete; it does not move while a bank is unreadable. */
   syncedThrough: IsoDateString.nullable(),
   lastError: z.string().nullable(),
-  /** Entries from the last successful sync (errlist, holdings notes, `sync.gap`); empty after a failed one. */
+  /** Entries from the last successful sync (errlist, holdings notes), empty after a failed one; and the `sync.gap` notices, which stay until they are dismissed. */
   lastErrors: z.array(ConnectionErrorView),
   /** The bank mapping; null for other kinds. */
   csvMapping: CsvMapping.nullable(),
@@ -291,6 +298,8 @@ export const ConnectionView = z.object({
 });
 export type ConnectionView = z.infer<typeof ConnectionView>;
 export const CreateSimplefinConnectionBody = z.object({ name: z.string().min(1).max(100), token: z.string().min(16).max(4096) });
+/** Audit a3-sync-core, second round: put away the sync.gap notice whose first day is `from`. */
+export const DismissSyncGapBody = z.object({ from: IsoDateInput });
 export const UpdateConnectionBody = z.object({ name: z.string().min(1).max(100).optional(), status: z.enum(["ok", "disabled"]).optional() });
 export const ImportLogView = z.object({
   id: z.string().uuid(),

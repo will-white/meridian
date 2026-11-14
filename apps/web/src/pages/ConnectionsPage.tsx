@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ConnectionView, ImportLogView, JobView } from "@meridian/shared";
 import { api } from "../lib/api.js";
-import { deleteProfilePrompt, removeConnectionPrompt, syncAdvice, syncControls, syncSummary } from "../lib/connections.js";
+import { deleteProfilePrompt, dismissGapPrompt, dismissibleGap, removeConnectionPrompt, syncAdvice, syncControls, syncSummary } from "../lib/connections.js";
 import { relativeTime } from "../lib/format.js";
 import { csvKindLabel } from "../lib/importMapping.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
@@ -68,6 +68,11 @@ export function ConnectionsPage() {
       void qc.invalidateQueries({ queryKey: ["valuation"] });
     },
   });
+  // Audit a3-sync-core, second round: a sync.gap notice stays until the household puts it away.
+  const dismissGap = useMutation({
+    mutationFn: ({ id, from }: { id: string; from: string }) => api<ConnectionView>(`/connections/${id}/sync-gaps/dismiss`, { method: "POST", body: { from } }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["connections"] }),
+  });
   const toggle = useMutation({
     mutationFn: ({ id, status }: { id: string; status: "ok" | "disabled" }) => api(`/connections/${id}`, { method: "PATCH", body: { status } }),
     onSuccess: invalidate,
@@ -110,6 +115,7 @@ export function ConnectionsPage() {
         <ErrorText error={reprocessTransactions.error} />
         {/* Audit a8-ledger-ui-07: a failed Disable, Enable or Remove says so. */}
         <ErrorText error={toggle.error} />
+        <ErrorText error={dismissGap.error} />
         <ErrorText error={remove.error} />
         {/* Audit a8-ledger-ui-06: a list that did not load is an error, never "no connections". */}
         <ErrorText error={connections.error} />
@@ -136,12 +142,29 @@ export function ConnectionsPage() {
                   <ul className="errors">
                     {c.lastErrors
                       .filter((e) => !e.code.startsWith("holdings."))
-                      .map((e, i) => (
-                        <li key={i}>
-                          {/* The message names the account (audit a8-ledger-ui-11); the Bridge's id means nothing here. */}
-                          <code>{e.code}</code> {e.message}
-                        </li>
-                      ))}
+                      .map((e, i) => {
+                        const gap = dismissibleGap(e);
+                        return (
+                          <li key={i}>
+                            {/* The message names the account (audit a8-ledger-ui-11); the Bridge's id means nothing here. */}
+                            <code>{e.code}</code> {e.message}
+                            {gap && !viewer && (
+                              <>
+                                {" "}
+                                <button
+                                  className="link small"
+                                  onClick={() => {
+                                    if (confirm(dismissGapPrompt(gap))) dismissGap.mutate({ id: c.id, from: gap.from });
+                                  }}
+                                  disabled={dismissGap.isPending}
+                                >
+                                  Dismiss
+                                </button>
+                              </>
+                            )}
+                          </li>
+                        );
+                      })}
                   </ul>
                 )}
                 {openLog === c.id && <ImportLogs connectionId={c.id} />}

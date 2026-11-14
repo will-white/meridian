@@ -91,8 +91,8 @@ export class TiingoProvider implements PriceProvider {
     try {
       body = await res.text();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { ok: false, kind: "network", message: `tiingo: response body could not be read: ${message}` };
+      // A socket closed or a timeout mid-body fails as "terminated" or an abort, with the reason in `cause`, as a failed request does (a3-sync-core, second round).
+      return { ok: false, kind: "network", message: `tiingo: response body could not be read: ${describeFetchFailure(err, { timeoutMs: this.timeoutMs })}` };
     }
 
     if (res.status === 404 || bodyNamesUnknownTicker(body)) {

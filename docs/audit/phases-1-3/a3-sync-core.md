@@ -1,0 +1,69 @@
+# Audit record: SimpleFIN sync core (a3-sync-core)
+
+Scope: the sync job's high-water mark (`connection.synced_through`) and window, the scheduler's spacing after failures, pending rows of accounts the Bridge reports a problem for, and what the connection shows after a sync or a network failure (Phases 1 to 3).
+
+## First round (commit df3a315)
+
+The first round's findings text is not kept; this section is taken from the commit message of df3a315 ("Audit fixes: SimpleFIN sync core"). Its decisions are `docs/phase-1-plan.md`, "Decisions made during the audit", 24 to 28.
+
+- **p1-01, live-04: the high-water mark moves only after a complete response.** It stays put while the Bridge reports a connection or account problem (`con.*`, `act.*`) or serves a copy of an open account that is more than 7 days old, and is cleared when an account first appears in a short window, so the next sync fetches its history. A sync never asks for more than the first-sync window; when that leaves days unrequested the connection carries a `sync.gap` entry naming them. The Connections page gets a Full resync button and shows "complete through", and the API turns a waiting sync into a full one (409 `sync_running` while one runs).
+- **p1-04, live-05: scheduled syncs are spaced from the last attempt** (new `connection.last_attempt_at`, migration 0006 in today's numbering) instead of the last success, so a failing connection is no longer asked every minute. After a failed attempt the next scheduled one gets a single try; after HTTP 403 or 402 the connection is `sync_paused` and nothing is scheduled until a sync started by hand succeeds or it is switched back on.
+- **p1-18: an account covered by `act.failed`, `act.missingdata` or its bank's `con.auth` keeps its pending rows** and the edits on them; a posted item still replaces its pending row in place.
+- **live-15: a network failure says why** (certificate not accepted, name not resolved, connection refused, timeout) for the Bridge and the price provider, without ever quoting the URL; a failed sync empties the previous sync's `last_errors`.
+
+Docs: README "Bank sync", `.env.example` worker settings, `docs/phase-1-plan.md` pipeline steps, test matrix and decisions 24 to 28.
+
+## Second round
+
+An independent reviewer confirmed the first round's high-water mark, window, cap, notice and network-failure fixes (the batch's tests fail before df3a315 and pass after it) and left three items open, two of them the same case, plus one new issue. All three were reproduced and are real; all are fixed. Decisions: `docs/phase-1-plan.md`, "Decisions made during the audit", 115 and 116 (24, 25 and 28, pipeline steps 7 and 8 and the test matrix point to them). The README ("Bank sync") was edited to match.
+
+Each new test was run against the code before its fix and failed. For the red runs the new helpers existed with the old behaviour (the mark untouched by a refresh, the notice range from the day after the mark, entries replacing everything, no dismissal), so the tests fail on their assertions rather than on a missing import. The outputs are in the lane's scratch directory (`laneA/`): `a3r2-red-shared.txt` (2 of 2 failing), `a3r2-red-db.txt` (5 of 10), `a3r2-red-worker.txt` (5 of 37, the sync and Tiingo files), `a3r2-red-api.txt` (3 of 9), `a3r2-red-web.txt` (2 of 12); the runs after the fix are the matching `a3r2-green-*.txt`. The price provider was also checked against real sockets on 127.0.0.1:3481 (`a3r2-red-tiingo-socket.txt` with the old `tiingo.ts`, `a3r2-green-tiingo-socket.txt` after), and the Connections page in headless Chromium on the built API (`a3r2-green-browser.txt`, screenshots in `a3r2ui/`).
+
+### Second round, p1-01 and live-04 (incomplete): an account first seen by a Balances only refresh never gets its history
+
+Status: fixed.
+
+What was wrong: `applyAccountSet` runs `upsertSimplefinAccount` for a balances-only refresh too, so an account linked at the Bridge, or one left by a removed connection and attached again, is created (or attached) there with none of its transactions. The sync job computed the mark only when it had a window (`windowStart` defined), so a refresh left `synced_through` as it was; the next full sync had `accountsCreated = 0` and asked only from 7 days before the mark. Reproduced: a sync on 2026-10-10 sets the mark to 10-10; a savings account added at the Bridge is seen by a balances-only refresh on 10-11 and the mark stays 10-10; the next sync asks from 10-03 and the savings account gets 9 days instead of its history from 08-15.
+
+What changed: `highWaterMarkAfterBalances` (`packages/shared/src/simplefin.ts`) is the mark after a refresh. It never moves the mark; when the refresh created or attached an account it clears it, as `highWaterMarkAfterSync` does after a full sync whose window was short, so the next full sync asks for the first-sync window. When the mark is already older than the window can reach (the next sync asks for 93 days anyway), it stays, so the days that sync leaves out are still reported. The sync job uses it for every balances-only run (`apps/worker/src/jobs/sync.ts`). A "needs history" column would keep the mark in every case, at the cost of a migration; the remaining case (an account found during an outage that then outlasts 86 days) loses a notice, not transactions a sync could still fetch. Queuing a full sync from the refresh was the other choice; it would make "Balances only" two requests to the Bridge (decision 115).
+
+Tests: shared "a3-sync-core (second round): the mark after a Balances only refresh, and the days a capped window leaves out", "highWaterMarkAfterBalances: a refresh never moves the mark, but one that finds an account clears it so the next full sync asks for its history" (hand-checked: today 2026-10-11, 93 days back is 2026-07-10; a mark of 07-18 is cleared, 07-17 and 06-01 stay). Worker `src/jobs/sync.test.ts`, "a3-sync-core (second round)":
+
+- "p1-01, live-04: an account that a Balances only refresh finds, new or attached again, gets its history on the next full sync" (a savings account first seen by a refresh on 10-11: the mark is cleared, the next sync asks from 2026-07-10 and gets all 58 days from 08-15 to 10-11; an account without a connection attached again by a refresh on 10-12: the next sync asks from 07-11 and gets its 23 days from 09-20; a refresh that finds nothing new leaves the mark alone);
+- "p1-01: a mark older than the window can reach stays after such a refresh, so the days it leaves out are still reported" (mark 06-01, a new account seen by a refresh on 10-13: the mark stays, the next sync asks from 07-12, gets the account's 43 days and reports 05-25 to 07-11).
+
+### Second round, live-15 (incomplete): the price provider's body read loses the cause
+
+Status: fixed.
+
+What was wrong: `TiingoProvider.fetchDaily` used `describeFetchFailure` for the request but `err.message` for the body read. A server that sends the headers and then closes the socket gave "tiingo: response body could not be read: terminated", and a timeout while the body arrived gave "The operation was aborted due to timeout", both without the cause (checked against a real socket, `a3r2-red-tiingo-socket.txt`). The Bridge's body read already went through `describeFetchFailure` (a4-sync-parse-14).
+
+What changed: the body read's catch uses `describeFetchFailure(err, { timeoutMs })` as well: "tiingo: response body could not be read: other side closed (UND_ERR_SOCKET)" and "… timeout (no answer within 2 seconds)", with a URL in the reason cut down to its host. Decision 28 now names the body read too.
+
+Tests: worker `src/prices/tiingo.test.ts`, "a3-sync-core (second round), live-15: a body cut off after the headers says why, as a failed request does" (a socket closed mid-body, a timeout mid-body, a reason that quotes a URL).
+
+### Second round, new issue 1 (low): the sync.gap notice is erased by the next Balances only refresh or the next sync
+
+Status: fixed.
+
+What was wrong: the sync job wrote `last_errors` from the response alone, and added the gap only when it had a window. Reproduced: a sync on 2026-10-20 with the mark at 2026-06-01 left `['sync.gap']` and moved the mark to 10-20; a balances-only refresh the same day left `[]`, and so did the next sync (the batch's own test said "The next sync has nothing to report"). Since the mark had moved, no later sync wrote the notice again: a permanent hole in the ledger was named on the Connections page for one sync interval at most, gone at once after a refresh, and the import log shows only a count. The README promised "the connection says which days were not requested". The reviewer also noted that the range started the day after the mark, although the sync on the mark day saw that day only up to the hour it ran and the stale-copy rule lets an account be up to 7 days behind the mark.
+
+What changed:
+
+- The notice names its days: `from` and `to` on the entry (`ConnectionError`), and in the view (`ConnectionErrorView`), only for `sync.gap` entries.
+- `lastErrorsKeepingSyncGaps` (`packages/db/src/services/syncGaps.ts`) is what every writer of `last_errors` after a sync uses: the full sync, the balances-only refresh, the failed sync (which still empties everything else, decision 28) and `requeueStaleJobs` for a sync a dead worker left behind. It keeps the notices the row carries, computed inside the update so that one dismissed while a sync ran stays dismissed; a new notice with the same first day replaces the old one (the same outage, now longer) instead of standing next to it; a notice without its days (written before they were recorded) goes with the next sync, as every notice used to.
+- The range starts where an ordinary sync would have started, 7 days before the mark (`syncGapRange`, shared), and ends the day before the capped window. A notice now appears exactly when the cap cut the window (mark more than 86 days old, as decision 25 already said) instead of from 95 days. The wording says the days "may be missing" and to dismiss the notice after a CSV import.
+- **Dismiss** next to a notice on the Connections page (owner only, asked first: `dismissGapPrompt`) calls `POST /api/connections/:id/sync-gaps/dismiss` with `{ from }`, which removes that notice and nothing else (`dismissSyncGap`; idempotent; 404 for an unknown connection, 400 for a day that is not a date, 403 for a viewer). While the outage lasts, the next sync writes the notice again with the longer range.
+
+The reviewer's "until a full resync or a CSV import covers the range" was not taken: a full resync asks from 93 days back, which never reaches a gap (it ends before the capped window), and a CSV import covers one account while the notice is the connection's. A separate column was the other suggestion; keeping the notice in `last_errors` needs no migration and the page already lists those entries. The dashboard's attention list still goes by status and pause: it is about connections that cannot sync, and the notice stays where it is read (decision 116).
+
+Tests:
+
+- shared "syncGapRange: from the overlap before the last complete sync to the day before the window, and only when the cap cut the window" (mark 06-01, window 07-19: 05-25 to 07-18; today 10-13: mark 07-19 gives nothing, mark 07-18 gives the single day 07-11; no mark, an ordinary window and a full resync after a recent sync give nothing).
+- db `src/services/syncGaps.test.ts`, "sync.gap notices on the connection (a3-sync-core, second round)": kept in front of the new entries and through a failed sync; the same outage's notice replaced; a notice without its days dropped; dismissal by first day, the rest kept, idempotent, false for an unknown connection. db `src/services/jobs.test.ts`, "a3-sync-core (second round): a sync a dead worker left behind empties the last response's entries but keeps a sync.gap notice".
+- worker `src/jobs/sync.test.ts`, "the sync.gap notice stays through later syncs, Balances only refreshes and failed syncs until it is dismissed; the same outage's notice is replaced, not repeated" (mark 06-01 while the bank needs its login: 10-19 reports 05-25 to 07-17, 10-20 replaces it with 05-25 to 07-18 next to `con.auth`; after the bank is back the notice survives a complete sync, a refresh, the next sync, a 402, and a sync by hand; dismissed, it is gone and the next sync does not bring it back; an old notice without days goes with the next sync), and the updated "says so when the last complete sync is further back than a sync can ask for" (the new range and wording; the next sync's import log has nothing new, the connection keeps the notice).
+- api `src/connections.test.ts`, "connections: dismissing a sync.gap notice (a3-sync-core, second round)": the days in the view; the owner dismisses one by its first day, the others stay, again is a no-op; a viewer 403, an unknown connection 404, a missing or impossible date 400.
+- web `src/lib/connections.test.ts`, "a3-sync-core (second round): a sync.gap notice the household can put away" (`dismissibleGap` only for a `sync.gap` entry with its days; the prompt).
+- Headless Chromium on the built API (`a3r2-green-browser.txt`): the owner sees **Dismiss** on the two notices and not on the `act.failed` entry; cancelling the prompt changes nothing; accepting sends `POST …/sync-gaps/dismiss {"from":"2026-05-25"}` (200), that notice leaves the page and the database, the other stays; a viewer at phone width sees the notice without a button (no horizontal scroll) and gets 403 when asking directly; no page errors.
+
+Checks: `pnpm typecheck` and `pnpm lint` pass. The suites of the packages touched pass (TEST_DATABASE_PREFIX `meridian_fix_a_`): shared 52 files and 1015 tests, db 52 files and 395 tests, worker 14 files and 115 tests, api 42 files and 344 tests, web 45 files and 537 tests. `pnpm build` passes.
