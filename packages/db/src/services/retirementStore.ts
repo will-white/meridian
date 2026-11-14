@@ -97,9 +97,15 @@ export async function loadScenario(db: DbOrTx, id: string, options: { lock?: boo
   return row;
 }
 
-/** The default scenario (the dashboard card's); the profile's creation inserts it and nothing removes it. */
-export async function loadDefaultScenario(db: DbOrTx): Promise<ScenarioRow> {
+/** The default scenario (the dashboard card's), or undefined; the profile's creation inserts it and no service removes it. */
+export async function findDefaultScenario(db: DbOrTx): Promise<ScenarioRow | undefined> {
   const [row] = await db.select().from(scenario).where(eq(scenario.isDefault, true));
+  return row;
+}
+
+/** The default scenario; its absence is a broken invariant, not a user error. */
+export async function loadDefaultScenario(db: DbOrTx): Promise<ScenarioRow> {
+  const row = await findDefaultScenario(db);
   if (row === undefined) throw new Error("the default scenario is missing");
   return row;
 }

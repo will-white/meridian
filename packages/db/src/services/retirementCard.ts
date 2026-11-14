@@ -2,7 +2,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { dayDiff, successBp, type IsoDate, type PlannerEnv, type RetirementCard } from "@meridian/shared";
 import type { DbOrTx } from "../index.js";
 import { simRun } from "../schema/index.js";
-import { freezeScenario, loadDefaultScenario, loadProfile, progressBp, scenarioSettings } from "./retirementStore.js";
+import { findDefaultScenario, freezeScenario, loadProfile, progressBp, scenarioSettings } from "./retirementStore.js";
 
 /**
  * The dashboard's retirement card (`DashboardView.retirement`, docs/design/phase-4/inputs-and-data.md
@@ -24,7 +24,9 @@ import { freezeScenario, loadDefaultScenario, loadProfile, progressBp, scenarioS
 export async function retirementCard(db: DbOrTx, q: { today: IsoDate; now?: Date | undefined; env?: PlannerEnv | undefined }): Promise<RetirementCard | null> {
   const profile = await loadProfile(db);
   if (profile === undefined) return null;
-  const sc = await loadDefaultScenario(db);
+  // No default scenario cannot arise through the services; the dashboard then shows no card rather than failing.
+  const sc = await findDefaultScenario(db);
+  if (sc === undefined) return null;
   const now = q.now ?? new Date();
 
   const [active] = await db

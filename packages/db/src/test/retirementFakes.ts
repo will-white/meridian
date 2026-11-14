@@ -111,7 +111,8 @@ export function fakeRunResult(engine: PlannerPathEngine = fakePlannerEngine(), i
 /**
  * Drain the job queue as the worker would, with the fake engine: each `retirement.simulate` job
  * claims its run (a cancelled one is skipped), reports progress and completes it. Returns what
- * each job did, in claim order. Jobs of other types are left alone (completed untouched).
+ * each job did, in claim order. A job of another type is marked done without running (the planner
+ * tests enqueue none).
  */
 export async function drainFakeRuns(db: Db, o: { keep?: number } = {}): Promise<Array<{ runId: string; outcome: "skipped" | "done" | "lost" }>> {
   const out: Array<{ runId: string; outcome: "skipped" | "done" | "lost" }> = [];
