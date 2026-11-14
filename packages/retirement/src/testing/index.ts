@@ -23,5 +23,5 @@ export {
   unlimitedContributionsInto,
 } from "./stubs.js";
 export type { StubTaxOptions } from "./stubs.js";
-export { referenceR1Input, referenceR2Input } from "./referenceScenarios.js";
+export { R3_STOCK_BP, R4_RETURN_MODEL, referenceR1Input, referenceR2Input, referenceR3Input, referenceR4Input } from "./referenceScenarios.js";
 export { BENCH_MODELS, benchWorkloadInput } from "./benchWorkload.js";

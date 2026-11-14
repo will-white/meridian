@@ -1,5 +1,6 @@
 import { SocialSecurityPreviewResponse } from "@meridian/shared";
 import { describe, expect, it } from "vitest";
+import { runsInOwnFile } from "../testIsolation.js";
 import { buildSimInput } from "../testing/simInput.js";
 import { fillPathTables } from "./compile.js";
 import { PR, PROG_REC, SO, SO_REC, SS, SS_REC, TAX_REC, progOffset } from "./layout.js";
@@ -642,7 +643,8 @@ describe("H16 the shortcut equals the month loop", () => {
     }
   });
 
-  it("no allocation in 10,000 annual calls (heap unchanged within noise; the month loop of a claim year included)", () => {
+  it("no allocation in 10,000 annual calls (heap unchanged within noise; the month loop of a claim year included)", ({ skip }) => {
+    if (!runsInOwnFile(import.meta.url)) skip(); // a heap check means something only in its own file (testIsolation.ts)
     const h = household([est(1960, 7, 2400, 816, 2026), est(1962, 3, 800, 750, 2026)], 2026);
     const p = progTable(2026, 20, { keepCola: true, inflation: 0.03 });
     const out = new Float64Array(SO_REC);

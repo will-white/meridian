@@ -1,0 +1,314 @@
+{
+  "schema": "meridian.retirement.input",
+  "schemaVersion": 1,
+  "meta": {
+    "createdAt": "2026-11-13T00:00:00.000Z",
+    "today": "2026-11-13",
+    "asOf": "2026-11-13",
+    "profileRevision": 1,
+    "baselineHash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "scenarioId": "00000000-0000-4000-8000-000000000001",
+    "scenarioRevision": 1,
+    "scenarioName": "R2",
+    "provenance": {},
+    "warnings": []
+  },
+  "data": {
+    "version": "2026.11.0"
+  },
+  "plan": {
+    "startYear": 2027,
+    "startMonth": "2027-01",
+    "firstYearMonths": 12,
+    "endYear": 2056,
+    "stepsPerYear": 1,
+    "currency": "USD"
+  },
+  "household": {
+    "filingStatus": "married_joint",
+    "state": "CO",
+    "people": [
+      {
+        "id": "p1",
+        "name": "p1",
+        "birthYear": 1958,
+        "birthMonth": 1,
+        "retirementMonth": "2027-01",
+        "longevity": {
+          "mode": "fixed",
+          "age": 76
+        }
+      },
+      {
+        "id": "p2",
+        "name": "p2",
+        "birthYear": 1961,
+        "birthMonth": 1,
+        "retirementMonth": "2027-01",
+        "longevity": {
+          "mode": "fixed",
+          "age": 95
+        }
+      }
+    ]
+  },
+  "accounts": [
+    {
+      "id": "cash",
+      "name": "cash",
+      "type": "checking",
+      "bucket": "cash",
+      "owner": "joint",
+      "balanceCents": "4000000",
+      "allocation": {
+        "us_stock": 0,
+        "intl_stock": 0,
+        "bonds": 0,
+        "cash": 10000,
+        "real_estate": 0,
+        "other": 0
+      },
+      "allocationSource": "cash",
+      "expenseRatioPpm": 0,
+      "synthetic": false
+    },
+    {
+      "id": "taxable",
+      "name": "taxable",
+      "type": "brokerage",
+      "bucket": "taxable",
+      "owner": "joint",
+      "balanceCents": "50000000",
+      "basisCents": "34000000",
+      "allocation": {
+        "us_stock": 6000,
+        "intl_stock": 0,
+        "bonds": 4000,
+        "cash": 0,
+        "real_estate": 0,
+        "other": 0
+      },
+      "allocationSource": "holdings",
+      "expenseRatioPpm": 0,
+      "synthetic": false
+    },
+    {
+      "id": "pre_tax_1",
+      "name": "pre_tax_1",
+      "type": "ira",
+      "bucket": "pre_tax",
+      "owner": "p1",
+      "balanceCents": "40000000",
+      "allocation": {
+        "us_stock": 6000,
+        "intl_stock": 0,
+        "bonds": 4000,
+        "cash": 0,
+        "real_estate": 0,
+        "other": 0
+      },
+      "allocationSource": "holdings",
+      "expenseRatioPpm": 0,
+      "synthetic": false
+    },
+    {
+      "id": "pre_tax_2",
+      "name": "pre_tax_2",
+      "type": "ira",
+      "bucket": "pre_tax",
+      "owner": "p2",
+      "balanceCents": "15000000",
+      "allocation": {
+        "us_stock": 6000,
+        "intl_stock": 0,
+        "bonds": 4000,
+        "cash": 0,
+        "real_estate": 0,
+        "other": 0
+      },
+      "allocationSource": "holdings",
+      "expenseRatioPpm": 0,
+      "synthetic": false
+    },
+    {
+      "id": "roth_1",
+      "name": "roth_1",
+      "type": "roth",
+      "bucket": "roth",
+      "owner": "p1",
+      "balanceCents": "6000000",
+      "rothContributionBasisCents": "0",
+      "allocation": {
+        "us_stock": 10000,
+        "intl_stock": 0,
+        "bonds": 0,
+        "cash": 0,
+        "real_estate": 0,
+        "other": 0
+      },
+      "allocationSource": "holdings",
+      "expenseRatioPpm": 0,
+      "synthetic": false
+    },
+    {
+      "id": "roth_2",
+      "name": "roth_2",
+      "type": "roth",
+      "bucket": "roth",
+      "owner": "p2",
+      "balanceCents": "4000000",
+      "rothContributionBasisCents": "0",
+      "allocation": {
+        "us_stock": 10000,
+        "intl_stock": 0,
+        "bonds": 0,
+        "cash": 0,
+        "real_estate": 0,
+        "other": 0
+      },
+      "allocationSource": "holdings",
+      "expenseRatioPpm": 0,
+      "synthetic": false
+    },
+    {
+      "id": "hsa_2",
+      "name": "hsa_2",
+      "type": "hsa",
+      "bucket": "hsa",
+      "owner": "p2",
+      "balanceCents": "2000000",
+      "allocation": {
+        "us_stock": 6000,
+        "intl_stock": 0,
+        "bonds": 4000,
+        "cash": 0,
+        "real_estate": 0,
+        "other": 0
+      },
+      "allocationSource": "holdings",
+      "expenseRatioPpm": 0,
+      "synthetic": false
+    }
+  ],
+  "incomes": [],
+  "socialSecurity": {
+    "people": [
+      {
+        "personId": "p1",
+        "mode": "receiving",
+        "monthlyCents": "250000",
+        "asOfYear": 2027,
+        "startedMonth": "2024-09",
+        "monthlyAtFraCents": "250000"
+      },
+      {
+        "personId": "p2",
+        "mode": "estimate",
+        "monthlyAtFraCents": "150000",
+        "asOfYear": 2027,
+        "claimMonth": "2028-01",
+        "claimAgeMonths": 804
+      }
+    ],
+    "spousal": true,
+    "survivor": true
+  },
+  "spending": {
+    "baseAnnualCents": "9960000",
+    "essentialAnnualCents": "9960000",
+    "startMonth": "2027-01",
+    "survivorBp": 7000,
+    "phases": [],
+    "goals": [
+      {
+        "id": "goal_2030",
+        "name": "goal",
+        "year": 2030,
+        "amountCents": "3000000",
+        "dollars": "today"
+      }
+    ],
+    "healthcare": [
+      {
+        "personId": "p1",
+        "preMedicareAnnualCents": "600000",
+        "preMedicareFrom": "2027-01",
+        "medicareFrom": "2027-01",
+        "medicareAnnualCents": "600000",
+        "realGrowthBp": 0,
+        "inBase": false
+      },
+      {
+        "personId": "p2",
+        "preMedicareAnnualCents": "600000",
+        "preMedicareFrom": "2027-01",
+        "medicareFrom": "2027-01",
+        "medicareAnnualCents": "600000",
+        "realGrowthBp": 0,
+        "inBase": false
+      }
+    ],
+    "longTermCare": [
+      {
+        "personId": "p2",
+        "reserveCents": "6000000",
+        "lastYears": 2
+      }
+    ]
+  },
+  "contributions": [],
+  "rothConversions": [
+    {
+      "year": 2028,
+      "personId": "p1",
+      "amountCents": "2000000",
+      "dollars": "today"
+    },
+    {
+      "year": 2029,
+      "personId": "p1",
+      "amountCents": "2000000",
+      "dollars": "today"
+    }
+  ],
+  "settings": {
+    "schemaVersion": 1,
+    "paths": 10000,
+    "seed": 1,
+    "stepsPerYear": 1,
+    "returnModel": {
+      "kind": "fixed",
+      "series": [
+        {
+          "stocksPpm": 60000,
+          "bondsPpm": 40000,
+          "billsPpm": 20000,
+          "inflationPpm": 25000
+        }
+      ]
+    },
+    "portfolio": {
+      "taxableRebalance": "full"
+    },
+    "strategy": {
+      "kind": "constant_dollar"
+    },
+    "withdrawalOrder": {
+      "kind": "default",
+      "cashReserveCents": "2000000"
+    },
+    "taxRuleSet": "current_law",
+    "tax": {
+      "chainedCpiWedgeBp": 0,
+      "realWageGrowthBp": 0,
+      "includePayrollTax": true,
+      "capLossCarryInCents": "0",
+      "taxDrag": {
+        "us_stock": {
+          "dividendYieldBp": 150,
+          "qualifiedShareBp": 10000
+        }
+      }
+    }
+  }
+}

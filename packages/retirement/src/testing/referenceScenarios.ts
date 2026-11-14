@@ -1,14 +1,15 @@
 /**
- * The deterministic reference scenarios R1 and R2 as frozen inputs (seams C1, C50; D14), written
- * from `reference/sheets/r1.md` §1 and `reference/sheets/r2.md` §1 with the builder of this module's
- * neighbour. The engine's own suites run them (build step 19: WD-5, WD-15, WD-16 and WD-21); build
- * step 22b can write `reference/fixtures/r1.input.json` and `r2.input.json` from them.
+ * The reference scenarios R1 to R4 as frozen inputs (seams C1, C50; D14), written from §1 of
+ * `reference/sheets/r1.md` to `r4.md` with the builder of this module's neighbour. The engine's own
+ * suites run R1 and R2 (build step 19: WD-5, WD-15, WD-16 and WD-21); `reference/fixtures/r1.input.json`
+ * to `r4.input.json` are these documents (build step 22b), and `src/reference.test.ts` checks that the
+ * committed files still equal them.
  *
  * Money in the sheets is dollars; here it is integer cents in decimal strings, rates in basis
  * points and the fixed series in parts per million, as `SimInput` requires.
  */
 
-import type { SimInput, SimInputAccount, TaxSettingsInput } from "@meridian/shared";
+import type { ReturnModelConfigInput, SimInput, SimInputAccount, TaxSettingsInput } from "@meridian/shared";
 import { account, buildSimInput, cashAccount, incomeStream } from "./simInput.js";
 
 const W = (us: number, bonds: number, cash = 0) => ({ us_stock: us, intl_stock: 0, bonds, cash, real_estate: 0, other: 0 });
@@ -64,6 +65,7 @@ export function referenceR1Input(): SimInput {
     taxRuleSet: "current_law",
     tax,
     seed: 1,
+    scenarioName: "R1",
     state: "CO",
   });
 }
@@ -129,6 +131,99 @@ export function referenceR2Input(): SimInput {
     taxRuleSet: "current_law",
     tax,
     seed: 1,
+    scenarioName: "R2",
+    state: "CO",
+  });
+}
+
+/** The stock shares of R3's two runs (r3.md §1), in basis points; the rest is bonds. */
+export const R3_STOCK_BP = [5000, 7500] as const;
+
+/**
+ * R3 (r3.md §1): one person born January 1962, retired at the plan start, fixed age 94 (2027 to
+ * 2056, 30 plan years); one Roth account of 1,000,000 at `stockBp` US stock and the rest bonds;
+ * 40,000 a year in today's dollars; the historical model with complete cohorts (69 start years,
+ * 1928 to 1996). `paths` is the schema's least (100): with every life expectancy fixed the engine
+ * runs one path per cohort (seams C6). The builder adds `synthetic:cash` (balance 0), as the
+ * resolver does for a plan with no taxable or cash account (C24).
+ */
+export function referenceR3Input(stockBp = 5000): SimInput {
+  return buildSimInput({
+    startYear: 2027,
+    people: [{ birthYear: 1962, retirementMonth: "2027-01", longevity: { mode: "fixed", age: 94 } }],
+    endYear: 2056,
+    accounts: [
+      account("roth", "roth", "100000000", { type: "roth", owner: "p1", rothContributionBasisCents: "0", allocation: W(stockBp, 10000 - stockBp) }),
+    ],
+    spending: {
+      baseAnnualCents: "4000000",
+      essentialAnnualCents: "4000000",
+      startMonth: "2027-01",
+      survivorBp: 10000,
+      phases: [],
+      goals: [],
+      healthcare: [],
+      longTermCare: [],
+    },
+    returnModel: { kind: "historical", cohorts: "complete" },
+    portfolio: { taxableRebalance: "full" },
+    strategy: { kind: "constant_dollar" },
+    cashReserveCents: "0",
+    taxRuleSet: "current_law",
+    paths: 100,
+    seed: 1,
+    scenarioName: "R3",
+    state: "CO",
+  });
+}
+
+/** R4's custom parametric model (r4.md §1): arithmetic means and volatilities in basis points, persistence 0, no correlation. */
+export const R4_RETURN_MODEL = {
+  kind: "parametric",
+  preset: "custom",
+  params: {
+    meanKind: "arithmetic",
+    stocks: { meanBp: 600, volBp: 1200 },
+    bonds: { meanBp: 400, volBp: 700 },
+    bills: { meanBp: 300, volBp: 200, persistenceBp: 0 },
+    inflation: { meanBp: 250, volBp: 100, persistenceBp: 0 },
+    correlationBp: [
+      [10000, 0, 0, 0],
+      [0, 10000, 0, 0],
+      [0, 0, 10000, 0],
+      [0, 0, 0, 10000],
+    ],
+  },
+} as const satisfies ReturnModelConfigInput;
+
+/**
+ * R4 (r4.md §1): R3's household with the Roth account wholly in US stock, the custom parametric
+ * model of `R4_RETURN_MODEL`, 10,000 paths and seed 1.
+ */
+export function referenceR4Input(): SimInput {
+  return buildSimInput({
+    startYear: 2027,
+    people: [{ birthYear: 1962, retirementMonth: "2027-01", longevity: { mode: "fixed", age: 94 } }],
+    endYear: 2056,
+    accounts: [account("roth", "roth", "100000000", { type: "roth", owner: "p1", rothContributionBasisCents: "0", allocation: W(10000, 0) })],
+    spending: {
+      baseAnnualCents: "4000000",
+      essentialAnnualCents: "4000000",
+      startMonth: "2027-01",
+      survivorBp: 10000,
+      phases: [],
+      goals: [],
+      healthcare: [],
+      longTermCare: [],
+    },
+    returnModel: R4_RETURN_MODEL,
+    portfolio: { taxableRebalance: "full" },
+    strategy: { kind: "constant_dollar" },
+    cashReserveCents: "0",
+    taxRuleSet: "current_law",
+    paths: 10000,
+    seed: 1,
+    scenarioName: "R4",
     state: "CO",
   });
 }

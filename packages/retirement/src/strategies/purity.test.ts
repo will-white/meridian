@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import type { StrategyConfigInput } from "@meridian/shared";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import { runsInOwnFile } from "../testIsolation.js";
 import { buildSimInput } from "../testing/simInput.js";
 import { decideSpending } from "./decide.js";
 import { createSpendingOutcome, settleSpending } from "./outcome.js";
@@ -126,7 +127,8 @@ describe("ST-17 purity and rules", () => {
     expect(findings).toEqual([]);
   });
 
-  it("ST-17 no allocation in 10,000 calls (heap unchanged within noise)", () => {
+  it("ST-17 no allocation in 10,000 calls (heap unchanged within noise)", ({ skip }) => {
+    if (!runsInOwnFile(import.meta.url)) skip(); // a heap check means something only in its own file (testIsolation.ts)
     const tbs = KINDS.map(household);
     const views = tbs.map((tb) => Array.from({ length: 20 }, (_, t) => viewAt(tb, t)));
     const states = tbs.map(() => new Float64Array(STRATEGY_STATE_LENGTH));

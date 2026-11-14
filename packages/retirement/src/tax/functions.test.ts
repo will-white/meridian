@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { runsInOwnFile } from "../testIsolation.js";
 import { fillPathTables } from "./compile.js";
 import { contributionLimitsInto } from "./contributionLimits.js";
 import { federalTaxInto } from "./federalTax.js";
@@ -55,7 +56,8 @@ describe("TAX_FUNCTIONS (seams §2.5)", () => {
     expect(stubbed.employeePayrollTaxInto).toBe(employeePayrollTaxInto);
   });
 
-  it("no allocation in 10,000 years of step 11's members through the record (yields, payroll, limits)", () => {
+  it("no allocation in 10,000 years of step 11's members through the record (yields, payroll, limits)", ({ skip }) => {
+    if (!runsInOwnFile(import.meta.url)) skip(); // a heap check means something only in its own file (testIsolation.ts)
     const fns = TAX_FUNCTIONS;
     const t = pathTables(loadTaxData(), { startYear: 2026, years: 20, inflation: 0.03 });
     const drag = new Float64Array(AD_REC);

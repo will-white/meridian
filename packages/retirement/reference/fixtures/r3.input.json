@@ -1,0 +1,135 @@
+{
+  "schema": "meridian.retirement.input",
+  "schemaVersion": 1,
+  "meta": {
+    "createdAt": "2026-11-13T00:00:00.000Z",
+    "today": "2026-11-13",
+    "asOf": "2026-11-13",
+    "profileRevision": 1,
+    "baselineHash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "scenarioId": "00000000-0000-4000-8000-000000000001",
+    "scenarioRevision": 1,
+    "scenarioName": "R3",
+    "provenance": {},
+    "warnings": []
+  },
+  "data": {
+    "version": "2026.11.0"
+  },
+  "plan": {
+    "startYear": 2027,
+    "startMonth": "2027-01",
+    "firstYearMonths": 12,
+    "endYear": 2056,
+    "stepsPerYear": 1,
+    "currency": "USD"
+  },
+  "household": {
+    "filingStatus": "single",
+    "state": "CO",
+    "people": [
+      {
+        "id": "p1",
+        "name": "p1",
+        "birthYear": 1962,
+        "birthMonth": 1,
+        "retirementMonth": "2027-01",
+        "longevity": {
+          "mode": "fixed",
+          "age": 94
+        }
+      }
+    ]
+  },
+  "accounts": [
+    {
+      "id": "roth",
+      "name": "roth",
+      "type": "roth",
+      "bucket": "roth",
+      "owner": "p1",
+      "balanceCents": "100000000",
+      "rothContributionBasisCents": "0",
+      "allocation": {
+        "us_stock": 5000,
+        "intl_stock": 0,
+        "bonds": 5000,
+        "cash": 0,
+        "real_estate": 0,
+        "other": 0
+      },
+      "allocationSource": "holdings",
+      "expenseRatioPpm": 0,
+      "synthetic": false
+    },
+    {
+      "id": "synthetic:cash",
+      "name": "Cash (surplus)",
+      "bucket": "cash",
+      "owner": "joint",
+      "balanceCents": "0",
+      "allocation": {
+        "us_stock": 0,
+        "intl_stock": 0,
+        "bonds": 0,
+        "cash": 10000,
+        "real_estate": 0,
+        "other": 0
+      },
+      "allocationSource": "cash",
+      "expenseRatioPpm": 0,
+      "synthetic": true
+    }
+  ],
+  "incomes": [],
+  "socialSecurity": {
+    "people": [
+      {
+        "personId": "p1",
+        "mode": "none"
+      }
+    ],
+    "spousal": true,
+    "survivor": true
+  },
+  "spending": {
+    "baseAnnualCents": "4000000",
+    "essentialAnnualCents": "4000000",
+    "startMonth": "2027-01",
+    "survivorBp": 10000,
+    "phases": [],
+    "goals": [],
+    "healthcare": [],
+    "longTermCare": []
+  },
+  "contributions": [],
+  "rothConversions": [],
+  "settings": {
+    "schemaVersion": 1,
+    "paths": 100,
+    "seed": 1,
+    "stepsPerYear": 1,
+    "returnModel": {
+      "kind": "historical",
+      "cohorts": "complete"
+    },
+    "portfolio": {
+      "taxableRebalance": "full"
+    },
+    "strategy": {
+      "kind": "constant_dollar"
+    },
+    "withdrawalOrder": {
+      "kind": "default",
+      "cashReserveCents": "0"
+    },
+    "taxRuleSet": "current_law",
+    "tax": {
+      "chainedCpiWedgeBp": 0,
+      "realWageGrowthBp": 0,
+      "includePayrollTax": true,
+      "capLossCarryInCents": "0",
+      "taxDrag": {}
+    }
+  }
+}

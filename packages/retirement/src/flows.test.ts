@@ -1,5 +1,6 @@
 import { fixtureSimInput } from "@meridian/shared/src/retirement/testFixtures.js";
 import { describe, expect, it } from "vitest";
+import { runsInOwnFile } from "./testIsolation.js";
 import { planClock } from "./clock.js";
 import { EngineInputError } from "./errors.js";
 import {
@@ -473,7 +474,8 @@ describe("C39 scheduled conversions as data for the loop", () => {
 });
 
 describe("The year functions allocate nothing (engine-and-returns §3.15, §4.3)", () => {
-  it("10,000 path-years of incomeYearInto, contributionsYearInto and conversionsYearInto leave the heap unchanged within noise", () => {
+  it("10,000 path-years of incomeYearInto, contributionsYearInto and conversionsYearInto leave the heap unchanged within noise", ({ skip }) => {
+    if (!runsInOwnFile(import.meta.url)) skip(); // a heap check means something only in its own file (testIsolation.ts)
     const run = prepare(fixtureSimInput());
     const cpi = constantCpi(0.025, 47);
     const amounts = new Float64Array(run.incomes.count);

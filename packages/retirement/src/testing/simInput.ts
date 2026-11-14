@@ -67,6 +67,8 @@ export interface SimInputOptions {
   paths?: number;
   seed?: number;
   taxRuleSet?: string;
+  /** `meta.scenarioName`; default "test". */
+  scenarioName?: string;
 }
 
 const PERSON_IDS: readonly PersonId[] = ["p1", "p2"];
@@ -164,7 +166,7 @@ export function buildSimInput(o: SimInputOptions = {}): SimInput {
       baselineHash: "0".repeat(64),
       scenarioId: "00000000-0000-4000-8000-000000000001",
       scenarioRevision: 1,
-      scenarioName: "test",
+      scenarioName: o.scenarioName ?? "test",
       provenance: {},
       warnings: [],
     },

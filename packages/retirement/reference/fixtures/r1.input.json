@@ -1,0 +1,275 @@
+{
+  "schema": "meridian.retirement.input",
+  "schemaVersion": 1,
+  "meta": {
+    "createdAt": "2026-11-13T00:00:00.000Z",
+    "today": "2026-11-13",
+    "asOf": "2026-11-13",
+    "profileRevision": 1,
+    "baselineHash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "scenarioId": "00000000-0000-4000-8000-000000000001",
+    "scenarioRevision": 1,
+    "scenarioName": "R1",
+    "provenance": {},
+    "warnings": []
+  },
+  "data": {
+    "version": "2026.11.0"
+  },
+  "plan": {
+    "startYear": 2027,
+    "startMonth": "2027-01",
+    "firstYearMonths": 12,
+    "endYear": 2047,
+    "stepsPerYear": 1,
+    "currency": "USD"
+  },
+  "household": {
+    "filingStatus": "married_joint",
+    "state": "CO",
+    "people": [
+      {
+        "id": "p1",
+        "name": "p1",
+        "birthYear": 1962,
+        "birthMonth": 1,
+        "retirementMonth": "2027-01",
+        "longevity": {
+          "mode": "fixed",
+          "age": 85
+        }
+      },
+      {
+        "id": "p2",
+        "name": "p2",
+        "birthYear": 1962,
+        "birthMonth": 1,
+        "retirementMonth": "2027-01",
+        "longevity": {
+          "mode": "fixed",
+          "age": 85
+        }
+      }
+    ]
+  },
+  "accounts": [
+    {
+      "id": "cash",
+      "name": "cash",
+      "type": "checking",
+      "bucket": "cash",
+      "owner": "joint",
+      "balanceCents": "4000000",
+      "allocation": {
+        "us_stock": 0,
+        "intl_stock": 0,
+        "bonds": 0,
+        "cash": 10000,
+        "real_estate": 0,
+        "other": 0
+      },
+      "allocationSource": "cash",
+      "expenseRatioPpm": 0,
+      "synthetic": false
+    },
+    {
+      "id": "taxable",
+      "name": "taxable",
+      "type": "brokerage",
+      "bucket": "taxable",
+      "owner": "joint",
+      "balanceCents": "40000000",
+      "basisCents": "25000000",
+      "allocation": {
+        "us_stock": 10000,
+        "intl_stock": 0,
+        "bonds": 0,
+        "cash": 0,
+        "real_estate": 0,
+        "other": 0
+      },
+      "allocationSource": "holdings",
+      "expenseRatioPpm": 0,
+      "synthetic": false
+    },
+    {
+      "id": "pre_tax_a",
+      "name": "pre_tax_a",
+      "type": "ira",
+      "bucket": "pre_tax",
+      "owner": "p1",
+      "balanceCents": "90000000",
+      "allocation": {
+        "us_stock": 10000,
+        "intl_stock": 0,
+        "bonds": 0,
+        "cash": 0,
+        "real_estate": 0,
+        "other": 0
+      },
+      "allocationSource": "holdings",
+      "expenseRatioPpm": 0,
+      "synthetic": false
+    },
+    {
+      "id": "pre_tax_b",
+      "name": "pre_tax_b",
+      "type": "ira",
+      "bucket": "pre_tax",
+      "owner": "p2",
+      "balanceCents": "30000000",
+      "allocation": {
+        "us_stock": 10000,
+        "intl_stock": 0,
+        "bonds": 0,
+        "cash": 0,
+        "real_estate": 0,
+        "other": 0
+      },
+      "allocationSource": "holdings",
+      "expenseRatioPpm": 0,
+      "synthetic": false
+    },
+    {
+      "id": "roth_a",
+      "name": "roth_a",
+      "type": "roth",
+      "bucket": "roth",
+      "owner": "p1",
+      "balanceCents": "15000000",
+      "rothContributionBasisCents": "0",
+      "allocation": {
+        "us_stock": 10000,
+        "intl_stock": 0,
+        "bonds": 0,
+        "cash": 0,
+        "real_estate": 0,
+        "other": 0
+      },
+      "allocationSource": "holdings",
+      "expenseRatioPpm": 0,
+      "synthetic": false
+    }
+  ],
+  "incomes": [
+    {
+      "id": "pension_b",
+      "kind": "pension",
+      "personId": "p2",
+      "name": "pension_b",
+      "annualCents": "1200000",
+      "dollars": "nominal",
+      "startMonth": "2027-01",
+      "realGrowthBp": 0,
+      "cola": {
+        "mode": "none"
+      },
+      "survivorBp": 0,
+      "taxableBp": 10000,
+      "earned": false
+    }
+  ],
+  "socialSecurity": {
+    "people": [
+      {
+        "personId": "p1",
+        "mode": "estimate",
+        "monthlyAtFraCents": "300000",
+        "asOfYear": 2027,
+        "claimMonth": "2029-01",
+        "claimAgeMonths": 804
+      },
+      {
+        "personId": "p2",
+        "mode": "estimate",
+        "monthlyAtFraCents": "180000",
+        "asOfYear": 2027,
+        "claimMonth": "2029-01",
+        "claimAgeMonths": 804
+      }
+    ],
+    "spousal": true,
+    "survivor": true
+  },
+  "spending": {
+    "baseAnnualCents": "13000000",
+    "essentialAnnualCents": "13000000",
+    "startMonth": "2027-01",
+    "survivorBp": 10000,
+    "phases": [
+      {
+        "fromYear": 2037,
+        "multiplierBp": 9000
+      },
+      {
+        "fromYear": 2042,
+        "multiplierBp": 7000
+      }
+    ],
+    "goals": [
+      {
+        "id": "goal_2030",
+        "name": "goal",
+        "year": 2030,
+        "amountCents": "4000000",
+        "dollars": "today"
+      }
+    ],
+    "healthcare": [],
+    "longTermCare": []
+  },
+  "contributions": [],
+  "rothConversions": [
+    {
+      "year": 2027,
+      "personId": "p1",
+      "amountCents": "8000000",
+      "dollars": "nominal"
+    },
+    {
+      "year": 2028,
+      "personId": "p1",
+      "amountCents": "11000000",
+      "dollars": "nominal"
+    }
+  ],
+  "settings": {
+    "schemaVersion": 1,
+    "paths": 10000,
+    "seed": 1,
+    "stepsPerYear": 1,
+    "returnModel": {
+      "kind": "fixed",
+      "series": [
+        {
+          "stocksPpm": 50000,
+          "bondsPpm": 50000,
+          "billsPpm": 50000,
+          "inflationPpm": 25000
+        }
+      ]
+    },
+    "portfolio": {
+      "taxableRebalance": "full"
+    },
+    "strategy": {
+      "kind": "constant_dollar"
+    },
+    "withdrawalOrder": {
+      "kind": "default",
+      "cashReserveCents": "0"
+    },
+    "taxRuleSet": "current_law",
+    "tax": {
+      "chainedCpiWedgeBp": 0,
+      "realWageGrowthBp": 0,
+      "includePayrollTax": true,
+      "capLossCarryInCents": "0",
+      "taxDrag": {
+        "us_stock": {
+          "dividendYieldBp": 0
+        }
+      }
+    }
+  }
+}

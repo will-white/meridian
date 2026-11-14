@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import { runsInOwnFile } from "../testIsolation.js";
 import { CASH_TOL } from "../constants.js";
 import { ASSESS_MAX_CALLS, type AssessFn, type Assessment } from "../hooks.js";
 import { TREATMENT } from "../prepare.js";
@@ -236,7 +237,8 @@ describe("decision 38 hook rules", () => {
     expect(findings).toEqual([]);
   });
 
-  it("no allocation in 10,000 planned years (heap unchanged within noise)", () => {
+  it("no allocation in 10,000 planned years (heap unchanged within noise)", ({ skip }) => {
+    if (!runsInOwnFile(import.meta.url)) skip(); // a heap check means something only in its own file (testIsolation.ts)
     // Cash, taxable and two pre-tax accounts; a flat 20% on pre-tax; target and gross years.
     const v = view([CASH, TAXABLE, PRE_TAX, PRE_TAX], [5000, 20000, 300000, 100000], { rmd: [0, 0, 4000, 0] });
     const rate = new Float64Array([0, 0.05, 0.2, 0.2]);
