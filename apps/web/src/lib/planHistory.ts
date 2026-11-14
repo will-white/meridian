@@ -4,7 +4,7 @@ import { ROLLOVER_LABELS, monthLabel } from "./plan.js";
 
 /**
  * Pure helpers for the Plan page's history panel (audit finding b9-conformance-plan-investments-03;
- * Phase 2 plan audit decision A29): the audit entries of the plan's entities grouped into the
+ * Phase 2 plan audit decision A30): the audit entries of the plan's entities grouped into the
  * batches they were written in (one batch per request: a fill-right, a plan-from-average, a goal
  * edit), and a sentence per entry. The undo itself is `batchUndo` in @meridian/shared.
  */

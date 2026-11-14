@@ -249,7 +249,8 @@ describe.skipIf(!TEST_DATABASE_URL)("categories, groups, payees and rules audit"
     expect(item?.payeeId).toBe(S.payees.internet);
     const [priceAlert] = await t.db.db.select({ payeeId: alert.payeeId }).from(alert).where(eq(alert.id, S.alerts.netflixPrice));
     expect(priceAlert?.payeeId).toBe(S.payees.internet);
-    expect((await t.call({ method: "GET", url: "/api/payees?q=Netflix" })).json()).toEqual([]);
+    // The merged payee is gone; a search for its name finds the payee it now belongs to (audit a8-ledger-ui-03: search covers other names).
+    expect((await t.call({ method: "GET", url: "/api/payees?q=Netflix" })).json().items.map((p: { id: string }) => p.id)).toEqual([S.payees.internet]);
     expect((await t.call({ method: "PATCH", url: `/api/payees/${S.payees.internet}`, payload: { mergeFromId: randomUUID() } })).statusCode).toBe(404);
   });
 

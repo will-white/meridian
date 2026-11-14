@@ -1,4 +1,4 @@
-import { formatCents } from "@meridian/shared";
+import { formatCents, type AccountType } from "@meridian/shared";
 
 /** "-1234567" cents -> "-$12,345.67". String math only; no floats touch money. */
 export function money(cents: string | null | undefined, currency = "USD"): string {
@@ -38,6 +38,25 @@ export function relativeTime(iso: string | null | undefined): string {
   const hours = Math.round(minutes / 60);
   if (hours < 48) return `${hours} h ago`;
   return `${Math.round(hours / 24)} d ago`;
+}
+
+const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
+  checking: "Checking",
+  savings: "Savings",
+  credit: "Credit card",
+  loan: "Loan",
+  brokerage: "Brokerage",
+  "401k": "401(k)",
+  ira: "IRA",
+  roth: "Roth IRA",
+  hsa: "HSA",
+  "529": "529 plan",
+  asset: "Asset",
+};
+
+/** An account type as people write it: "IRA", "401(k)", "Roth IRA", not "Ira" (audit a8-ledger-ui-15). */
+export function accountTypeLabel(type: AccountType): string {
+  return ACCOUNT_TYPE_LABELS[type];
 }
 
 export function titleCase(s: string): string {

@@ -4,7 +4,7 @@ import { Link, useSearchParams } from "react-router";
 import { parseFixed8 } from "@meridian/shared";
 import type { AccountView, BasisSource, HoldingRowView, HoldingsView } from "@meridian/shared";
 import { api, query } from "../../lib/api.js";
-import { money, shortDate, titleCase } from "../../lib/format.js";
+import { accountTypeLabel, money, shortDate } from "../../lib/format.js";
 import { localToday } from "../../lib/plan.js";
 import {
   asOfFromParams,
@@ -98,7 +98,7 @@ export function HoldingsPage() {
               <option value="">All accounts</option>
               {investmentAccounts.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.name} ({titleCase(a.type)})
+                  {a.name} ({accountTypeLabel(a.type)})
                 </option>
               ))}
               {accountId && !investmentAccounts.some((a) => a.id === accountId) && <option value={accountId}>(selected account)</option>}

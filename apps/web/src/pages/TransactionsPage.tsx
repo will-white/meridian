@@ -1,27 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
 import { isIsoDate } from "@meridian/shared";
 import type { AccountView, CategoryView, GoalView, RecurringList, TransactionList, TransactionView } from "@meridian/shared";
+import { SEARCH_MAX_LENGTH } from "../lib/amounts.js";
 import { api, query } from "../lib/api.js";
 import { money, shortDate } from "../lib/format.js";
 import { TRANSACTION_DRAG_TYPE, canDragToRecategorize, recategorizePrompt, ruleSavedNotice, type RulePromptTarget } from "../lib/recategorize.js";
+import { buildManualTransaction, transferLabel, type ManualTransactionForm, type TransactionEditBody } from "../lib/register.js";
+import { invalidateLedger, recategorizeOptions } from "../lib/registerMutations.js";
 import { amountInCategory, type SplitRequestLine } from "../lib/splits.js";
+import { useDebounced } from "../lib/useDebounced.js";
+import { useLocalToday } from "../lib/useLocalToday.js";
 import { useIsViewer } from "../components/investments/queries.js";
 import { RowActions } from "../components/transactions/RowActions.js";
 import { RulePrompt } from "../components/transactions/RulePrompt.js";
 import { SplitEditor } from "../components/transactions/SplitEditor.js";
 import { Badge, Empty, ErrorText } from "../components/ui.js";
 import "./TransactionsPage.css";
-
-function useDebounced<T>(value: T, ms: number): T {
-  const [v, setV] = useState(value);
-  useEffect(() => {
-    const t = setTimeout(() => setV(value), ms);
-    return () => clearTimeout(t);
-  }, [value, ms]);
-  return v;
-}
 
 type Transfers = "include" | "exclude" | "only";
 
@@ -64,7 +60,8 @@ export function TransactionsPage() {
   const qc = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const f = useMemo(() => readFilters(searchParams), [searchParams]);
-  const [q, setQ] = useState(() => searchParams.get("q") ?? "");
+  // Bounded like the API's search (audit a8-ledger-ui-14): a maxLength does not trim a value set by code.
+  const [q, setQ] = useState(() => (searchParams.get("q") ?? "").slice(0, SEARCH_MAX_LENGTH));
   const search = useDebounced(q, 250);
   const [prompt, setPrompt] = useState<RulePromptTarget | null>(null);
   const [splitting, setSplitting] = useState<string | null>(null);
@@ -116,14 +113,37 @@ export function TransactionsPage() {
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
-  const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: ["transactions"] });
-    void qc.invalidateQueries({ queryKey: ["plan"] });
-    void qc.invalidateQueries({ queryKey: ["dashboard"] });
-  };
+  const invalidate = () => invalidateLedger(qc);
   const update = useMutation({
     mutationFn: ({ id, ...body }: { id: string } & Record<string, unknown>) => api<TransactionView>(`/transactions/${id}`, { method: "PATCH", body }),
     onSuccess: invalidate,
+  });
+  const categoryName = useMemo(() => new Map((categories.data ?? []).map((c) => [c.id, c.name])), [categories.data]);
+  // Audit a8-ledger-ui-16 and -05: the row shows the pick while it saves; the rule prompt follows a saved change only.
+  const recategorize = useMutation(
+    recategorizeOptions(
+      qc,
+      (id) => (id ? (categoryName.get(id) ?? null) : null),
+      ({ transaction, categoryId }) => setPrompt(recategorizePrompt(transaction, categoryId)),
+    ),
+  );
+  // Audit a8-ledger-ui-04: payee, notes and tags.
+  const edit = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: TransactionEditBody }) => api<TransactionView>(`/transactions/${id}`, { method: "PATCH", body }),
+    onSuccess: () => {
+      setCorrecting(null);
+      invalidate();
+      void qc.invalidateQueries({ queryKey: ["payees"] });
+    },
+  });
+  const [adding, setAdding] = useState(false);
+  const addTransaction = useMutation({
+    mutationFn: (body: Record<string, unknown>) => api<TransactionView>("/transactions", { method: "POST", body }),
+    onSuccess: () => {
+      setAdding(false);
+      invalidate();
+      void qc.invalidateQueries({ queryKey: ["accounts"] });
+    },
   });
   const saveSplit = useMutation({
     mutationFn: ({ id, splits }: { id: string; splits: SplitRequestLine[] }) => api<TransactionView>(`/transactions/${id}/splits`, { method: "PUT", body: { splits } }),
@@ -147,22 +167,30 @@ export function TransactionsPage() {
   });
   const [ruleNotice, setRuleNotice] = useState<string | null>(null);
 
-  const categoryName = useMemo(() => new Map((categories.data ?? []).map((c) => [c.id, c.name])), [categories.data]);
   const goalName = f.goalId ? (goals.data?.find((g) => g.id === f.goalId)?.name ?? "goal") : null;
   const recurringName = f.recurringId ? (recurring.data?.items.find((r) => r.id === f.recurringId)?.name ?? "recurring item") : null;
   const items = txns.data?.pages.flatMap((p) => p.items) ?? [];
 
   const onCategoryChange = (t: TransactionView, value: string) => {
-    const categoryId = value === "" ? null : value;
-    update.mutate({ id: t.id, categoryId });
-    setPrompt(recategorizePrompt(t, categoryId));
+    setPrompt(null);
+    recategorize.mutate({ transaction: t, categoryId: value === "" ? null : value });
   };
 
   return (
     <>
-      <h1>Transactions</h1>
+      <div className="row space wrap">
+        <h1>Transactions</h1>
+        {!viewer && (
+          <button type="button" className="secondary" onClick={() => setAdding(!adding)} aria-expanded={adding}>
+            {adding ? "Close" : "Add transaction"}
+          </button>
+        )}
+      </div>
+      {adding && !viewer && (
+        <AddTransaction accounts={(accounts.data ?? []).filter((a) => !a.closed)} categories={(categories.data ?? []).filter((c) => !c.hidden)} pending={addTransaction.isPending} error={addTransaction.error} onSave={(body) => addTransaction.mutate({ ...body })} />
+      )}
       <div className="row wrap filters">
-        <input placeholder="Search payee, description, notes…" aria-label="Search transactions" value={q} onChange={(e) => setQ(e.target.value)} className="grow" />
+        <input placeholder="Search payee, description, notes…" aria-label="Search transactions" value={q} onChange={(e) => setQ(e.target.value)} className="grow" maxLength={SEARCH_MAX_LENGTH} />
         <select value={f.accountId} onChange={(e) => setFilter({ accountId: e.target.value })} aria-label="Account">
           <option value="">All accounts</option>
           {(accounts.data ?? []).map((a) => (
@@ -231,7 +259,9 @@ export function TransactionsPage() {
       )}
       <ErrorText error={txns.error} />
       <ErrorText error={update.error} />
-      {prompt && (
+      <ErrorText error={recategorize.error} />
+      {txns.isPending && <p className="muted">Loading transactions…</p>}
+      {prompt && !viewer && (
         <RulePrompt
           key={`${prompt.payeeName}|${prompt.categoryId}`}
           target={prompt}
@@ -311,9 +341,17 @@ export function TransactionsPage() {
                 </td>
                 <td>
                   {t.isTransfer ? (
-                    <button className="link small" onClick={() => update.mutate({ id: t.id, isTransfer: false })} title="Not a transfer: give it a category">
-                      transfer · undo
-                    </button>
+                    <div>
+                      {viewer ? (
+                        <span className="small">transfer</span>
+                      ) : (
+                        <button className="link small" onClick={() => update.mutate({ id: t.id, isTransfer: false })} title="Not a transfer: give it a category">
+                          transfer · undo
+                        </button>
+                      )}
+                      {/* Audit a8-ledger-ui-12: which row this leg is paired with. */}
+                      <div className="muted small transfer-partner">{transferLabel(t)}</div>
+                    </div>
                   ) : t.splits.length > 0 ? (
                     <div className="split-summary">
                       {t.splits.map((s) => (
@@ -322,10 +360,15 @@ export function TransactionsPage() {
                           {s.memo ? <span className="muted"> · {s.memo}</span> : null}
                         </div>
                       ))}
-                      <button className="link small" onClick={() => setSplitting(splitting === t.id ? null : t.id)}>
-                        edit split
-                      </button>
+                      {!viewer && (
+                        <button className="link small" onClick={() => setSplitting(splitting === t.id ? null : t.id)}>
+                          edit split
+                        </button>
+                      )}
                     </div>
+                  ) : viewer ? (
+                    // Audit a8-ledger-ui-05: a viewer reads the category; nothing on the row changes it.
+                    <span className={t.categoryId ? "" : "muted"}>{t.categoryName ?? "uncategorized"}</span>
                   ) : (
                     <>
                       <select
@@ -352,10 +395,11 @@ export function TransactionsPage() {
                     className="link small"
                     onClick={() => {
                       correct.reset();
+                      edit.reset();
                       setCorrecting(correcting === t.id ? null : t.id);
                     }}
                     aria-expanded={correcting === t.id}
-                    title={t.isTransfer ? "Delete this transaction" : "Pair with the other leg of a transfer, mark as a transfer, or delete"}
+                    title={viewer ? "The rows this one could be paired with" : t.isTransfer ? "Payee, notes and tags, or delete this transaction" : "Payee, notes and tags; pair with the other leg of a transfer, mark as a transfer, or delete"}
                   >
                     more
                   </button>
@@ -399,6 +443,9 @@ export function TransactionsPage() {
                       onPair={(otherId) => correct.mutate({ id: t.id, action: "pair", otherId })}
                       onMarkTransfer={() => correct.mutate({ id: t.id, action: "transfer" })}
                       onDelete={() => correct.mutate({ id: t.id, action: "delete" })}
+                      onEdit={(body) => edit.mutate({ id: t.id, body })}
+                      editPending={edit.isPending}
+                      editError={edit.error}
                       onClose={() => setCorrecting(null)}
                     />
                   </td>
@@ -417,5 +464,78 @@ export function TransactionsPage() {
         </div>
       )}
     </>
+  );
+}
+
+const EMPTY_FORM: Omit<ManualTransactionForm, "date"> = { accountId: "", amount: "", payee: "", categoryId: "", notes: "" };
+
+/**
+ * A transaction entered by hand (audit a8-ledger-ui-04): a cash purchase, a check that has not
+ * cleared. A feed or CSV row of the same purchase takes it over later instead of doubling it
+ * (phase 1 decision 42).
+ */
+function AddTransaction({ accounts, categories, pending, error, onSave }: { accounts: AccountView[]; categories: CategoryView[]; pending: boolean; error: unknown; onSave: (body: Record<string, unknown>) => void }) {
+  const today = useLocalToday();
+  const [form, setForm] = useState<ManualTransactionForm>(() => ({ ...EMPTY_FORM, date: today }));
+  const [problem, setProblem] = useState<string | null>(null);
+  const set = (patch: Partial<ManualTransactionForm>) => setForm({ ...form, ...patch });
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    const built = buildManualTransaction(form, today);
+    if (!built.ok) return setProblem(built.error);
+    setProblem(null);
+    onSave({ ...built.body });
+  };
+  return (
+    <form className="card add-txn" onSubmit={submit} aria-label="Add a transaction">
+      <div className="row wrap">
+        <label>
+          Account
+          <select value={form.accountId} onChange={(e) => set({ accountId: e.target.value })}>
+            <option value="">— choose —</option>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Date
+          <input type="date" value={form.date} max={today} onChange={(e) => set({ date: e.target.value })} />
+        </label>
+        <label>
+          Amount
+          <input inputMode="decimal" value={form.amount} onChange={(e) => set({ amount: e.target.value })} placeholder="-12.50" />
+        </label>
+        <label className="grow">
+          Payee
+          <input value={form.payee} onChange={(e) => set({ payee: e.target.value })} maxLength={200} />
+        </label>
+        <label>
+          Category
+          <select value={form.categoryId} onChange={(e) => set({ categoryId: e.target.value })}>
+            <option value="">— the payee's default —</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <label>
+        Notes
+        <input value={form.notes} onChange={(e) => set({ notes: e.target.value })} maxLength={2000} />
+      </label>
+      <p className="muted small">Spending is negative. When the bank later sends the same purchase, its row takes this one over instead of adding a second.</p>
+      <span className="row">
+        <button type="submit" disabled={pending}>
+          Add
+        </button>
+      </span>
+      {problem && <p className="error">{problem}</p>}
+      <ErrorText error={error} />
+    </form>
   );
 }

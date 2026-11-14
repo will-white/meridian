@@ -4,7 +4,7 @@ import { Link, useParams, useSearchParams } from "react-router";
 import { formatCents, formatFixed8, isInvestmentAccountType, parseLooseDecimal } from "@meridian/shared";
 import type { AccountView, CashInference, HoldingSnapshotView, InvestmentIncomeFeed, InvestmentTxnList, InvestmentTxnView, LotMethod, SecurityView, SnapshotSummaryView, UpdateInvestmentTxnBody } from "@meridian/shared";
 import { api, query } from "../../lib/api.js";
-import { money, shortDate, titleCase } from "../../lib/format.js";
+import { accountTypeLabel, money, shortDate } from "../../lib/format.js";
 import { localToday } from "../../lib/plan.js";
 import { changeTone, formatQuantity, signedMoney, taxTreatmentLabel } from "../../lib/investments.js";
 import { accountTabFromParam, dollarsToCentsSigned, isDisposal, lastReconciliationText, lotPickLabel, positionsMatchText, tradeTypeLabel, tradeTypeTone, txnSourceText, txnSummary } from "../../lib/investmentForms.js";
@@ -78,7 +78,7 @@ export function AccountInvestmentsPage() {
   if (!investment) {
     return (
       <Empty>
-        {account.name} is a {titleCase(account.type)} account. Set its type to brokerage, 401k, IRA, Roth, HSA or 529 on the <Link to="/accounts">Accounts page</Link> to track positions and trades.
+        {account.name} is a {accountTypeLabel(account.type).toLowerCase()} account. Set its type to brokerage, 401k, IRA, Roth, HSA or 529 on the <Link to="/accounts">Accounts page</Link> to track positions and trades.
       </Empty>
     );
   }
@@ -104,7 +104,7 @@ export function AccountInvestmentsPage() {
       <Card>
         <div className="row wrap acct-inv-head">
           <span>
-            {titleCase(investment.type)} · {taxTreatmentLabel(investment.taxTreatment)}
+            {accountTypeLabel(investment.type)} · {taxTreatmentLabel(investment.taxTreatment)}
             {investment.connectionName ? ` · ${investment.connectionName}` : " · no bank feed"}
           </span>
           <FidelityBadge fidelity={inv?.fidelity ?? null} fidelityNote={inv?.fidelityNote ?? null} positionsDate={inv?.lastSnapshotDate ?? null} />

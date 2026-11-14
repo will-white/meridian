@@ -21,6 +21,7 @@ import { PATH_FLAG, type PathState, createPathState } from "./state.js";
 import { RB_REC, SO, SO_REC, TAX_IN, TAX_OUT, TI, TO } from "./tax/layout.js";
 import { TRADE_FLOWS_ONLY } from "./trades.js";
 import { account, buildSimInput, cashAccount, incomeStream } from "./testing/simInput.js";
+import { createEngineHooks } from "./withdrawals/index.js";
 import {
   bracketTaxInto,
   fixedContributionLimitsInto,
@@ -494,5 +495,36 @@ describe("T45 invariants over 300 seeded random households on the real tax funct
     // (13,606 path-years, 11,601 in drawdown, 5,433 with an RMD, 200 with an additional tax, 1,451
     // capped, 317 paths with a first death, as measured when the test was written).
     expect(real.notConverged).toBe(0);
+  });
+});
+
+describe("T45 invariants over 300 seeded random households on the production hooks (build step 19)", () => {
+  it("T45 the same invariants with createEngineHooks() (the default order) and TAX_FUNCTIONS; the order converges in every year within the call limit", () => {
+    const stats = createStats();
+    const real = { notConverged: 0, years: 0, calls: 0, solved: 0, maxCalls: 0 };
+    for (let h = 0; h < 300; h++) {
+      const input = withSocialSecurity(household(h).input, h);
+      const run = prepare(input);
+      const ps = createPathState(run, createEngineHooks(), TAX_FUNCTIONS);
+      const detail = createPathDetail(run);
+      checkPaths(h, run, ps, detail, stats, (t) => {
+        const y = (slot: number) => detail.year[t * YR_REC + slot]!;
+        real.years++;
+        const calls = y(YR.ASSESS_CALLS);
+        real.calls += calls;
+        if (calls > 2) real.solved++;
+        if (calls > real.maxCalls) real.maxCalls = calls;
+        if ((y(YR.FLAGS) & YEAR_FLAG.NOT_CONVERGED) !== 0) real.notConverged++;
+      });
+    }
+    expect(stats.households).toBe(300);
+    expect(stats.drawdownYears).toBeGreaterThan(5000);
+    expect(stats.failed).toBeGreaterThan(10);
+    expect(stats.deaths).toBeGreaterThan(50);
+    // Measured when the test was written: 13,606 path-years (11,601 in drawdown), 4,149 of them
+    // solved (more than the two bracketing calls); 2.05 calls a year on average, at most 10.
+    expect(real.notConverged).toBe(0);
+    expect(real.maxCalls).toBeLessThanOrEqual(24);
+    expect(real.calls / real.years).toBeLessThan(3);
   });
 });

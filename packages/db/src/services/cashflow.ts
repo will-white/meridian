@@ -337,7 +337,7 @@ export function unscheduledWarning(items: readonly UnscheduledPlan[]): string | 
 // ---- The loader ----
 
 /**
- * An opening older than this many days is named in the warnings (audit decision A28): a bank
+ * An opening older than this many days is named in the warnings (audit decision A29): a bank
  * often reports the previous close, and a sync may have run last evening, so one or two days
  * behind is normal.
  */
@@ -362,7 +362,7 @@ export async function loadCashFlowInput(db: DbOrTx, q: LoadCashFlowInputQuery): 
   const setting = await getHouseholdSetting(db, today);
 
   // 1. Projected accounts: on budget, open, optionally a subset; opening = posted balance + pending,
-  //    and for an account without a bank feed the rows posted since its balance (audit decision A28).
+  //    and for an account without a bank feed the rows posted since its balance (audit decision A29).
   const allAccounts = await db
     .select({
       id: account.id,

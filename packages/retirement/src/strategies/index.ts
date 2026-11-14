@@ -1,7 +1,7 @@
 /**
  * The spending strategies (strategies-outputs-web §2.1 to §2.3, §3.2 to §3.4, §3.8): the tables
  * `prepare()` builds, planned spending, the spending hook and the settlement of the year's
- * spending. The withdrawal order (`planWithdrawals`) is build step 19.
+ * spending. The withdrawal order (`planWithdrawals`) is in ../withdrawals/.
  */
 
 export { STRATEGY, prepareStrategies } from "./prepare.js";

@@ -8,6 +8,7 @@ import {
   balanceSnapshot,
   connection,
   defaultOnBudget,
+  enqueueJob,
   feedCategory,
   holdingSnapshot,
   investmentTxn,
@@ -18,17 +19,21 @@ import {
   requestValuation,
   setInvestmentIncomeFeed,
   writeAudit,
+  type DbOrTx,
 } from "@meridian/db";
 import {
   AccountView,
   CreateManualAccountBody,
   defaultTaxTreatment,
+  formatCents,
+  isDebtAccountType,
   isInvestmentAccountType,
   LinkFeedAccountBody,
   LinkFeedAccountResult,
   RecordBalanceBody,
   UpdateAccountBody,
   UuidParams,
+  type AccountType,
 } from "@meridian/shared";
 import { badRequest, HttpError, notFound } from "../lib/errors.js";
 import { toAccountView } from "../views.js";
@@ -95,6 +100,51 @@ async function assertTypeChangeAllowed(app: FastifyInstance, current: CardSettin
   const [snapshot] = await app.db.select({ id: holdingSnapshot.id }).from(holdingSnapshot).where(eq(holdingSnapshot.accountId, current.id)).limit(1);
   const [txn] = snapshot ? [undefined] : await app.db.select({ id: investmentTxn.id }).from(investmentTxn).where(eq(investmentTxn.accountId, current.id)).limit(1);
   if (snapshot || txn) throw new HttpError(409, "The account has positions or investment transactions; delete them before changing its type", "account_has_investment_data");
+}
+
+/** The columns the balance-sign rule (audit a8-ledger-ui-01) and the reopen replay (-02) read. */
+type BalanceSignRow = Pick<typeof account.$inferSelect, "id" | "type" | "connectionId" | "externalId" | "balanceCents" | "closed">;
+
+/**
+ * Audit a8-ledger-ui-01: an account the household entered by hand (no connection, never fed:
+ * no external id) holds what it typed, stored with the sign its type gives it: what a card or a
+ * loan owes is stored negated (phase 1 decision 64), anything else as typed. A type change
+ * between a debt (credit, loan) and anything else keeps what was typed, so the balance and every
+ * balance snapshot change sign: "Car loan" added as Checking with 15,000 owes 15,000 once it is
+ * a Loan, instead of counting 15,000 as an asset. A feed account's balance (and one left by a
+ * removed connection) is the bank's and keeps its sign.
+ */
+function balanceSignFlips(current: BalanceSignRow, nextType: AccountType): boolean {
+  return current.connectionId === null && current.externalId === null && isDebtAccountType(current.type) !== isDebtAccountType(nextType);
+}
+
+/** The balance after the type change must be one the account could be given by hand (400 `debt_balance_positive`), for an account without a connection. */
+function assertBalanceFitsType(current: BalanceSignRow, nextType: AccountType, flip: boolean): void {
+  if (current.connectionId !== null || current.balanceCents === null || nextType === current.type) return;
+  const next = flip ? -current.balanceCents : current.balanceCents;
+  if (manualBalanceProblem(nextType, next)) {
+    throw badRequest(`A loan owes money, so its balance cannot be positive: as a loan, this account's balance of ${formatCents(current.balanceCents)} would be ${formatCents(next)}. Update its balance first, or keep its type`, "debt_balance_positive");
+  }
+}
+
+/** Negate a hand-entered account's balance and its history in the PATCH's transaction, audited as `account`. */
+async function flipManualBalances(tx: DbOrTx, current: BalanceSignRow, nextType: AccountType, ctx: ReturnType<typeof auditContext>): Promise<void> {
+  await tx
+    .update(account)
+    .set({ balanceCents: sql`-${account.balanceCents}`, availableCents: sql`-${account.availableCents}` })
+    .where(eq(account.id, current.id));
+  await tx
+    .update(balanceSnapshot)
+    .set({ balanceCents: sql`-${balanceSnapshot.balanceCents}`, availableCents: sql`-${balanceSnapshot.availableCents}` })
+    .where(eq(balanceSnapshot.accountId, current.id));
+  await writeAudit(tx, {
+    ...ctx,
+    entity: "account",
+    entityId: current.id,
+    action: "update",
+    before: { type: current.type, balanceCents: current.balanceCents === null ? null : current.balanceCents.toString() },
+    after: { type: nextType, balanceCents: current.balanceCents === null ? null : (-current.balanceCents).toString(), note: "a type change between a debt and an asset keeps the amount typed; the balance and its history changed sign" },
+  });
 }
 
 /**
@@ -172,7 +222,7 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
 
   r.patch("/accounts/:id", { schema: { params: UuidParams, body: UpdateAccountBody, response: { 200: AccountView } } }, async (request) => {
     const b = request.body;
-    const [current]: Array<CardSettingsRow & InvestmentSettingsRow> = await app.db
+    const [current]: Array<CardSettingsRow & InvestmentSettingsRow & BalanceSignRow> = await app.db
       .select({
         id: account.id,
         type: account.type,
@@ -182,11 +232,17 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
         lotMethod: account.lotMethod,
         cashInference: account.cashInference,
         investmentIncomeFeed: account.investmentIncomeFeed,
+        connectionId: account.connectionId,
+        externalId: account.externalId,
+        balanceCents: account.balanceCents,
+        closed: account.closed,
       })
       .from(account)
       .where(eq(account.id, request.params.id));
     if (!current) throw notFound("Account not found");
     if (b.type !== undefined) await assertTypeChangeAllowed(app, current, b.type);
+    const flipBalance = b.type !== undefined && balanceSignFlips(current, b.type);
+    if (b.type !== undefined) assertBalanceFitsType(current, b.type, flipBalance);
     await assertInvestmentSettingsAllowed(app, b.type ?? current.type, b);
     const patch: AccountPatch = { updatedAt: new Date(), ...(await cardSettingsPatch(app, current, b)) };
     if (b.name !== undefined) patch.name = b.name;
@@ -208,6 +264,7 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     const after = { lotMethod: b.lotMethod ?? current.lotMethod, cashInference: b.cashInference ?? current.cashInference };
     await app.db.transaction(async (tx) => {
       await tx.update(account).set(patch).where(eq(account.id, current.id));
+      if (flipBalance) await flipManualBalances(tx, current, b.type!, ctx);
       if (before.lotMethod === after.lotMethod && before.cashInference === after.cashInference) return;
       await writeAudit(tx, { ...ctx, entity: "account", entityId: current.id, action: "update", before, after });
       // The lots cache reads the account's method when it is built (plan decision 5); the chain's cash plug follows the inference setting (decision 8).
@@ -216,6 +273,25 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     });
     // The feed setting is the income service's (audited as `account`, runs the account inline, queues the job) in the same audit batch.
     if (b.investmentIncomeFeed !== undefined) await setInvestmentIncomeFeed(app.db, current.id, b.investmentIncomeFeed, { ...ctx, now: app.now() });
+    // An investment account's value chain reads the balances that just changed sign.
+    if (flipBalance && isInvestmentAccountType(b.type!)) await requestValuation(app.db, { reason: "setting", accountId: current.id });
+    // Audit a8-ledger-ui-02: a closed feed account got no transactions (phase 1 decision 34) while the
+    // high-water mark moved on, so the sync will not ask for those days again. The stored sync
+    // responses carry them: reopening replays them (posted items the ledger lacks are inserted,
+    // nothing it has is changed, so this is safe to repeat). Its own dedupe key: a replay of the
+    // connection that is already running may have read the payloads while the account was still
+    // closed, so only a reopen of this account that is still waiting stands in for this one.
+    if (b.closed === false && current.closed && current.connectionId !== null) {
+      const [conn] = await app.db.select({ type: connection.type }).from(connection).where(eq(connection.id, current.connectionId));
+      if (conn?.type === "simplefin") {
+        await enqueueJob(
+          app.db,
+          "simplefin.reprocess_transactions",
+          { connectionId: current.connectionId, reason: "account_reopened", accountId: current.id, dedupeKey: `account_reopened:${current.id}` },
+          { dedupe: true },
+        );
+      }
+    }
     return (await list(current.id))[0]!;
   });
 

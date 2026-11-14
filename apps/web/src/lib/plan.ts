@@ -1,4 +1,5 @@
 import { addMonths, formatCents, isMonthKey, monthDiff, monthEnd, monthKey, monthStart, parseDecimalToCents } from "@meridian/shared";
+import { MAX_WIRE_CENTS } from "./amounts.js";
 import type { MonthSummaryView, PlanCellEdit, PlanCellView, PlanResponse, PlanRow } from "@meridian/shared";
 import { query } from "./api.js";
 import { money } from "./format.js";
@@ -92,7 +93,7 @@ export function resizeRange(range: { from: string; to: string }, months: number,
 export type ParsedAmount = { ok: true; cents: bigint | null } | { ok: false; error: string };
 
 /** The largest amount a request may carry: the wire's cents are at most 15 digits (9,999,999,999,999.99). */
-export const MAX_PLANNED_CENTS = 999_999_999_999_999n;
+export const MAX_PLANNED_CENTS = MAX_WIRE_CENTS;
 
 /**
  * Parse what a person types into a planned cell: "1,234.50", "$12", "12.5",

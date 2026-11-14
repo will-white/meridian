@@ -257,6 +257,7 @@ describe("b7-plan-ui-04: the Plan page's drill-down panel lists draggable transa
       source: "simplefin",
       recurringId: null,
       splits: [],
+      transferPartner: null,
       ...over,
     }) as TransactionView;
   const target = { kind: "category" as const, row: categoryRow({ categoryId: GROCERIES, name: "Groceries", bucket: "spending" }), month: "2026-11" };

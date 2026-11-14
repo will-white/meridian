@@ -9,6 +9,7 @@ import { containsPattern, decodeCursor, encodeCursor } from "./queryText.js";
 import { setTransactionTags, tagsForTransactions } from "./tags.js";
 import { loadRules } from "./rules.js";
 import { pairTransfersInDb, releaseTransferPartners, unpairTransfer } from "./transfers.js";
+import { dropTransferSplits } from "./transferSplits.js";
 
 export interface ListTransactionsQuery {
   q?: string;
@@ -67,6 +68,37 @@ export interface TransactionListRow {
   tags: string[];
   /** The split lines that replace this row in the plan (empty when the row is not split). */
   splits: TransactionSplitRow[];
+  /**
+   * The other leg of a paired transfer: its account and date, so the register can show which
+   * row this one is paired with (audit a8-ledger-ui-12). Null for a row that is not paired,
+   * including a transfer marked without its other leg.
+   */
+  transferPartner: TransferPartnerRow | null;
+}
+
+export interface TransferPartnerRow {
+  id: string;
+  accountId: string;
+  accountName: string;
+  date: IsoDate;
+}
+
+/** The other leg of each paired row among `rows`, by the row's id. */
+async function transferPartnersFor(db: DbOrTx, rows: ReadonlyArray<{ id: string; transferPairId: string | null }>): Promise<Map<string, TransferPartnerRow>> {
+  const out = new Map<string, TransferPartnerRow>();
+  const pairIds = [...new Set(rows.flatMap((r) => (r.transferPairId ? [r.transferPairId] : [])))];
+  if (pairIds.length === 0) return out;
+  const legs = await db
+    .select({ id: transaction.id, transferPairId: transaction.transferPairId, accountId: transaction.accountId, accountName: account.name, date: transaction.date })
+    .from(transaction)
+    .innerJoin(account, eq(account.id, transaction.accountId))
+    .where(inArray(transaction.transferPairId, pairIds));
+  for (const r of rows) {
+    if (!r.transferPairId) continue;
+    const other = legs.find((l) => l.transferPairId === r.transferPairId && l.id !== r.id);
+    if (other) out.set(r.id, { id: other.id, accountId: other.accountId, accountName: other.accountName, date: other.date });
+  }
+  return out;
 }
 
 /** The (date, id) a page ended on; a cursor this server did not issue is a 400, never a query. */
@@ -190,7 +222,8 @@ export async function listTransactions(db: DbOrTx, query: ListTransactionsQuery)
   const ids = page.map((r) => r.id);
   const tags = await tagsForTransactions(db, ids);
   const splits = await splitsForTransactions(db, ids);
-  const items: TransactionListRow[] = page.map((r) => ({ ...r, tags: tags.get(r.id) ?? [], splits: splits.get(r.id) ?? [] }));
+  const partners = await transferPartnersFor(db, page);
+  const items: TransactionListRow[] = page.map((r) => ({ ...r, tags: tags.get(r.id) ?? [], splits: splits.get(r.id) ?? [], transferPartner: partners.get(r.id) ?? null }));
   const last = page[page.length - 1];
   const nextCursor = rows.length > query.limit && last ? encodeCursor([last.date, last.id]) : null;
   return { items, nextCursor };
@@ -231,7 +264,8 @@ async function listTransactionsById(db: DbOrTx, id: string) {
   const ids = rows.map((r) => r.id);
   const tags = await tagsForTransactions(db, ids);
   const splits = await splitsForTransactions(db, ids);
-  return { items: rows.map((r) => ({ ...r, tags: tags.get(r.id) ?? [], splits: splits.get(r.id) ?? [] })) };
+  const partners = await transferPartnersFor(db, rows);
+  return { items: rows.map((r) => ({ ...r, tags: tags.get(r.id) ?? [], splits: splits.get(r.id) ?? [], transferPartner: partners.get(r.id) ?? null })) };
 }
 
 export interface TransactionPatch {
@@ -242,7 +276,7 @@ export interface TransactionPatch {
   tags?: string[];
 }
 
-/** Apply a user edit. Hand-picked category and payee are locked against later automation; picking a category removes a split. */
+/** Apply a user edit. Hand-picked category and payee are locked against later automation; picking a category, or marking the row a transfer, removes a split. */
 export async function updateTransaction(db: Db, id: string, patch: TransactionPatch): Promise<TransactionListRow | undefined> {
   await db.transaction(async (tx) => {
     const set: Partial<typeof transaction.$inferInsert> = { updatedAt: new Date() };
@@ -266,6 +300,8 @@ export async function updateTransaction(db: Db, id: string, patch: TransactionPa
     }
     if (patch.isTransfer === false) await unpairTransfer(tx, id);
     await tx.update(transaction).set(set).where(eq(transaction.id, id));
+    // A transfer has no split (audit a8-ledger-ui-10).
+    if (patch.isTransfer === true) await dropTransferSplits(tx, [id]);
     if (patch.tags !== undefined) await setTransactionTags(tx, id, patch.tags);
   });
   return getTransaction(db, id);

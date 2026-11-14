@@ -3,7 +3,19 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AuditList, CategoryView, RuleView } from "@meridian/shared";
 import { api, query } from "../lib/api.js";
 import { money, relativeTime } from "../lib/format.js";
-import { buildRule, describeRuleEntry, emptyRuleForm, revertPlan, ruleFormFrom, STRING_OPS, type RevertStep, type RuleForm, type StringField } from "../lib/rulesForm.js";
+import {
+  buildRule,
+  describeRuleEntry,
+  emptyRuleForm,
+  revertPlan,
+  ruleAccountOptions,
+  ruleCategoryOptions,
+  ruleFormFrom,
+  STRING_OPS,
+  type RevertStep,
+  type RuleForm,
+  type StringField,
+} from "../lib/rulesForm.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
 import { useIsViewer } from "../components/investments/queries.js";
 import "./RulesPage.css";
@@ -62,7 +74,7 @@ function RuleEditor({
   initial: RuleForm;
   creating: boolean;
   categories: CategoryView[];
-  accounts: Array<{ id: string; name: string }>;
+  accounts: Array<{ id: string; name: string; closed: boolean }>;
   pending: boolean;
   error: unknown;
   onSave: (built: Extract<ReturnType<typeof buildRule>, { ok: true }>, applyTo: "none" | "uncategorized" | "all") => void;
@@ -98,9 +110,10 @@ function RuleEditor({
           <span className="rule-label">Account</span>
           <select value={form.accountId} onChange={(e) => set({ accountId: e.target.value })} aria-label="Account">
             <option value="">any account</option>
-            {accounts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
+            {/* The rule's own account stays listed when it is closed (audit a8-ledger-ui-08). */}
+            {ruleAccountOptions(accounts, initial.accountId).map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
               </option>
             ))}
           </select>
@@ -123,9 +136,10 @@ function RuleEditor({
           <select value={form.setCategory} onChange={(e) => set({ setCategory: e.target.value })} aria-label="Set category">
             <option value="">leave as it is</option>
             <option value="none">clear the category</option>
-            {categories.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
+            {/* The rule's own category stays listed when it is hidden or gone (audit a8-ledger-ui-08). */}
+            {ruleCategoryOptions(categories, initial.setCategory).map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
               </option>
             ))}
           </select>
@@ -200,6 +214,8 @@ export function RulesPage() {
       invalidate();
     },
   });
+  // Audit a8-ledger-ui-07: enable and disable have their own mutation, so a failure shows on the page, not only in an open editor.
+  const toggle = useMutation({ mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api(`/rules/${id}`, { method: "PATCH", body: { enabled } }), onSuccess: invalidate });
   const remove = useMutation({ mutationFn: (id: string) => api(`/rules/${id}`, { method: "DELETE" }), onSuccess: invalidate });
   const reorder = useMutation({ mutationFn: (ids: string[]) => api("/rules/reorder", { method: "POST", body: { ids } }), onSuccess: invalidate });
   const run = useMutation({
@@ -223,8 +239,6 @@ export function RulesPage() {
 
   const catNames = new Map((categories.data ?? []).map((c) => [c.id, c.name]));
   const acctNames = new Map((accounts.data ?? []).map((a) => [a.id, a.name]));
-  const openAccounts = (accounts.data ?? []).filter((a) => !a.closed);
-  const visibleCategories = (categories.data ?? []).filter((c) => !c.hidden);
   const list = rules.data ?? [];
   const move = (index: number, delta: number) => {
     const ids = list.map((r) => r.id);
@@ -238,8 +252,8 @@ export function RulesPage() {
       key={r?.id ?? "new"}
       initial={r ? ruleFormFrom(r) : emptyRuleForm()}
       creating={r === null}
-      categories={visibleCategories}
-      accounts={openAccounts}
+      categories={categories.data ?? []}
+      accounts={accounts.data ?? []}
       pending={create.isPending || update.isPending}
       error={r ? update.error : create.error}
       onSave={(built, applyTo) => (r ? update.mutate({ id: r.id, name: built.name, conditions: built.conditions, actions: built.actions }) : create.mutate({ name: built.name, conditions: built.conditions, actions: built.actions, applyTo }))}
@@ -276,6 +290,7 @@ export function RulesPage() {
       )}
       {notice && <p className="notice">{notice}</p>}
       <ErrorText error={rules.error} />
+      <ErrorText error={toggle.error} />
       <ErrorText error={run.error} />
       <ErrorText error={remove.error} />
       <ErrorText error={reorder.error} />
@@ -286,7 +301,9 @@ export function RulesPage() {
           Rules run in order on every import. Later rules override earlier ones for the same field; tags accumulate. A payee condition also matches the names merged into a
           payee. The register's "always do this" writes a rule too.
         </p>
-        {list.length === 0 && <Empty>No rules yet.</Empty>}
+        {/* Audit a8-ledger-ui-06: only a loaded list can be empty. */}
+        {rules.isPending && <p className="muted">Loading rules…</p>}
+        {rules.data !== undefined && list.length === 0 && <Empty>No rules yet.</Empty>}
         {list.length > 0 && (
           <div className="scroll">
             <table className="table">
@@ -321,7 +338,7 @@ export function RulesPage() {
                             <button className="link" onClick={() => setEditing(editing === r.id ? null : r.id)} aria-expanded={editing === r.id}>
                               edit
                             </button>
-                            <button className="link" onClick={() => update.mutate({ id: r.id, enabled: !r.enabled })}>
+                            <button className="link" onClick={() => toggle.mutate({ id: r.id, enabled: !r.enabled })} disabled={toggle.isPending}>
                               {r.enabled ? "disable" : "enable"}
                             </button>
                             <button
@@ -355,7 +372,8 @@ export function RulesPage() {
         {history.data && history.data.items.length > 0 && (
           <ul className="rule-history">
             {history.data.items.map((entry) => {
-              const plan = revertPlan(entry, list);
+              // Audit a8-ledger-ui-06: a revert is planned against the rules as they are, so not before they have loaded.
+              const plan = rules.data !== undefined ? revertPlan(entry, rules.data) : null;
               return (
                 <li key={entry.id} className="row wrap">
                   <span className="muted small" title={entry.at}>
@@ -364,6 +382,7 @@ export function RulesPage() {
                   </span>
                   <span>{describeRuleEntry(entry)}</span>
                   {!viewer &&
+                    plan !== null &&
                     (plan.ok ? (
                       <button className="link small" disabled={revert.isPending} onClick={() => revert.mutate(plan.steps)}>
                         revert

@@ -21,3 +21,12 @@
 /* Audit a5-ingest-transfers-09 and -12: the register's corrections for one row. */
 .row-actions { display: grid; gap: 8px; padding: 4px 0; }
 .row-actions ul.plain { list-style: none; margin: 4px 0; padding: 0; display: grid; gap: 2px; }
+/* Audit a8-ledger-ui-04: a row's payee, notes and tags, and a transaction added by hand. */
+.txn-editor { display: grid; gap: 6px; max-width: 32rem; }
+.txn-editor label { display: grid; gap: 2px; }
+.txn-editor textarea { resize: vertical; }
+.add-txn { display: grid; gap: 8px; margin-bottom: 1rem; }
+.add-txn label { display: grid; gap: 2px; }
+.add-txn select, .add-txn input { max-width: 100%; }
+/* Audit a8-ledger-ui-12: the other leg a transfer is paired with. */
+.transfer-partner { white-space: normal; }

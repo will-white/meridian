@@ -42,7 +42,7 @@ async function batchEntries(batchId: string): Promise<AuditEntryView[]> {
 
 /**
  * The plan's edit history (spec, Security: edits to plans keep history so they can be reviewed and
- * reverted; Phase 2 plan decision 11, audit decision A29): the audit entries of plan cells,
+ * reverted; Phase 2 plan decision 11, audit decision A30): the audit entries of plan cells,
  * categories, groups, goals, recurring items and settings, newest first, grouped by the request
  * that wrote them, with who and when. An owner can undo a batch: every cell goes back to its
  * `before` in one PUT /plan/cells and every updated entity through its own PATCH (grid-and-api

@@ -3,6 +3,7 @@ export * from "./categories.js";
 export * from "./tags.js";
 export * from "./rules.js";
 export * from "./transfers.js";
+export * from "./transferSplits.js";
 export * from "./ingest.js";
 export * from "./accounts.js";
 export * from "./sync.js";

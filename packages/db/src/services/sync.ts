@@ -141,12 +141,19 @@ export function toIncomingTransaction(t: SimplefinAccountSet["accounts"][number]
 /**
  * The connection's entries for a response: each `errlist` entry, described, then each plain
  * string in `errors` that does not repeat one (a Bridge may send the same text in both).
+ * An entry about one account (`act.*`) names it as the household knows it (audit
+ * a8-ledger-ui-11): `accountName` gives the local name for the Bridge's account id, and the
+ * message starts with it, as the sync's own per-account entries do. An id the app has no
+ * account for is said as the Bridge's id. The page shows the message; the id stays in
+ * `accountId` for the code that reads it.
  */
-export function errorsFromAccountSet(set: SimplefinAccountSet): ConnectionError[] {
+export function errorsFromAccountSet(set: SimplefinAccountSet, accountName: (bridgeAccountId: string) => string | undefined = () => undefined): ConnectionError[] {
   const out: ConnectionError[] = set.errlist.map((e) => {
-    const err: ConnectionError = { code: sanitizeText(e.code, 50), message: describeSimplefinError(e) };
-    if (e.account_id) err.accountId = sanitizeText(e.account_id, 100);
-    return err;
+    const described = describeSimplefinError(e);
+    if (!e.account_id) return { code: sanitizeText(e.code, 50), message: described };
+    const id = sanitizeText(e.account_id, 100);
+    const name = sanitizeText(accountName(e.account_id), 100);
+    return { code: sanitizeText(e.code, 50), message: name ? `${name}: ${described}` : `${described} (Bridge account ${id})`, accountId: id };
   });
   const said = new Set([...set.errlist.map((e) => sanitizeText(e.msg, 300)), ...out.map((e) => e.message)]);
   for (const s of set.errors) {
@@ -437,6 +444,12 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
   }
 
   let transfersPaired = 0;
+  // The household's names for the connection's accounts, by the Bridge's id: an act.* entry names its account (audit a8-ledger-ui-11).
+  const accountNames = new Map(
+    (await db.select({ externalId: account.externalId, name: account.name }).from(account).where(eq(account.connectionId, options.connectionId))).flatMap((a) =>
+      a.externalId ? [[a.externalId, a.name] as const] : [],
+    ),
+  );
   if (!options.balancesOnly && (totals.created > 0 || totals.replacedPending > 0 || totals.releasedTransfers > 0)) {
     const since = options.windowStart && earliest ? (earliest < options.windowStart ? earliest : options.windowStart) : earliest;
     transfersPaired = await db.transaction((tx) => pairTransfersInDb(tx, since ? { since } : {}));
@@ -454,7 +467,7 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
     accountsReattached,
     stats: totals,
     transfersPaired,
-    errors: [...errorsFromAccountSet(options.accountSet), ...readProblems.map((p) => ({ ...p })), ...feedErrors, ...holdingErrors],
+    errors: [...errorsFromAccountSet(options.accountSet, (id) => accountNames.get(id)), ...readProblems.map((p) => ({ ...p })), ...feedErrors, ...holdingErrors],
     holdings,
     investmentTxnsLinked,
     incomeFeedAccounts,

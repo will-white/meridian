@@ -60,7 +60,7 @@ export interface DashboardCashFlowBlock {
   /** The combined line's minimum; the earliest date on ties. */
   lowPoint: { date: IsoDate; cents: bigint };
   firstBelow: IsoDate | null;
-  /** The oldest day the projected accounts' openings cover (null without a known balance): the line's "as of" (audit decision A28). */
+  /** The oldest day the projected accounts' openings cover (null without a known balance): the line's "as of" (audit decision A29). */
   balancesAsOf: IsoDate | null;
   warnings: string[];
 }

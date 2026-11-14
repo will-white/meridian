@@ -66,7 +66,7 @@ export function PlanPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [drill, setDrill] = useState<DrillTarget | null>(null);
   const [rulePrompt, setRulePrompt] = useState<{ target: RulePromptTarget; categoryName: string | undefined } | null>(null);
-  // The history panel: the whole plan's (cell null) or one cell's (audit decision A29).
+  // The history panel: the whole plan's (cell null) or one cell's (audit decision A30).
   const [history, setHistory] = useState<{ cell: { month: string; categoryId: string } | null } | null>(null);
 
   const planKey = useMemo(() => ["plan", from, to, today] as const, [from, to, today]);

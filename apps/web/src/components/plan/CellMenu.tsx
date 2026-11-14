@@ -26,7 +26,7 @@ export interface CellMenuProps {
   onClear: () => void;
   onRollover: (mode: RolloverMode, fromMonth: string | null) => void;
   onDrillDown: () => void;
-  /** Open this cell's edit history (audit decision A29). */
+  /** Open this cell's edit history (audit decision A30). */
   onHistory?: (() => void) | undefined;
 }
 

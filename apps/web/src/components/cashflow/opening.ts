@@ -3,7 +3,7 @@ import { money, shortDate } from "../../lib/format.js";
 
 /**
  * Where each account's projection starts (audit finding b9-conformance-plan-investments-02;
- * phase 2 plan, audit decision A28): the date of the balance it starts from, the rows imported
+ * phase 2 plan, audit decision A29): the date of the balance it starts from, the rows imported
  * since that an account without a bank feed adds to it, and whether that is older than the
  * loader's two days. Pure helpers for the Cash flow page and the dashboard card.
  */

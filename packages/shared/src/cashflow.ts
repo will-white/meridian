@@ -39,7 +39,7 @@ export interface CashFlowAccount {
   balanceDate: IsoDate | null;
   /**
    * Accounts without a bank feed: the posted rows dated after `balanceDate` through today, which
-   * the opening adds to the typed balance (Phase 2 plan, audit decision A28). 0 and 0 otherwise.
+   * the opening adds to the typed balance (Phase 2 plan, audit decision A29). 0 and 0 otherwise.
    */
   rolledForwardCents?: bigint;
   rolledForwardRows?: number;

@@ -2,7 +2,7 @@ import type { AuditEntity } from "./enums.js";
 
 /**
  * Undo for the plan's edit history (spec, Security: "edits to plans … keep history, so changes can
- * be reviewed and reverted"; Phase 2 plan decision 11 and audit decision A29; grid-and-api design
+ * be reviewed and reverted"; Phase 2 plan decision 11 and audit decision A30; grid-and-api design
  * §Audit: "Revert is client-side: it re-sends `before` through the entity's normal edit endpoint …
  * Undo this fill-right = GET /audit?batchId= then one PUT with every cell's before"). Pure: the web
  * app's History panel builds its requests here, and the API tests feed them back through the routes.

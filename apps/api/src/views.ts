@@ -28,6 +28,7 @@ export function toTransactionView(r: TransactionListRow): TransactionView {
     source: r.source,
     recurringId: r.recurringId,
     splits: r.splits.map((s) => ({ id: s.id, categoryId: s.categoryId, categoryName: s.categoryName, amountCents: s.amountCents.toString(), memo: s.memo })),
+    transferPartner: r.transferPartner,
   };
 }
 

@@ -1,4 +1,4 @@
-import type { TransactionView } from "@meridian/shared";
+import { matchString, type RuleView, type TransactionView } from "@meridian/shared";
 
 /**
  * Recategorizing a transaction from the register or from the Plan page's drill-down panel
@@ -43,4 +43,20 @@ export function alwaysRuleBody(target: RulePromptTarget, categoryName: string | 
 /** "Rule saved. 3 other transactions categorized." */
 export function ruleSavedNotice(changed: number): string {
   return `Rule saved. ${changed} other transaction${changed === 1 ? "" : "s"} categorized.`;
+}
+
+/**
+ * An enabled rule that already does what "always do this" would write (audit a8-ledger-ui-09):
+ * its only condition is the payee, equal to this name as the rules engine compares it
+ * (`matchString`: NFKC, Latin accents folded, case ignored unless the rule says otherwise), and
+ * it sets this category without marking the row a transfer. The prompt names that rule instead
+ * of writing the same rule again.
+ */
+export function existingAlwaysRule<R extends Pick<RuleView, "enabled" | "conditions" | "actions" | "position" | "name">>(rules: readonly R[] | undefined, target: RulePromptTarget): R | undefined {
+  return (rules ?? []).find((r) => {
+    if (!r.enabled || r.actions.setCategoryId !== target.categoryId || r.actions.markTransfer === true) return false;
+    const c = r.conditions;
+    if (!c.payee || c.payee.op !== "equals" || c.description || c.amount || c.accountId || c.dayOfMonth) return false;
+    return matchString(c.payee, target.payeeName);
+  });
 }

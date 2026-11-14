@@ -23,3 +23,4 @@ export {
   unlimitedContributionsInto,
 } from "./stubs.js";
 export type { StubTaxOptions } from "./stubs.js";
+export { referenceR1Input, referenceR2Input } from "./referenceScenarios.js";

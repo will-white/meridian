@@ -1,7 +1,7 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { RuleView } from "@meridian/shared";
 import { api } from "../../lib/api.js";
-import { alwaysRuleBody, type RulePromptTarget } from "../../lib/recategorize.js";
+import { alwaysRuleBody, existingAlwaysRule, type RulePromptTarget } from "../../lib/recategorize.js";
 import { Card, ErrorText } from "../ui.js";
 
 interface Props {
@@ -19,6 +19,8 @@ interface Props {
  */
 export function RulePrompt({ target, categoryName, onSaved, onDismiss }: Props) {
   const qc = useQueryClient();
+  // Audit a8-ledger-ui-09: when a rule already does this, say so instead of offering to write it again.
+  const rules = useQuery({ queryKey: ["rules"], queryFn: () => api<RuleView[]>("/rules") });
   const createRule = useMutation({
     mutationFn: () => api<{ rule: RuleView; applied: { examined: number; changed: number } }>("/rules", { method: "POST", body: alwaysRuleBody(target, categoryName) }),
     onSuccess: (res) => {
@@ -26,6 +28,18 @@ export function RulePrompt({ target, categoryName, onSaved, onDismiss }: Props) 
       onSaved(res.applied.changed);
     },
   });
+  const existing = existingAlwaysRule(rules.data, target);
+  if (existing) {
+    return (
+      <p className="notice">
+        Rule #{existing.position}
+        {existing.name ? ` "${existing.name}"` : ""} already categorizes <strong>{target.payeeName}</strong> as <strong>{categoryName ?? "—"}</strong>.{" "}
+        <button type="button" className="link" onClick={onDismiss}>
+          dismiss
+        </button>
+      </p>
+    );
+  }
   return (
     <Card>
       <div className="row wrap space">
@@ -34,7 +48,7 @@ export function RulePrompt({ target, categoryName, onSaved, onDismiss }: Props) 
           <span className="muted"> Creates a rule and applies it to uncategorized transactions.</span>
         </span>
         <span className="row">
-          <button type="button" onClick={() => createRule.mutate()} disabled={createRule.isPending}>
+          <button type="button" onClick={() => createRule.mutate()} disabled={createRule.isPending || rules.isLoading}>
             Always do this
           </button>
           <button type="button" className="secondary" onClick={onDismiss}>

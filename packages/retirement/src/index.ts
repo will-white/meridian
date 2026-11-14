@@ -118,6 +118,21 @@ export type {
   StrategyIndex,
   StrategyTables,
 } from "./strategies/index.js";
+export {
+  TIER,
+  TIER_COUNT,
+  buildTiers,
+  createEngineHooks,
+  createPlanWithdrawals,
+  createSolveState,
+  createWithdrawalPlanner,
+  createWithdrawalTiers,
+  fill,
+  fillTiers,
+  planWithdrawalsWith,
+  solve,
+} from "./withdrawals/index.js";
+export type { SolveState, TierView, WithdrawalPlanner, WithdrawalTiers, WithdrawalView } from "./withdrawals/index.js";
 export { ASSESS_MAX_CALLS, createAssessment } from "./hooks.js";
 export type { AssessFn, Assessment, EngineHooks, YearView } from "./hooks.js";
 export { CARRY, CARRY_REC, PATH_FLAG, createPathState } from "./state.js";

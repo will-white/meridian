@@ -204,7 +204,7 @@ describe.skipIf(!TEST_DATABASE_URL)("accounts, payees, rules and text safety (au
   it("a6-text-rules-accounts-10: rename keeps the old name, a clash is 409, and rules on a merged name keep working", async () => {
     const coffee = (await send("POST", "/api/categories", { name: "Coffee", bucket: "spending" })).json();
     await csvCommit(checkingId, ["2026-11-05,SBUX MOBILE ORDER,-6.45", "2026-11-05,STARBUCKS STORE #123,-4.10"]);
-    const payees = (await get("/api/payees?q=s")).json() as Array<{ id: string; name: string }>;
+    const payees = (await get("/api/payees?q=s")).json().items as Array<{ id: string; name: string }>;
     const sbux = payees.find((p) => p.name === "Sbux Mobile Order")!;
     const store = payees.find((p) => p.name === "Starbucks Store")!;
     // The register's "always do this" on the variant.
@@ -222,9 +222,9 @@ describe.skipIf(!TEST_DATABASE_URL)("accounts, payees, rules and text safety (au
     await csvCommit(checkingId, ["2026-11-07,STARBUCKS STORE #456,-3.80"]);
     const after = (await get(`/api/transactions?accountId=${checkingId}&limit=200`)).json().items as Array<{ amountCents: string; payeeName: string }>;
     expect(after.find((r) => r.amountCents === "-380")!.payeeName).toBe("Starbucks");
-    expect(((await get("/api/payees?q=starbucks")).json() as Array<{ name: string }>).map((p) => p.name)).not.toContain("Starbucks Store");
+    expect(((await get("/api/payees?q=starbucks")).json().items as Array<{ name: string }>).map((p) => p.name)).not.toContain("Starbucks Store");
 
-    const other = (await get("/api/payees?q=king")).json()[0] as { id: string };
+    const other = (await get("/api/payees?q=king")).json().items[0] as { id: string };
     const clash = await send("PATCH", `/api/payees/${other.id}`, { name: "starbucks" });
     expect(clash.statusCode).toBe(409);
     expect(clash.json().code).toBe("name_taken");

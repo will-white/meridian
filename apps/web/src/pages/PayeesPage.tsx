@@ -1,16 +1,56 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { CategoryView } from "@meridian/shared";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { CategoryView, PayeeList, PayeeView } from "@meridian/shared";
 import { api, query } from "../lib/api.js";
+import { useDebounced } from "../lib/useDebounced.js";
 import { Card, Empty, ErrorText } from "../components/ui.js";
 import { useIsViewer } from "../components/investments/queries.js";
+import "./PayeesPage.css";
 
-interface PayeeRow {
-  id: string;
-  name: string;
-  aliases: string[];
-  defaultCategoryId: string | null;
-  transactionCount: number;
+type PayeeRow = PayeeView;
+
+/** "Showing 100 of 617 payees" while the list is cut (audit a8-ledger-ui-03). */
+export function payeeCountText(shown: number, total: number, q: string): string {
+  const what = q ? `payees matching "${q}"` : "payees";
+  return shown < total ? `Showing ${shown} of ${total} ${what}, by name.` : `${total} ${what}.`;
+}
+
+/**
+ * The payee another one is merged into (audit a8-ledger-ui-03): a search over every payee, by
+ * name and by the names merged into it, instead of a select of the first page.
+ */
+function MergePicker({ source, pending, onPick, onCancel }: { source: PayeeRow; pending: boolean; onPick: (target: PayeeRow) => void; onCancel: () => void }) {
+  const [q, setQ] = useState("");
+  const search = useDebounced(q.trim(), 250);
+  const found = useQuery({
+    queryKey: ["payees", "merge", search],
+    queryFn: () => api<PayeeList>(`/payees${query({ q: search, limit: 20 })}`),
+    enabled: search.length > 0,
+  });
+  const targets = (found.data?.items ?? []).filter((p) => p.id !== source.id);
+  return (
+    <div className="merge-picker">
+      <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find the payee to merge into" aria-label={`Payee to merge ${source.name} into`} maxLength={100} autoFocus />
+      <button type="button" className="link small" onClick={onCancel}>
+        cancel
+      </button>
+      {search && found.data && targets.length === 0 && <div className="muted small">No other payee matches.</div>}
+      <ErrorText error={found.error} />
+      <ul className="plain">
+        {targets.map((p) => (
+          <li key={p.id} className="small">
+            <button type="button" className="link small" disabled={pending} onClick={() => onPick(p)}>
+              merge into {p.name}
+            </button>{" "}
+            <span className="muted">
+              {p.transactionCount} transactions{p.aliases.length > 0 ? ` · also ${p.aliases.slice(0, 3).join(", ")}` : ""}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {found.data && found.data.total > targets.length + 1 && <div className="muted small">{found.data.total} match; type more to narrow them.</div>}
+    </div>
+  );
 }
 
 /**
@@ -22,8 +62,15 @@ export function PayeesPage() {
   const qc = useQueryClient();
   const viewer = useIsViewer();
   const [q, setQ] = useState("");
-  const payees = useQuery({ queryKey: ["payees", q], queryFn: () => api<PayeeRow[]>(`/payees${query({ q: q.trim() || undefined })}`) });
-  const all = useQuery({ queryKey: ["payees", ""], queryFn: () => api<PayeeRow[]>("/payees") });
+  const search = useDebounced(q.trim(), 250);
+  // Audit a8-ledger-ui-03: every payee is reachable, a page at a time, and the page says when the list is cut.
+  const payees = useInfiniteQuery({
+    queryKey: ["payees", "list", search],
+    queryFn: ({ pageParam }) => api<PayeeList>(`/payees${query({ q: search || undefined, limit: 100, cursor: pageParam })}`),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+  });
+  const [merging, setMerging] = useState<string | null>(null);
   const categories = useQuery({ queryKey: ["categories"], queryFn: () => api<CategoryView[]>("/categories") });
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -36,13 +83,14 @@ export function PayeesPage() {
     mutationFn: ({ id, ...body }: { id: string; name?: string; defaultCategoryId?: string | null; mergeFromId?: string }) => api<PayeeRow>(`/payees/${id}`, { method: "PATCH", body }),
     onSuccess: (row, v) => {
       setRenaming(null);
+      setMerging(null);
       if (v.mergeFromId) setNotice(`Merged into ${row.name}; it now answers to ${row.aliases.length} other name${row.aliases.length === 1 ? "" : "s"}.`);
       else if (v.name) setNotice(`Renamed to ${row.name}; the old name stays an alias.`);
       invalidate();
     },
   });
-  const rows = payees.data ?? [];
-  const others = (id: string) => (all.data ?? []).filter((p) => p.id !== id);
+  const rows = payees.data?.pages.flatMap((p) => p.items) ?? [];
+  const total = payees.data?.pages[0]?.total ?? 0;
 
   return (
     <>
@@ -58,7 +106,9 @@ export function PayeesPage() {
           A payee groups one merchant's descriptions. Merge the variants of one merchant into one payee; the merged names become aliases, so later imports and the rules written on
           those names find it.
         </p>
-        {rows.length === 0 && !payees.isLoading && <Empty>No payees{q ? " match" : " yet"}.</Empty>}
+        {payees.isPending && <p className="muted">Loading payees…</p>}
+        {payees.data !== undefined && rows.length === 0 && <Empty>No payees{search ? " match" : " yet"}.</Empty>}
+        {rows.length > 0 && <p className="muted small payee-count">{payeeCountText(rows.length, total, search)}</p>}
         {rows.length > 0 && (
           <div className="scroll">
             <table className="table">
@@ -119,24 +169,21 @@ export function PayeesPage() {
                           <button className="link" onClick={() => setRenaming({ id: p.id, name: p.name })}>
                             rename
                           </button>
-                          <select
-                            value=""
-                            disabled={patch.isPending}
-                            aria-label={`Merge ${p.name} into another payee`}
-                            onChange={(e) => {
-                              const target = others(p.id).find((o) => o.id === e.target.value);
-                              if (target && window.confirm(`Merge "${p.name}" into "${target.name}"? Its ${p.transactionCount} transactions move there and "${p.name}" becomes an alias.`)) {
-                                patch.mutate({ id: target.id, mergeFromId: p.id });
-                              }
-                            }}
-                          >
-                            <option value="">merge into…</option>
-                            {others(p.id).map((o) => (
-                              <option key={o.id} value={o.id}>
-                                {o.name}
-                              </option>
-                            ))}
-                          </select>
+                          <button className="link" onClick={() => setMerging(merging === p.id ? null : p.id)} aria-expanded={merging === p.id}>
+                            merge into…
+                          </button>
+                          {merging === p.id && (
+                            <MergePicker
+                              source={p}
+                              pending={patch.isPending}
+                              onCancel={() => setMerging(null)}
+                              onPick={(target) => {
+                                if (window.confirm(`Merge "${p.name}" into "${target.name}"? Its ${p.transactionCount} transactions move there and "${p.name}" becomes an alias.`)) {
+                                  patch.mutate({ id: target.id, mergeFromId: p.id });
+                                }
+                              }}
+                            />
+                          )}
                         </>
                       )}
                     </td>
@@ -144,6 +191,13 @@ export function PayeesPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {payees.hasNextPage && (
+          <div className="center">
+            <button className="secondary" onClick={() => void payees.fetchNextPage()} disabled={payees.isFetchingNextPage}>
+              {payees.isFetchingNextPage ? "Loading…" : "Load more"}
+            </button>
           </div>
         )}
       </Card>

@@ -1,4 +1,5 @@
-import { formatCents, parseDecimalToCents, type AuditEntryView, type RuleView } from "@meridian/shared";
+import { formatCents, parseDecimalToCents, type AccountView, type AuditEntryView, type CategoryView, type RuleView } from "@meridian/shared";
+import { fitsWire, TOO_LARGE_IN_SENTENCE } from "./amounts.js";
 
 /**
  * The rule editor and the rule history (audit a6-text-rules-accounts-13): every condition and
@@ -97,6 +98,7 @@ export function buildRule(form: RuleForm): BuiltRule {
   const min = signedCents(form.minAmount);
   const max = signedCents(form.maxAmount);
   if (min === undefined || max === undefined) return { ok: false, error: "An amount bound is not an amount (spending is negative, e.g. -50.00)" };
+  if ((min !== null && !fitsWire(min)) || (max !== null && !fitsWire(max))) return { ok: false, error: `An amount bound is ${TOO_LARGE_IN_SENTENCE}` };
   if (min !== null && max !== null && min > max) return { ok: false, error: "The smallest amount is above the largest (spending is negative: -100.00 is below -20.00)" };
   if (min !== null || max !== null) conditions.amount = { ...(min !== null ? { minCents: min.toString() } : {}), ...(max !== null ? { maxCents: max.toString() } : {}) };
   if (form.accountId) conditions.accountId = form.accountId;
@@ -194,4 +196,29 @@ export function describeRuleEntry(entry: Pick<AuditEntryView, "action" | "before
     if (before.position !== after.position) changes.push(`moved #${before.position} → #${after.position}`);
   }
   return `${name(after ?? before)}: ${changes.join(", ") || "edited"}`;
+}
+
+export interface RuleOption {
+  value: string;
+  label: string;
+}
+
+/**
+ * The categories the rule editor offers (audit a8-ledger-ui-08): the visible ones, plus the
+ * category the rule sets now when it is hidden ("(hidden)") or gone ("(deleted category: sets
+ * nothing)"), so the select shows what the rule does and saving it untouched keeps it, as the
+ * goal form does for its own category (b7-plan-ui-09).
+ */
+export function ruleCategoryOptions(categories: ReadonlyArray<Pick<CategoryView, "id" | "name" | "hidden">>, current: string): RuleOption[] {
+  const out = categories.filter((c) => !c.hidden || c.id === current).map((c) => ({ value: c.id, label: c.hidden ? `${c.name} (hidden)` : c.name }));
+  // An empty list is one that has not loaded yet: nothing is called deleted before it has.
+  if (current !== "" && current !== "none" && categories.length > 0 && !categories.some((c) => c.id === current)) out.push({ value: current, label: "(deleted category: sets nothing)" });
+  return out;
+}
+
+/** The accounts the editor offers: the open ones, plus the rule's own account when it is closed ("(closed)") or removed. */
+export function ruleAccountOptions(accounts: ReadonlyArray<Pick<AccountView, "id" | "name" | "closed">>, current: string): RuleOption[] {
+  const out = accounts.filter((a) => !a.closed || a.id === current).map((a) => ({ value: a.id, label: a.closed ? `${a.name} (closed)` : a.name }));
+  if (current !== "" && accounts.length > 0 && !accounts.some((a) => a.id === current)) out.push({ value: current, label: "(removed account)" });
+  return out;
 }

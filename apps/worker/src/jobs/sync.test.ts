@@ -665,7 +665,8 @@ describe.skipIf(!TEST_DATABASE_URL)("sync of odd responses (a4-sync-parse)", () 
     const [row] = await t.db.select().from(transaction).where(eq(transaction.externalId, "N\uFFFD1"));
     expect(row).toMatchObject({ amountCents: -300n, rawDescription: "ACME\uFFFDSTORE" });
     expect((await conn()).lastErrors).toEqual([
-      { code: "act.missingdata", message: "The Bridge returned incomplete data for this account. It will retry on the next sync. (partial\uFFFDdata)", accountId: "CHK" },
+      // The entry names the account (audit a8-ledger-ui-11).
+      { code: "act.missingdata", message: "Everyday Checking: The Bridge returned incomplete data for this account. It will retry on the next sync. (partial\uFFFDdata)", accountId: "CHK" },
       { code: "error", message: "maintenance\uFFFDtonight" },
     ]);
   });
