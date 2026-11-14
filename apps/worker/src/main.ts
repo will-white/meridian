@@ -1,10 +1,11 @@
 /**
  * Meridian worker: the only process that talks to the outside world.
  * Phase 1: SimpleFIN claim and sync jobs (every SYNC_INTERVAL_HOURS), rules re-runs.
- * Later: price fetch, recurring detection, retirement simulations.
+ * Phases 2 and 3: recurring detection, the month close, price fetch and valuations.
+ * Phase 4: retirement simulations (`retirement.simulate`, queued by the API only).
  */
 import { createDb, errorMessageOf, verifySecretsKey } from "@meridian/db";
-import { loadConfig } from "./env.js";
+import { describeRetirementConfig, loadConfig, retirementConfigOf } from "./env.js";
 import type { JobContext } from "./jobs/context.js";
 import { startRunner } from "./runner.js";
 import { startScheduler } from "./scheduler.js";
@@ -36,6 +37,8 @@ try {
 console.log(
   `[worker] ${config.workerId} starting; sync every ${config.syncIntervalHours}h, polling every ${config.pollIntervalMs}ms; SimpleFIN hosts: ${(config.simplefinAllowedHosts ?? []).join(", ")}`,
 );
+for (const note of config.bootNotes ?? []) console.warn(`[worker] ${note}`);
+console.log(`[worker] ${describeRetirementConfig(retirementConfigOf(config))}`);
 const stopRunner = startRunner(ctx);
 const stopScheduler = startScheduler(ctx);
 

@@ -1,9 +1,16 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parsePriceProviderId } from "@meridian/shared";
 import {
+  describeRetirementConfig,
+  loadRetirementConfig,
+  readRetirementThreads,
+  RETIREMENT_DEFAULTS,
+  retirementConfigOf,
+  SIM_THREAD_ENTRY,
   loadConfig,
   loadPriceConfig,
   PRICE_DEFAULTS,
@@ -144,5 +151,83 @@ describe("the encryption key and the database password (audit a7-backup-deploy-s
   it("in production refuses the .env.example database password", () => {
     expect(() => loadConfig({ NODE_ENV: "production", MERIDIAN_DB_HOST: "db", POSTGRES_USER: "meridian", POSTGRES_PASSWORD: "change-me", POSTGRES_DB: "meridian", SECRETS_KEY: KEY })).toThrow(/POSTGRES_PASSWORD is the \.env\.example placeholder/);
     expect(loadConfig({ NODE_ENV: "development", DATABASE_URL: "postgres://meridian:change-me@localhost/meridian", SECRETS_KEY: KEY }).secretsKey).toBe(KEY);
+  });
+});
+
+describe("retirement simulations (inputs-and-data §3.10, §6.3; seams C10)", () => {
+  it("case 39: RETIREMENT_THREADS auto is min(8, max(1, parallelism − 1)); 1 to 64 as given; inline is 0; anything else is auto", () => {
+    // Unset, empty and auto are the same default: 1 core → 1; 2 → 1; 4 → 3; 8 → 7; 16 → 8.
+    for (const [parallelism, threads] of [
+      [1, 1],
+      [2, 1],
+      [4, 3],
+      [8, 7],
+      [16, 8],
+    ] as const) {
+      expect(readRetirementThreads({}, parallelism), `parallelism ${parallelism}`).toEqual({ threads, warning: null });
+      expect(readRetirementThreads({ RETIREMENT_THREADS: "" }, parallelism).threads).toBe(threads);
+      expect(readRetirementThreads({ RETIREMENT_THREADS: " Auto " }, parallelism).threads).toBe(threads);
+    }
+    expect(readRetirementThreads({ RETIREMENT_THREADS: "12" }, 4)).toEqual({ threads: 12, warning: null });
+    expect(readRetirementThreads({ RETIREMENT_THREADS: "1" }, 16)).toEqual({ threads: 1, warning: null });
+    expect(readRetirementThreads({ RETIREMENT_THREADS: "64" }, 4)).toEqual({ threads: 64, warning: null });
+    expect(readRetirementThreads({ RETIREMENT_THREADS: "inline" }, 4)).toEqual({ threads: 0, warning: null });
+    expect(readRetirementThreads({ RETIREMENT_THREADS: "INLINE" }, 4).threads).toBe(0);
+    // 0, 65 and abc fall back to auto (3 threads on 4 cores), with a warning for the boot log.
+    for (const value of ["0", "65", "abc", "2.5", "-1", "1e1"]) {
+      const r = readRetirementThreads({ RETIREMENT_THREADS: value }, 4);
+      expect(r.threads, value).toBe(3);
+      expect(r.warning, value).toBe(`RETIREMENT_THREADS="${value}" is not auto, inline or a whole number 1 to 64; using auto (3)`);
+    }
+  });
+
+  it("threads need the bundled thread entry: without dist/simThread.js the simulations run inline, and the boot log says so", () => {
+    // Run from source the entry names src/simThread.js, which is never built.
+    expect(SIM_THREAD_ENTRY.href).toMatch(/\/apps\/worker\/src\/simThread\.js$/);
+    const missing = loadRetirementConfig({ RETIREMENT_THREADS: "2" }, { parallelism: 4 });
+    expect(missing.config).toEqual({ threads: 0, threadEntry: null, runMaxMs: 900_000, keepRuns: 20 });
+    expect(missing.notes).toEqual([`the simulation thread entry ${SIM_THREAD_ENTRY.href} does not exist (run from source); simulations run inline`]);
+    expect(describeRetirementConfig(missing.config)).toBe("retirement simulations run inline on the job's thread, stop after 900000 ms, keep 20 finished runs per scenario");
+
+    const dir = mkdtempSync(path.join(tmpdir(), "meridian-simthread-"));
+    const file = path.join(dir, "simThread.js");
+    writeFileSync(file, "");
+    const entry = pathToFileURL(file);
+    const auto = loadRetirementConfig({}, { parallelism: 4, threadEntry: entry });
+    expect(auto).toEqual({ config: { threads: 3, threadEntry: entry, runMaxMs: 900_000, keepRuns: 20 }, notes: [] });
+    expect(describeRetirementConfig(auto.config)).toBe(`retirement simulations run on 3 threads from ${entry.href}, stop after 900000 ms, keep 20 finished runs per scenario`);
+    expect(loadRetirementConfig({ RETIREMENT_THREADS: "1" }, { threadEntry: entry }).config.threads).toBe(1);
+    expect(describeRetirementConfig(loadRetirementConfig({ RETIREMENT_THREADS: "1" }, { threadEntry: entry }).config)).toMatch(/^retirement simulations run on 1 thread from /);
+    // inline needs no entry and writes no note.
+    expect(loadRetirementConfig({ RETIREMENT_THREADS: "inline" }, { threadEntry: entry })).toEqual({ config: { threads: 0, threadEntry: null, runMaxMs: 900_000, keepRuns: 20 }, notes: [] });
+  });
+
+  it("RETIREMENT_RUN_MAX_MS (default 15 minutes, at most the stale sweep's 30) and RETIREMENT_KEEP_RUNS (default 20, at least 1)", () => {
+    const entry = { threadEntry: new URL("file:///nowhere/simThread.js") };
+    expect(loadRetirementConfig({ RETIREMENT_THREADS: "inline", RETIREMENT_RUN_MAX_MS: "60000", RETIREMENT_KEEP_RUNS: "5" }, entry)).toEqual({
+      config: { threads: 0, threadEntry: null, runMaxMs: 60_000, keepRuns: 5 },
+      notes: [],
+    });
+    expect(loadRetirementConfig({ RETIREMENT_THREADS: "inline", RETIREMENT_RUN_MAX_MS: " ", RETIREMENT_KEEP_RUNS: "" }, entry).config).toMatchObject({ runMaxMs: 900_000, keepRuns: 20 });
+    const bad = loadRetirementConfig({ RETIREMENT_THREADS: "inline", RETIREMENT_RUN_MAX_MS: "3600000", RETIREMENT_KEEP_RUNS: "0" }, entry);
+    expect(bad.config).toMatchObject({ runMaxMs: 900_000, keepRuns: 20 });
+    expect(bad.notes).toEqual([
+      'RETIREMENT_RUN_MAX_MS="3600000" is not a whole number 1000 to 1800000; using 900000',
+      'RETIREMENT_KEEP_RUNS="0" is not a whole number 1 to 1000; using 20',
+    ]);
+    expect(RETIREMENT_DEFAULTS).toEqual({ runMaxMs: 900_000, keepRuns: 20 });
+  });
+
+  it("loadConfig carries the settings; a hand-built config without them runs inline with the defaults", () => {
+    const config = loadConfig({ DATABASE_URL: "postgres://x", SECRETS_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", RETIREMENT_THREADS: "abc", RETIREMENT_KEEP_RUNS: "7" });
+    // From source there is no thread entry, so even auto runs inline.
+    expect(config.retirement).toEqual({ threads: 0, threadEntry: null, runMaxMs: 900_000, keepRuns: 7 });
+    expect(config.bootNotes).toHaveLength(2);
+    expect(config.bootNotes![0]).toMatch(/^RETIREMENT_THREADS="abc" is not auto, inline or a whole number 1 to 64; using auto \(\d+\)$/);
+    expect(retirementConfigOf({})).toEqual({ threads: 0, threadEntry: null, runMaxMs: 900_000, keepRuns: 20 });
+    // Threads without an entry are not threads.
+    expect(retirementConfigOf({ retirement: { threads: 4 } })).toEqual({ threads: 0, threadEntry: null, runMaxMs: 900_000, keepRuns: 20 });
+    const entry = new URL("file:///app/apps/worker/dist/simThread.js");
+    expect(retirementConfigOf({ retirement: { threads: 4, threadEntry: entry, keepRuns: 3 } })).toEqual({ threads: 4, threadEntry: entry, runMaxMs: 900_000, keepRuns: 3 });
   });
 });

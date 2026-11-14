@@ -5,13 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/main.ts",
-    "build": "node ../../scripts/bundle.mjs src/main.ts dist/main.js",
+    "build": "node ../../scripts/bundle.mjs src/main.ts dist/main.js && node ../../scripts/bundle.mjs src/simThread.ts dist/simThread.js",
     "start": "node --enable-source-maps dist/main.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@meridian/db": "workspace:*",
+    "@meridian/retirement": "workspace:*",
     "@meridian/shared": "workspace:*",
     "drizzle-orm": "^0.45.4",
     "postgres": "^3.4.5",

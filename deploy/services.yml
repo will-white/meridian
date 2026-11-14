@@ -126,6 +126,11 @@ services:
       - PRICE_OVERLAP_DAYS
       - PRICE_HISTORY_MAX_YEARS
       - PRICE_TIMEOUT_MS
+      # Retirement simulations: threads per run (the image ships their entry, dist/simThread.js),
+      # the run's time limit and the finished runs kept per scenario.
+      - RETIREMENT_THREADS
+      - RETIREMENT_RUN_MAX_MS
+      - RETIREMENT_KEEP_RUNS
     depends_on:
       db:
         condition: service_healthy
@@ -136,7 +141,8 @@ services:
       - egress
     healthcheck:
       # Unhealthy when the runner has not finished a pass over the queue for 35 minutes (the
-      # longest job, a price run, is cut off at 20; a job running 30 minutes counts as stuck).
+      # longest jobs are cut off sooner: a price run at 20, a retirement simulation at
+      # RETIREMENT_RUN_MAX_MS, 15 by default and at most 30; a job running 30 minutes counts as stuck).
       test: ["CMD", "node", "-e", "const s=require('fs').statSync(process.env.WORKER_HEARTBEAT_FILE);process.exit(Date.now()-s.mtimeMs<35*60000?0:1)"]
       interval: 1m
       timeout: 10s

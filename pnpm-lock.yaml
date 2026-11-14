@@ -146,6 +146,9 @@ importers:
       '@meridian/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@meridian/retirement':
+        specifier: workspace:*
+        version: link:../../packages/retirement
       '@meridian/shared':
         specifier: workspace:*
         version: link:../../packages/shared
