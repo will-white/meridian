@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { PlanIssueSeverity } from "../enums.js";
-import { MAX_INPUT_YEAR, MIN_INPUT_YEAR, MonthInput, NonNegCentsInput } from "../wire.js";
+import { MAX_INPUT_YEAR, MIN_INPUT_YEAR, MonthInput, NonNegCentsInput, NonNegCentsString } from "../wire.js";
 
 /**
  * The retirement planner's primitive shapes (docs/design/phase-4/inputs-and-data.md §4.1).
@@ -12,8 +12,17 @@ import { MAX_INPUT_YEAR, MIN_INPUT_YEAR, MonthInput, NonNegCentsInput } from "..
  * million; a month is `YYYY-MM`.
  */
 
-/** Integer cents as a decimal string, 0 .. 999,999,999,999,999 (a request shape: the profile document is a request body). */
-export const PlanCents = NonNegCentsInput;
+/**
+ * Cents written the one way: "0" or a decimal without leading zeros. Equal amounts must have equal
+ * canonical text, so equal documents give equal hashes, no scenario override and no reuse miss
+ * (inputs §3.7 and §4.2, decision 7): "04000000" is refused, not kept as typed.
+ */
+export const CANONICAL_CENTS = /^(0|[1-9]\d*)$/;
+const canonicalCentsMessage = "cents without leading zeros";
+/** Integer cents as a decimal string, 0 .. 999,999,999,999,999, without leading zeros (a request shape: the profile document is a request body). */
+export const PlanCents = NonNegCentsInput.regex(CANONICAL_CENTS, canonicalCentsMessage);
+/** The frozen input's cents: the loose length of the stored wire shape (`NonNegCentsString`), without leading zeros. */
+export const StoredCents = NonNegCentsString.regex(CANONICAL_CENTS, canonicalCentsMessage);
 /** `YYYY-MM`, 1900-01 .. 2199-12. */
 export const PlanMonth = MonthInput;
 /** A calendar year a caller may name. */

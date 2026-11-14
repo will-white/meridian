@@ -2,6 +2,7 @@ import { SimInput, vpwParams } from "@meridian/shared";
 import { describe, expect, it } from "vitest";
 import { EngineInputError } from "../errors.js";
 import { buildSimInput } from "../testing/simInput.js";
+import { validateInput } from "../prepare.js";
 import { STRATEGY, prepareStrategies } from "./prepare.js";
 
 // Build step 18: `prepareStrategies(input)` (strategies-outputs-web §2.1 and §4.1: basis points ÷
@@ -100,6 +101,32 @@ describe("prepareStrategies", () => {
     expect(Array.from(tb.ltcYears)).toEqual([0, 3]);
   });
 
+  it("contracts-02: phases out of year order are spending_invalid (an input that did not pass the schema): never read by array order", () => {
+    // The review's probe: sorted [{2035, 5000}, {2060, 10000}] gives 0.5 in 2040 and 1 in 2065;
+    // unsorted, the loop's "last entry with fromYear ≤ year" read 0.5 in both. Here the plan ends
+    // in 2057 (born 1962, fixed age 95), so the second phase starts in 2050.
+    const sorted = buildSimInput({ spending: { phases: [{ fromYear: 2035, multiplierBp: 5000 }, { fromYear: 2050, multiplierBp: 10000 }] } });
+    const tb = prepareStrategies(sorted);
+    expect([tb.phase[2040 - tb.startYear], tb.phase[2055 - tb.startYear]]).toEqual([0.5, 1]);
+    const unsorted = { ...sorted, spending: { ...sorted.spending, phases: [{ fromYear: 2050, multiplierBp: 10000 }, { fromYear: 2035, multiplierBp: 5000 }] } };
+    expect(code(() => prepareStrategies(unsorted))).toBe("spending_invalid");
+    expect(validateInput(unsorted).map((i) => i.code)).toEqual(["spending_invalid"]);
+    const repeated = { ...sorted, spending: { ...sorted.spending, phases: [{ fromYear: 2035, multiplierBp: 5000 }, { fromYear: 2035, multiplierBp: 10000 }] } };
+    expect(code(() => prepareStrategies(repeated))).toBe("spending_invalid");
+  });
+
+  it("contracts-01: healthcare growth outside the profile's 0 to 1,000 bp and long-term-care years outside 1 to 10 are spending_invalid (an input that did not pass the schema)", () => {
+    const hc = { personId: "p1" as const, preMedicareAnnualCents: "0", preMedicareFrom: "2027-01", medicareFrom: "2027-01", medicareAnnualCents: "1", realGrowthBp: 0, inBase: false };
+    const base = buildSimInput({ spending: { healthcare: [hc] } });
+    const withHealthcare = (realGrowthBp: number) => ({ ...base, spending: { ...base.spending, healthcare: [{ ...hc, realGrowthBp }] } });
+    for (const bad of [1001, 1_000_000_000, -1, -10000]) expect(code(() => prepareStrategies(withHealthcare(bad))), `${bad}`).toBe("spending_invalid");
+    for (const good of [0, 1000]) expect(() => prepareStrategies(withHealthcare(good))).not.toThrow();
+    const withCare = (lastYears: number) => ({ ...base, spending: { ...base.spending, longTermCare: [{ personId: "p1" as const, reserveCents: "1", lastYears }] } });
+    for (const bad of [0, 11, 120]) expect(code(() => prepareStrategies(withCare(bad))), `${bad}`).toBe("spending_invalid");
+    for (const good of [1, 10]) expect(() => prepareStrategies(withCare(good))).not.toThrow();
+    expect(validateInput(withHealthcare(1_000_000_000)).map((i) => i.code)).toEqual(["spending_invalid"]);
+  });
+
   it("refuses a malformed spending block", () => {
     const hc = { preMedicareAnnualCents: "0", preMedicareFrom: "2027-01", medicareFrom: "2027-01", medicareAnnualCents: "1", realGrowthBp: 0, inBase: false };
     expect(code(() => prepareStrategies(buildSimInput({ spending: { baseAnnualCents: "100", essentialAnnualCents: "101" } })))).toBe("spending_invalid");
@@ -107,9 +134,7 @@ describe("prepareStrategies", () => {
       "spending_invalid",
     );
     expect(code(() => prepareStrategies(buildSimInput({ spending: { healthcare: [{ personId: "p2", ...hc }] } })))).toBe("person_missing");
-    expect(code(() => prepareStrategies(buildSimInput({ spending: { healthcare: [{ personId: "p1", ...hc, realGrowthBp: -10000 }] } })))).toBe("spending_invalid");
     expect(code(() => prepareStrategies(buildSimInput({ spending: { longTermCare: [{ personId: "p2", reserveCents: "1", lastYears: 2 }] } })))).toBe("person_missing");
-    expect(code(() => prepareStrategies(buildSimInput({ spending: { longTermCare: [{ personId: "p1", reserveCents: "1", lastYears: 0 }] } })))).toBe("spending_invalid");
     expect(
       code(() =>
         prepareStrategies(

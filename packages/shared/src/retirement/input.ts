@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { AccountType, AllocationSource, BasisCoverage, DollarBasis, OwnerId, PersonId, PlanBucket, PlanIncomeKind } from "../enums.js";
-import { IsoDateString, MonthString, NonNegCentsString } from "../wire.js";
-import { bp, ClassWeights, ExpenseRatioPpm, PlanIssue, PlanYear } from "./primitives.js";
+import { IsoDateString, MonthString } from "../wire.js";
+import { bp, ClassWeights, ExpenseRatioPpm, PlanIssue, PlanYear, StoredCents } from "./primitives.js";
 import { Cola, Longevity } from "./profile.js";
 import { RunSettings } from "./settings.js";
 import { TaxFilingStatus } from "./tax.js";
@@ -11,8 +11,18 @@ import { TaxFilingStatus } from "./tax.js";
  * the engine accepts (seams C1). Self-contained, month-resolved, annual cents unless a name says
  * monthly; no floats and no nulls. `input_hash` covers everything except `meta` and the display
  * names of people, accounts, incomes and goals. Written by `resolvePlan`, never by hand outside
- * tests; never a request body (it uses the loose wire shapes).
+ * tests; never a request body (it uses the loose wire shapes). Every integer is a safe integer in
+ * the profile's range (the engine computes nothing a plan cannot express, and a stored document
+ * hashes; seams C13, plan decision 15), cents have no leading zeros (`StoredCents`), and spending
+ * phases run in strictly ascending years.
  */
+
+/** Safe integers for counters the engine does not read (revisions). */
+const Revision = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+/** A stream's yearly real growth: the profile's widest range (salary raises −5% to +10%). */
+const StreamGrowthBp = bp(-500, 1000);
+/** Healthcare's yearly real growth: the profile's range (0 to +10%). */
+const HealthcareGrowthBp = bp(0, 1000);
 
 export const SIM_INPUT_SCHEMA = "meridian.retirement.input";
 
@@ -33,10 +43,10 @@ export const SimInputMeta = z
     createdAt: z.string(),
     today: IsoDateString,
     asOf: IsoDateString,
-    profileRevision: z.number().int(),
+    profileRevision: Revision,
     baselineHash: z.string(),
     scenarioId: z.string().uuid(),
-    scenarioRevision: z.number().int(),
+    scenarioRevision: Revision,
     scenarioName: z.string(),
     provenance: z.record(PlanProvenance),
     warnings: z.array(PlanIssue),
@@ -77,12 +87,12 @@ export const SimInputAccount = z
     type: AccountType.optional(),
     bucket: PlanBucket,
     owner: OwnerId,
-    balanceCents: NonNegCentsString,
+    balanceCents: StoredCents,
     /** Bucket taxable only. */
-    basisCents: NonNegCentsString.optional(),
+    basisCents: StoredCents.optional(),
     basisCoverage: BasisCoverage.optional(),
     /** Bucket roth; absent = unknown. */
-    rothContributionBasisCents: NonNegCentsString.optional(),
+    rothContributionBasisCents: StoredCents.optional(),
     allocation: ClassWeights,
     allocationSource: AllocationSource,
     glidePath: z.array(z.object({ year: PlanYear, weights: ClassWeights }).strict()).optional(),
@@ -99,12 +109,12 @@ export const SimInputIncome = z
     kind: PlanIncomeKind,
     personId: PersonId.optional(),
     name: z.string(),
-    annualCents: NonNegCentsString,
+    annualCents: StoredCents,
     dollars: DollarBasis,
     /** The window is [startMonth, endMonth); no end = for life, or to the end of the plan for a household stream. */
     startMonth: MonthString,
     endMonth: MonthString.optional(),
-    realGrowthBp: z.number().int(),
+    realGrowthBp: StreamGrowthBp,
     cola: Cola,
     survivorBp: bp(),
     taxableBp: bp(),
@@ -119,27 +129,28 @@ export const SimInputSocialSecurityPerson = z.discriminatedUnion("mode", [
     .object({
       personId: PersonId,
       mode: z.literal("estimate"),
-      monthlyAtFraCents: NonNegCentsString,
+      monthlyAtFraCents: StoredCents,
       asOfYear: PlanYear,
       claimMonth: MonthString,
-      claimAgeMonths: z.number().int(),
+      /** 62 to 70 years (744 to 840 months), the profile's `ClaimAge`. */
+      claimAgeMonths: z.number().int().min(744).max(840),
     })
     .strict(),
   z
     .object({
       personId: PersonId,
       mode: z.literal("receiving"),
-      monthlyCents: NonNegCentsString,
+      monthlyCents: StoredCents,
       asOfYear: PlanYear,
       startedMonth: MonthString,
-      monthlyAtFraCents: NonNegCentsString.optional(),
+      monthlyAtFraCents: StoredCents.optional(),
     })
     .strict(),
 ]);
 export type SimInputSocialSecurityPerson = z.infer<typeof SimInputSocialSecurityPerson>;
 
 export const SimInputGoal = z
-  .object({ id: z.string(), name: z.string(), year: PlanYear, amountCents: NonNegCentsString, dollars: DollarBasis })
+  .object({ id: z.string(), name: z.string(), year: PlanYear, amountCents: StoredCents, dollars: DollarBasis })
   .strict();
 export type SimInputGoal = z.infer<typeof SimInputGoal>;
 
@@ -151,11 +162,11 @@ export type SimInputGoal = z.infer<typeof SimInputGoal>;
 export const SimInputHealthcare = z
   .object({
     personId: PersonId,
-    preMedicareAnnualCents: NonNegCentsString,
+    preMedicareAnnualCents: StoredCents,
     preMedicareFrom: MonthString,
     medicareFrom: MonthString,
-    medicareAnnualCents: NonNegCentsString,
-    realGrowthBp: z.number().int(),
+    medicareAnnualCents: StoredCents,
+    realGrowthBp: HealthcareGrowthBp,
     inBase: z.boolean(),
   })
   .strict();
@@ -163,15 +174,19 @@ export type SimInputHealthcare = z.infer<typeof SimInputHealthcare>;
 
 export const SimInputSpending = z
   .object({
-    baseAnnualCents: NonNegCentsString,
-    essentialAnnualCents: NonNegCentsString,
+    baseAnnualCents: StoredCents,
+    essentialAnnualCents: StoredCents,
     /** The earliest retirement month, not before the plan start. */
     startMonth: MonthString,
     survivorBp: bp(),
-    phases: z.array(z.object({ fromYear: PlanYear, multiplierBp: bp(0, 20000) }).strict()),
+    /** Strictly ascending years: the multiplier of a year is the last phase with `fromYear ≤ year` (strategies §2.1). */
+    phases: z
+      .array(z.object({ fromYear: PlanYear, multiplierBp: bp(0, 20000) }).strict())
+      .refine((list) => list.every((p, k) => k === 0 || p.fromYear > list[k - 1]!.fromYear), "spending phases must run in strictly ascending years"),
     goals: z.array(SimInputGoal),
     healthcare: z.array(SimInputHealthcare),
-    longTermCare: z.array(z.object({ personId: PersonId, reserveCents: NonNegCentsString, lastYears: z.number().int() }).strict()),
+    /** `lastYears`: 1 to 10, the profile's range. */
+    longTermCare: z.array(z.object({ personId: PersonId, reserveCents: StoredCents, lastYears: z.number().int().min(1).max(10) }).strict()),
   })
   .strict();
 export type SimInputSpending = z.infer<typeof SimInputSpending>;
@@ -179,17 +194,17 @@ export type SimInputSpending = z.infer<typeof SimInputSpending>;
 export const SimInputContribution = z
   .object({
     accountId: z.string(),
-    employeeAnnualCents: NonNegCentsString,
-    employerAnnualCents: NonNegCentsString,
+    employeeAnnualCents: StoredCents,
+    employerAnnualCents: StoredCents,
     /** Year-0 amounts scale with the salary paid to this person or the household, or with the price level. */
     scaleWith: z.enum(["p1", "p2", "household", "inflation"]),
-    salaryBasisCents: NonNegCentsString.optional(),
+    salaryBasisCents: StoredCents.optional(),
     endMonth: MonthString,
   })
   .strict();
 export type SimInputContribution = z.infer<typeof SimInputContribution>;
 
-export const SimInputConversion = z.object({ year: PlanYear, personId: PersonId, amountCents: NonNegCentsString, dollars: DollarBasis }).strict();
+export const SimInputConversion = z.object({ year: PlanYear, personId: PersonId, amountCents: StoredCents, dollars: DollarBasis }).strict();
 export type SimInputConversion = z.infer<typeof SimInputConversion>;
 
 export const SimInput = z

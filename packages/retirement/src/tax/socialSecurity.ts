@@ -26,7 +26,7 @@
 import type { SimInput, SocialSecurityParts, SocialSecurityPreviewRequest, SocialSecurityPreviewResponse } from "@meridian/shared";
 import { monthIndex } from "../clock.js";
 import { EngineInputError } from "../errors.js";
-import { centsToDollars, dollarsToCents } from "../units.js";
+import { centsToDollars, dollarsToCents, ratioToBp } from "../units.js";
 import { PR, SO, SO_REC, SS, SS_REC } from "./layout.js";
 import { birthMonthIndex } from "./penalties.js";
 import { loadTaxData, type TaxData, type VerificationStatus } from "./taxData.js";
@@ -1002,9 +1002,9 @@ export function socialSecurityPreview(people: readonly SsPersonInput[], startYea
   return { people: previews };
 }
 
-/** A factor in basis points, rounded half away from zero at the boundary (seams C44). */
+/** A factor in basis points: the engine's one boundary rule for ratios (units.ts `ratioToBp`, seams C44). */
 function factorBp(factor: number): number {
-  return Math.floor(factor * 10000 + 0.5 + 1e-7);
+  return ratioToBp(factor);
 }
 
 /** Route 24 (`POST /social-security-preview`): the preview in cents and basis points. */

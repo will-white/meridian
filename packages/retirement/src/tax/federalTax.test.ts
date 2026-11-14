@@ -1,6 +1,6 @@
 import { TaxYearDetail } from "@meridian/shared";
 import { describe, expect, it } from "vitest";
-import { dollarsToCentsBigInt } from "../units.js";
+import { dollarsToCentsBigInt, ratioToBp } from "../units.js";
 import { assertTaxInput, computeFederalTax, effectiveMarginalRates, federalTaxInto, TaxInputError, taxYearDetail, taxYearDetailCents } from "./federalTax.js";
 import { TAX_IN, TAX_OUT, TI, TO } from "./layout.js";
 import { loadTaxData, TaxDataError } from "./taxData.js";
@@ -695,6 +695,27 @@ describe("taxYearDetail (seams C37)", () => {
     }
     const c6 = taxYearDetailCents(tax(2026, J, { SS_GROSS: 48000, PENSION: 20000, TRAD_DIST: 40000, INTEREST: 3000, ORD_DIV: 8000, QUAL_DIV: 6000, LT_GAIN: 12000, N_AGED: 2 }), J, 0);
     expect([c6.totalFederalCents, c6.agiCents, c6.magiAcaCents, c6.bracketRateBp, c6.nextGainRateBp]).toEqual([650000n, 12380000n, 13100000n, 1200, 0]);
+  });
+
+  it("the bracket and next-gain rates go to basis points by units.ts ratioToBp (seams C44, C38: half away from zero with the 1e-7 guard)", () => {
+    // A rate schedule with half-basis-point rates (a custom or replacement schedule). In binary64,
+    // 0.00145 × 10000 = 14.499999999999998 and 0.00015 × 10000 = 1.4999999999999998: without the
+    // guard they round to 14 and 1; the boundary rule of every other engine ratio gives 15 and 2,
+    // and 0.00565 → 57 (56.49999999999999 unguarded).
+    const r = new Float64Array(TAX_OUT);
+    for (const [rate, bp] of [
+      [0.00145, 15],
+      [0.00015, 2],
+      [0.00565, 57],
+      [0.22, 2200],
+      [0, 0],
+    ] as const) {
+      r[TO.BRACKET_RATE] = rate;
+      r[TO.LTCG_NEXT_RATE] = rate;
+      const d = taxYearDetailCents(r, S, 0);
+      expect([d.bracketRateBp, d.nextGainRateBp], `${rate}`).toEqual([bp, bp]);
+      expect(d.bracketRateBp).toBe(ratioToBp(rate));
+    }
   });
 });
 

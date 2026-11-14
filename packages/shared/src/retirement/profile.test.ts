@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { UnsupportedSchemaVersionError } from "./primitives.js";
+import { PlanCents, UnsupportedSchemaVersionError } from "./primitives.js";
 import {
   AccountSetting,
   ClaimAge,
@@ -126,6 +126,20 @@ describe("RetirementProfileDoc (inputs-and-data §4.2)", () => {
     expect(ok(Spending, { ...s, goals: { car: { name: "Car", year: 2030, amountCents: "3000000", repeat: { everyYears: 10, times: 3 } } } })).toBe(true);
     expect(ok(Spending, { ...s, goals: { car: { name: "Car", year: 2030, amountCents: "3000000", repeat: { everyYears: 0, times: 3 } } } })).toBe(false);
     expect(RothConversion.safeParse({ personId: "p1", fromYear: 2037, toYear: 2036, annualCents: "1" }).error?.issues[0]?.message).toBe("toYear before fromYear");
+  });
+});
+
+describe("contracts-03: canonical cents in the stored documents", () => {
+  it("PlanCents refuses a leading zero (\"0100\"), so a document has one spelling per amount and a scenario patch of \"04000000\" for \"4000000\" cannot arise", () => {
+    expect(PlanCents.safeParse("0100").success).toBe(false);
+    expect(PlanCents.safeParse("00").success).toBe(false);
+    expect(PlanCents.safeParse("0").success).toBe(true);
+    expect(PlanCents.safeParse("100").success).toBe(true);
+    expect(PlanCents.safeParse("999999999999999").success).toBe(true);
+    expect(PlanCents.safeParse("1000000000000000").success).toBe(false);
+    const doc = fixtureProfileDoc();
+    expect(RetirementProfileDoc.safeParse({ ...doc, spending: { ...doc.spending, base: { mode: "manual", annualCents: "04000000" } } }).success).toBe(false);
+    expect(RetirementProfileDoc.safeParse({ ...doc, spending: { ...doc.spending, base: { mode: "manual", annualCents: "4000000" } } }).success).toBe(true);
   });
 });
 

@@ -90,6 +90,65 @@ describe("SimInput (inputs-and-data §4.5, seams §2.1)", () => {
 
   it("is a stored document and a response, never a request: it uses the loose wire shapes", () => {
     expect(looseWireFields(SimInput)).toContain("meta.today (IsoDateString)");
-    expect(looseWireFields(SimInput)).toContain("accounts[].balanceCents (NonNegCentsString)");
+    expect(looseWireFields(SimInput)).toContain("plan.startMonth (MonthString)");
+  });
+
+  it("contracts-01: the integer fields hold safe integers in the profile's ranges (growth, care years, claim ages, revisions)", () => {
+    const at = (mutate: (i: ReturnType<typeof fixtureSimInput>) => void) => {
+      const input = structuredClone(fixtureSimInput());
+      mutate(input);
+      return ok(input);
+    };
+    // The review's probe: realGrowthBp 1,000,000,000 and 2^53 parsed, and the second could not be hashed.
+    for (const bad of [1_000_000_000, 2 ** 53, 1001, -501]) expect(at((i) => void (i.incomes[1]!.realGrowthBp = bad)), `income ${bad}`).toBe(false);
+    for (const good of [-500, 0, 1000]) expect(at((i) => void (i.incomes[1]!.realGrowthBp = good)), `income ${good}`).toBe(true);
+    const hc = { personId: "p1", preMedicareAnnualCents: "1200000", preMedicareFrom: "2035-06", medicareFrom: "2040-06", medicareAnnualCents: "700000", inBase: true };
+    for (const bad of [1001, -1, 2 ** 53]) expect(SimInputHealthcare.safeParse({ ...hc, realGrowthBp: bad }).success, `healthcare ${bad}`).toBe(false);
+    for (const good of [0, 1000]) expect(SimInputHealthcare.safeParse({ ...hc, realGrowthBp: good }).success, `healthcare ${good}`).toBe(true);
+    const ltc = (lastYears: number) => (i: ReturnType<typeof fixtureSimInput>) => void (i.spending.longTermCare = [{ personId: "p1", reserveCents: "100", lastYears }]);
+    for (const bad of [0, 11, 2 ** 53]) expect(at(ltc(bad)), `lastYears ${bad}`).toBe(false);
+    for (const good of [1, 10]) expect(at(ltc(good)), `lastYears ${good}`).toBe(true);
+    const claim = (months: number) => (i: ReturnType<typeof fixtureSimInput>) => {
+      const p = i.socialSecurity.people[0]!;
+      if (p.mode === "estimate") p.claimAgeMonths = months;
+    };
+    expect(fixtureSimInput().socialSecurity.people[0]!.mode).toBe("estimate");
+    for (const bad of [743, 841, 2 ** 53]) expect(at(claim(bad)), `claim ${bad}`).toBe(false);
+    for (const good of [744, 840]) expect(at(claim(good)), `claim ${good}`).toBe(true);
+    for (const bad of [-1, 2 ** 53]) {
+      expect(at((i) => void (i.meta.profileRevision = bad)), `profileRevision ${bad}`).toBe(false);
+      expect(at((i) => void (i.meta.scenarioRevision = bad)), `scenarioRevision ${bad}`).toBe(false);
+    }
+  });
+
+  it("contracts-02: spending phases run in strictly ascending years (the multiplier is the last phase with fromYear ≤ year, whatever the order)", () => {
+    const phases = (list: Array<{ fromYear: number; multiplierBp: number }>) => (i: ReturnType<typeof fixtureSimInput>) => void (i.spending.phases = list);
+    const at = (mutate: (i: ReturnType<typeof fixtureSimInput>) => void) => {
+      const input = structuredClone(fixtureSimInput());
+      mutate(input);
+      return ok(input);
+    };
+    expect(at(phases([{ fromYear: 2035, multiplierBp: 5000 }, { fromYear: 2060, multiplierBp: 10000 }]))).toBe(true);
+    // The review's unsorted pair, and a repeated year.
+    expect(at(phases([{ fromYear: 2060, multiplierBp: 10000 }, { fromYear: 2035, multiplierBp: 5000 }]))).toBe(false);
+    expect(at(phases([{ fromYear: 2035, multiplierBp: 5000 }, { fromYear: 2035, multiplierBp: 10000 }]))).toBe(false);
+    expect(at(phases([]))).toBe(true);
+  });
+
+  it("contracts-03: cents are written without leading zeros, so equal amounts have one spelling and one hash", () => {
+    const at = (mutate: (i: ReturnType<typeof fixtureSimInput>) => void) => {
+      const input = structuredClone(fixtureSimInput());
+      mutate(input);
+      return ok(input);
+    };
+    expect(fixtureSimInput().accounts[0]!.balanceCents).toBe("15000000");
+    // The review's probe: "015000000" parsed and hashed differently from "15000000".
+    expect(at((i) => void (i.accounts[0]!.balanceCents = "015000000"))).toBe(false);
+    expect(at((i) => void (i.accounts[0]!.balanceCents = "00"))).toBe(false);
+    expect(at((i) => void (i.accounts[0]!.balanceCents = "0"))).toBe(true);
+    expect(at((i) => void (i.spending.baseAnnualCents = "04000000"))).toBe(false);
+    expect(at((i) => void (i.incomes[0]!.annualCents = "0100"))).toBe(false);
+    expect(at((i) => void (i.contributions[0]!.employeeAnnualCents = "0100"))).toBe(false);
+    expect(at((i) => void (i.rothConversions[0]!.amountCents = "0100"))).toBe(false);
   });
 });

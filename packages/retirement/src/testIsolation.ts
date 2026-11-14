@@ -10,10 +10,11 @@
  * their own files only, where the measurement means what it says; the gate keeps their values.
  */
 
-import { expect } from "vitest";
-
-/** True when the current test was collected from the file whose `import.meta.url` is `moduleUrl`. */
-export function runsInOwnFile(moduleUrl: string): boolean {
-  const running = expect.getState().testPath;
-  return running !== undefined && running === decodeURIComponent(new URL(moduleUrl).pathname);
+/**
+ * True when the current test was collected from the file whose `import.meta.url` is `moduleUrl`.
+ * The caller passes Vitest's `expect.getState().testPath`: the engine's sources import no test
+ * framework (seams §2.1; the root ESLint block and determinism.test.ts check it).
+ */
+export function runsInOwnFile(moduleUrl: string, testPath: string | undefined): boolean {
+  return testPath !== undefined && testPath === decodeURIComponent(new URL(moduleUrl).pathname);
 }

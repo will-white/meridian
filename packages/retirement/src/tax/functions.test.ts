@@ -57,7 +57,7 @@ describe("TAX_FUNCTIONS (seams §2.5)", () => {
   });
 
   it("no allocation in 10,000 years of step 11's members through the record (yields, payroll, limits)", ({ skip }) => {
-    if (!runsInOwnFile(import.meta.url)) skip(); // a heap check means something only in its own file (testIsolation.ts)
+    if (!runsInOwnFile(import.meta.url, expect.getState().testPath)) skip(); // a heap check means something only in its own file (testIsolation.ts)
     const fns = TAX_FUNCTIONS;
     const t = pathTables(loadTaxData(), { startYear: 2026, years: 20, inflation: 0.03 });
     const drag = new Float64Array(AD_REC);

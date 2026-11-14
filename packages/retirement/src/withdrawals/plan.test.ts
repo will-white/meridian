@@ -238,7 +238,7 @@ describe("decision 38 hook rules", () => {
   });
 
   it("no allocation in 10,000 planned years (heap unchanged within noise)", ({ skip }) => {
-    if (!runsInOwnFile(import.meta.url)) skip(); // a heap check means something only in its own file (testIsolation.ts)
+    if (!runsInOwnFile(import.meta.url, expect.getState().testPath)) skip(); // a heap check means something only in its own file (testIsolation.ts)
     // Cash, taxable and two pre-tax accounts; a flat 20% on pre-tax; target and gross years.
     const v = view([CASH, TAXABLE, PRE_TAX, PRE_TAX], [5000, 20000, 300000, 100000], { rmd: [0, 0, 4000, 0] });
     const rate = new Float64Array([0, 0.05, 0.2, 0.2]);

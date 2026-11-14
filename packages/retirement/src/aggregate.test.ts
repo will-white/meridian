@@ -23,12 +23,38 @@ import { noTaxInto, stubHooks, stubTaxFunctions } from "./testing/stubs.js";
 import { createEngineHooks } from "./withdrawals/plan.js";
 import { toFanSeries, toSimSummary } from "./results/summary.js";
 import { dollarsToCentsBigInt } from "./units.js";
+import { EngineInputError } from "./errors.js";
 
 // Build step 20: aggregation (engine-and-returns §3.11, §3.12 with seams C9, C40, C41, F9).
 // Expected values are the design's (§7, T35 to T38 and T40) unless a comment re-derives them.
 
 const cents = (xs: readonly number[]) => BigInt64Array.from(xs.map((x) => BigInt(Math.round(x * 100))));
 const NO_TAX = { federalTaxInto: noTaxInto };
+
+describe("contracts-01: the per-path cents series never wrap", () => {
+  it("an ending wealth beyond the int64 series is refused as result_out_of_range, not wrapped modulo 2^64", () => {
+    // A valid input (the fixed model's stock return may be up to 1,000%): 100,000 dollars in stocks
+    // at +1,000% a year for 30 years is 100,000 × 11^30 ≈ 1.7e36 dollars, far beyond the
+    // 9.2e18 cents a BigInt64Array holds. The review's probe wrapped such a value to 0n.
+    const input = buildSimInput({
+      people: [{ birthYear: 1966, longevity: { mode: "fixed", age: 90 } }],
+      accounts: [account("roth", "roth", "10000000", { allocation: W(10000, 0, 0, 0) })],
+      returnModel: { kind: "fixed", series: [{ stocksPpm: 10_000_000, bondsPpm: 0, billsPpm: 0, inflationPpm: 0 }] },
+      tax: ZERO_YIELDS,
+    });
+    const run = prepare(input);
+    const summary = simulateRun(run, createPathState(run, stubHooks(), stubTaxFunctions(NO_TAX)));
+    expect(summary.endReal[0]!).toBeGreaterThan(1e30);
+    let error: unknown;
+    try {
+      aggregate(run, summary);
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(EngineInputError);
+    expect((error as EngineInputError).code).toBe("result_out_of_range");
+  });
+});
 
 describe("T35 percentile index (nearest rank)", () => {
   it("T35 the design's fourteen cases", () => {

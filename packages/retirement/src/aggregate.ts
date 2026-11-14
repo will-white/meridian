@@ -32,6 +32,7 @@
  */
 
 import { type MortalityTableId, NEVER_DEPLETED, type SimSummary, rankPaths } from "@meridian/shared";
+import { EngineInputError } from "./errors.js";
 import type { PreparedRun } from "./prepare.js";
 import { PATH_FLAG, type PathState } from "./state.js";
 import { WN_REC } from "./tax/layout.js";
@@ -376,9 +377,29 @@ export function percentilePaths(
   return { order, percentilePathIndex, endingWealthRealQuantiles };
 }
 
+const INT64_MIN = -(2n ** 63n);
+const INT64_MAX = 2n ** 63n - 1n;
+
+/**
+ * A path's figure in cents for the stored `i64le` series (shared `SERIES_ENCODING`). A
+ * `BigInt64Array` would wrap a value beyond ±9.2 × 10^18 cents modulo 2^64 (the review's probe: an
+ * ending wealth of 2.2 × 10^52 cents stored as 0, and ranked as 0); such a run is refused instead,
+ * as `result_out_of_range`: the plan (a growth or a return far beyond any household's) produced a
+ * figure the stored series cannot hold. It is an input error, permanent, mapped by the job like
+ * every `EngineInputError` (seams C7).
+ */
+function seriesCents(dollars: number, what: string, path: number): bigint {
+  const c = dollarsToCentsBigInt(dollars);
+  if (c < INT64_MIN || c > INT64_MAX) {
+    throw new EngineInputError("result_out_of_range", `path ${path}'s ${what} of ${c} cents in today's dollars does not fit the stored 64-bit series; the plan's growth or returns are beyond what the planner can store`);
+  }
+  return c;
+}
+
 /**
  * Reduces the run summary to the run's result (engine-and-returns §3.11 and §3.12 with seams C9,
- * C40, C41 and F9). `summary` must hold every path of `run` (`createRunSummary`).
+ * C40, C41 and F9). `summary` must hold every path of `run` (`createRunSummary`). Throws
+ * `EngineInputError("result_out_of_range")` when a path's figure does not fit the 64-bit series.
  */
 export function aggregate(run: PreparedRun, summary: RunSummary): EngineResult {
   const N = summary.pathCount;
@@ -404,9 +425,9 @@ export function aggregate(run: PreparedRun, summary: RunSummary): EngineResult {
   let meanSum = 0;
   const failureYearCounts = new Array<number>(Y).fill(0);
   for (let i = 0; i < N; i++) {
-    endingRealCents[i] = dollarsToCentsBigInt(summary.endReal[i]!);
-    lifetimeTaxRealCents[i] = dollarsToCentsBigInt(summary.taxesReal[i]!);
-    lifetimeSpendingRealCents[i] = dollarsToCentsBigInt(summary.spendReal[i]!);
+    endingRealCents[i] = seriesCents(summary.endReal[i]!, "ending wealth", i);
+    lifetimeTaxRealCents[i] = seriesCents(summary.taxesReal[i]!, "lifetime tax", i);
+    lifetimeSpendingRealCents[i] = seriesCents(summary.spendReal[i]!, "lifetime spending", i);
     const f = summary.failIdx[i]!;
     depletionYear[i] = f >= 0 ? startYear + f : NEVER_DEPLETED;
     if (f >= 0) failureYearCounts[f] = failureYearCounts[f]! + 1;

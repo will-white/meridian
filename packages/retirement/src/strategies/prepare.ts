@@ -21,7 +21,6 @@ import {
 import { type PlanClock, monthIndex, planClock, yearShare } from "../clock.js";
 import { powInt } from "../detmath.js";
 import { EngineInputError } from "../errors.js";
-import { MAX_PLAN_YEARS } from "../models/market.js";
 import { centsToDollars } from "../units.js";
 
 /** The strategy kinds by index (§2.1 `kind`). */
@@ -108,6 +107,10 @@ const DEFAULTS = {
 };
 
 const BP = 10000;
+/** Healthcare's yearly real growth in basis points: the profile's range (shared `SimInputHealthcare`). */
+const HEALTHCARE_GROWTH_BP = [0, 1000] as const;
+/** Long-term care's `lastYears`: the profile's range (shared `SimInputSpending`). */
+const MAX_CARE_YEARS = 10;
 
 function spendingError(message: string): EngineInputError {
   return new EngineInputError("spending_invalid", message);
@@ -116,8 +119,10 @@ function spendingError(message: string): EngineInputError {
 /**
  * Builds the strategy tables of a frozen input. Throws `EngineInputError` on a malformed spending
  * block: `person_missing` (an entry names a person the household does not have), `spending_invalid`
- * (essential above base, a goal outside the plan, a growth rate of −100% or less, two long-term care
- * entries for one person, `lastYears` below 1), `plan_invalid` and `horizon_too_long` (the clock).
+ * (essential above base, a goal outside the plan, phases out of year order, a healthcare growth rate
+ * outside 0 to 1,000 bp, two long-term care entries for one person, `lastYears` outside 1 to 10),
+ * `plan_invalid` and `horizon_too_long` (the clock). The ranges are the shared schema's, checked
+ * again for an input that did not pass it (seams C13).
  */
 export function prepareStrategies(input: SimInput, clock: PlanClock = planClock(input.plan)): StrategyTables {
   const Y = clock.years;
@@ -134,6 +139,14 @@ export function prepareStrategies(input: SimInput, clock: PlanClock = planClock(
   const essential = centsToDollars(sp.essentialAnnualCents);
   if (essential > base) throw spendingError(`essential spending (${sp.essentialAnnualCents} cents) is above base spending (${sp.baseAnnualCents} cents)`);
 
+  // The multiplier of a year is the last phase with fromYear ≤ year (§2.1): read by year, never
+  // by array order, so the years must strictly ascend (the schema's refinement, here for an input
+  // that did not pass it; seams C13).
+  sp.phases.forEach((p, k) => {
+    if (k > 0 && !(p.fromYear > sp.phases[k - 1]!.fromYear)) {
+      throw spendingError(`the spending phases must run in strictly ascending years; ${p.fromYear} follows ${sp.phases[k - 1]!.fromYear}`);
+    }
+  });
   const phase = new Float64Array(Y);
   const coreShare = new Float64Array(Y);
   const coreFrom = monthIndex(sp.startMonth);
@@ -159,7 +172,9 @@ export function prepareStrategies(input: SimInput, clock: PlanClock = planClock(
   const healthcareSpend = new Float64Array(P * Y);
   for (const h of sp.healthcare) {
     const i = personIndex(h.personId, "a healthcare entry");
-    if (h.realGrowthBp <= -BP) throw spendingError(`healthcare for ${h.personId} grows by ${h.realGrowthBp} bp a year`);
+    if (!Number.isInteger(h.realGrowthBp) || h.realGrowthBp < HEALTHCARE_GROWTH_BP[0] || h.realGrowthBp > HEALTHCARE_GROWTH_BP[1]) {
+      throw spendingError(`healthcare for ${h.personId} grows by ${h.realGrowthBp} bp a year; it must be ${HEALTHCARE_GROWTH_BP[0]} to ${HEALTHCARE_GROWTH_BP[1]} (the profile's range)`);
+    }
     const growth = 1 + h.realGrowthBp / BP;
     const pre = centsToDollars(h.preMedicareAnnualCents);
     const medicare = centsToDollars(h.medicareAnnualCents);
@@ -177,8 +192,8 @@ export function prepareStrategies(input: SimInput, clock: PlanClock = planClock(
   for (const c of sp.longTermCare) {
     const i = personIndex(c.personId, "a long-term care entry");
     if (ltcYears[i] !== 0) throw spendingError(`two long-term care entries for ${c.personId}`);
-    if (!Number.isInteger(c.lastYears) || c.lastYears < 1 || c.lastYears > MAX_PLAN_YEARS) {
-      throw spendingError(`long-term care for ${c.personId} covers ${c.lastYears} years; it must be 1 to ${MAX_PLAN_YEARS}`);
+    if (!Number.isInteger(c.lastYears) || c.lastYears < 1 || c.lastYears > MAX_CARE_YEARS) {
+      throw spendingError(`long-term care for ${c.personId} covers ${c.lastYears} years; it must be 1 to ${MAX_CARE_YEARS} (the profile's range)`);
     }
     ltcReserve[i] = centsToDollars(c.reserveCents);
     ltcYears[i] = c.lastYears;

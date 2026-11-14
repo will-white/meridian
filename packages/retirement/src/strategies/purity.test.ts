@@ -128,7 +128,7 @@ describe("ST-17 purity and rules", () => {
   });
 
   it("ST-17 no allocation in 10,000 calls (heap unchanged within noise)", ({ skip }) => {
-    if (!runsInOwnFile(import.meta.url)) skip(); // a heap check means something only in its own file (testIsolation.ts)
+    if (!runsInOwnFile(import.meta.url, expect.getState().testPath)) skip(); // a heap check means something only in its own file (testIsolation.ts)
     const tbs = KINDS.map(household);
     const views = tbs.map((tb) => Array.from({ length: 20 }, (_, t) => viewAt(tb, t)));
     const states = tbs.map(() => new Float64Array(STRATEGY_STATE_LENGTH));

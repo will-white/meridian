@@ -39,6 +39,10 @@ import { EngineInputError } from "./errors.js";
 import { centsToDollars } from "./units.js";
 
 const BP = 10000;
+/** A stream's yearly real growth in basis points: the profile's widest range (shared `SimInputIncome`). */
+const STREAM_GROWTH_BP = [-500, 1000] as const;
+/** A pension's fixed COLA in basis points (shared `Cola`). */
+const COLA_BP = [0, 1000] as const;
 
 /** How an income stream counts: wages (earned), pensions and annuities, rental, other ordinary income. */
 export const INCOME = { WAGES: 0, PENSION: 1, RENTAL: 2, OTHER: 3 } as const;
@@ -204,7 +208,7 @@ function firstPlanYear(clock: PlanClock, from: number): number {
  * The income streams of a frozen input. Errors: `person_missing` (an owner the household does not
  * have), `income_invalid` (a window that does not end after it starts, an earned stream without an
  * owner or with a survivor share, an `earned` flag that does not match the kind, two salaries for
- * one person, a growth rate of −100% or less), `month_invalid`.
+ * one person, a growth rate outside the profile's range), `month_invalid`.
  */
 export function compileIncomes(input: SimInput, clock: PlanClock): IncomeTables {
   const Y = clock.years;
@@ -248,7 +252,14 @@ export function compileIncomes(input: SimInput, clock: PlanClock): IncomeTables 
       indexed = true;
       growthRate = s.realGrowthBp / BP;
     }
-    if (!(growthRate > -1)) throw incomeInvalid(`income ${s.id}: a growth of ${growthRate * BP} bp a year`);
+    // The profile's ranges (shared `SimInputIncome`, `Cola`), checked again for an input that did
+    // not pass the schema (seams C13): a growth beyond them could carry an amount past what the
+    // stored cents series hold.
+    const growthBp = cls === INCOME.PENSION ? (s.cola.mode === "fixed" ? s.cola.bp : 0) : s.realGrowthBp;
+    const [minBp, maxBp] = cls === INCOME.PENSION ? COLA_BP : STREAM_GROWTH_BP;
+    if (!Number.isInteger(growthBp) || growthBp < minBp || growthBp > maxBp) {
+      throw incomeInvalid(`income ${s.id}: a growth of ${growthBp} bp a year; it must be ${minBp} to ${maxBp} (the profile's range)`);
+    }
     // cpi[t]^a × cpi[t0]^b: today and indexed → cpi[t]; today, not indexed → cpi[t0];
     // nominal and indexed → cpi[t] / cpi[t0]; nominal, not indexed → 1.
     cpiNow[k] = indexed ? 1 : 0;

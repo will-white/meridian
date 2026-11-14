@@ -1,3 +1,4 @@
+import type { SimInput } from "@meridian/shared";
 import { fixtureSimInput } from "@meridian/shared/src/retirement/testFixtures.js";
 import { describe, expect, it } from "vitest";
 import { runsInOwnFile } from "./testIsolation.js";
@@ -16,7 +17,7 @@ import {
   incomeYearInto,
   limitGroupOf,
 } from "./flows.js";
-import { prepare } from "./prepare.js";
+import { prepare, validateInput } from "./prepare.js";
 import { account, buildSimInput, incomeStream } from "./testing/simInput.js";
 
 /** cpi[0] = 1, cpi[t + 1] = cpi[t] × (1 + inflation[t]), by multiplication in order (engine §3.1). */
@@ -278,7 +279,17 @@ describe("Income stream errors", () => {
     expect(code(bad({ personId: "p1", survivorBp: 5000 }))).toBe("income_invalid");
     expect(code(bad({ personId: "p1", earned: false }))).toBe("income_invalid");
     expect(code(bad({ earned: true }, "rental"))).toBe("income_invalid");
-    expect(code(bad({ realGrowthBp: -10000 }, "rental"))).toBe("income_invalid");
+  });
+
+  it("contracts-01: growth outside the profile's range (−500 to 1,000 bp; a fixed COLA 0 to 1,000) is income_invalid (an input that did not pass the schema)", () => {
+    // The review's probe: incomes[1].realGrowthBp = 1,000,000,000 passed validateInput and wrapped
+    // the stored ending-wealth series; 2^53 could not be hashed.
+    const valid = buildSimInput({ people, incomes: [incomeStream("s", "rental", "100", "2027-01", {})] });
+    const withGrowth = (realGrowthBp: number) => ({ ...valid, incomes: [{ ...valid.incomes[0]!, realGrowthBp }] });
+    const compile = (input: SimInput) => () => compileIncomes(input, planClock(input.plan));
+    for (const badGrowth of [1_000_000_000, 2 ** 53, 1001, -501, -10000]) expect(code(compile(withGrowth(badGrowth))), `${badGrowth}`).toBe("income_invalid");
+    for (const good of [-500, 0, 1000]) expect(compile(withGrowth(good))).not.toThrow();
+    expect(validateInput(withGrowth(1_000_000_000)).map((i) => i.code)).toEqual(["income_invalid"]);
   });
 
   it("income_invalid for a second salary of one person; person_missing for an owner who is not in the household; month_invalid", () => {
@@ -475,7 +486,7 @@ describe("C39 scheduled conversions as data for the loop", () => {
 
 describe("The year functions allocate nothing (engine-and-returns §3.15, §4.3)", () => {
   it("10,000 path-years of incomeYearInto, contributionsYearInto and conversionsYearInto leave the heap unchanged within noise", ({ skip }) => {
-    if (!runsInOwnFile(import.meta.url)) skip(); // a heap check means something only in its own file (testIsolation.ts)
+    if (!runsInOwnFile(import.meta.url, expect.getState().testPath)) skip(); // a heap check means something only in its own file (testIsolation.ts)
     const run = prepare(fixtureSimInput());
     const cpi = constantCpi(0.025, 47);
     const amounts = new Float64Array(run.incomes.count);

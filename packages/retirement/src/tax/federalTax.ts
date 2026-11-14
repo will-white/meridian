@@ -18,7 +18,7 @@
  */
 
 import { addUp, type TaxFilingStatus, type TaxYearDetail } from "@meridian/shared";
-import { centsToDollars, dollarsToCentsBigInt } from "../units.js";
+import { centsToDollars, dollarsToCentsBigInt, ratioToBp } from "../units.js";
 import { compileTaxLaw, fillYearAtFactors } from "./compile.js";
 import { PROG_REC, TAX_IN, TAX_IN_DOLLAR_SLOTS, TAX_OUT, TAX_REC, TI, TO, TR, taxOffset, type FilingStatusIndex } from "./layout.js";
 import { loadTaxData, type TaxData } from "./taxData.js";
@@ -233,11 +233,6 @@ export type TaxYearDetailCents = {
   [K in keyof TaxYearDetail]: K extends `${string}Cents` ? bigint : TaxYearDetail[K];
 };
 
-/** A rate as basis points, rounded half away from zero (an engine ratio at the boundary, C44). */
-function rateBp(rate: number): number {
-  return Math.sign(rate) * Math.floor(Math.abs(rate) * 10000 + 0.5);
-}
-
 /**
  * The tax block of one year from the outputs `r` (dollars) and the year's employee payroll tax.
  * Each engine total is rounded once (units.ts); the parts shown under it are rounded and then made
@@ -275,8 +270,9 @@ export function taxYearDetailCents(r: Float64Array, status: FilingStatusIndex, p
     capitalLossCarryoverCents: c(TO.LOSS_CARRY_OUT),
     magiIrmaaCents: c(TO.MAGI_IRMAA),
     magiAcaCents: c(TO.MAGI_ACA),
-    bracketRateBp: rateBp(r[TO.BRACKET_RATE]!),
-    nextGainRateBp: rateBp(r[TO.LTCG_NEXT_RATE]!),
+    // An engine ratio at the boundary: one rule for all of them (C44, C38), units.ts.
+    bracketRateBp: ratioToBp(r[TO.BRACKET_RATE]!),
+    nextGainRateBp: ratioToBp(r[TO.LTCG_NEXT_RATE]!),
   };
 }
 

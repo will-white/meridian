@@ -13,6 +13,7 @@
  */
 
 import { PLANNER_DISCLAIMER, type FederalTaxPreviewRequest, type FederalTaxPreviewResponse, type RetirementRulesView } from "@meridian/shared";
+import { ratioToBp } from "../units.js";
 import { DATA_MANIFEST } from "../version.js";
 import { computeFederalTax, type FederalTaxInput } from "./federalTax.js";
 import { NOT_MODELLED } from "./notModelled.js";
@@ -62,9 +63,9 @@ export function pendingLimits(data: TaxData = loadTaxData()): Array<{ year: numb
     .map((y) => ({ year: y.taxYear, fields: [...y.contributionLimits.pending] }));
 }
 
-/** A data fraction as basis points, rounded half away from zero (an engine-side ratio, seams C44). */
+/** A data fraction as basis points: the engine's one boundary rule for ratios (units.ts `ratioToBp`, seams C44, C38). */
 function fractionBp(x: number): number {
-  return Math.sign(x) * Math.floor(Math.abs(x) * 10000 + 0.5);
+  return ratioToBp(x);
 }
 
 /**

@@ -430,7 +430,7 @@ describe("OUT-12 and T43: the stored table is the re-simulated path, and the det
     assertIntegersOnly(fan);
   });
 
-  /** The first T41 run: T20's household, bootstrap with mean block 10, 2,000 paths, no tax. */
+  /** The first T41 run: T20's household, bootstrap with mean block 10, 2,000 paths, seed 20261110, no tax. */
   const t41 = (returnModel: SimInputOptions["returnModel"], paths: number, longevity: SimInputOptions["people"] = [{ birthYear: 1962, longevity: { mode: "fixed", age: 94 } }]) => {
     const run = prepare(
       buildSimInput({
@@ -439,6 +439,7 @@ describe("OUT-12 and T43: the stored table is the re-simulated path, and the det
         spending: { baseAnnualCents: "4000000" },
         ...(returnModel === undefined ? {} : { returnModel }),
         paths,
+        seed: 20261110,
         tax: ZERO_YIELDS,
       }),
     );
@@ -460,6 +461,8 @@ describe("OUT-12 and T43: the stored table is the re-simulated path, and the det
 
   it("T43 200 seeded paths of the first T41 run: the detail's last row is dollarsToCents(endReal[k]) and it has endIdx[k] + 1 rows; every percentile path ends at its quantile", () => {
     const { run, ps, summary, result } = t41({ kind: "bootstrap", meanBlockYears: 10 }, 2000);
+    // T41's first run (engine-and-returns §7: "Seed 20261110 throughout"; src/node/golden.test.ts).
+    expect(run.input.settings.seed).toBe(20261110);
     expect(run.paths).toBe(2000);
     for (const k of seeded(2000)) {
       const table = toYearTable(simulatePathDetail(run, k, ps), run);
