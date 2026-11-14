@@ -405,7 +405,8 @@ describe.each(["r1", "r2"] as const)("R1 and R2 (strategies-outputs-web §7.6, �
         BigInt(row.ending.total) - (previous + BigInt(row.surplusSaved) + BigInt(row.contributions.employee) + BigInt(row.contributions.employer) - BigInt(row.withdrawals.total)),
       );
     });
-    expect(largest).toBe(id === "r1" ? 1n : 2n);
+    // Measured 0.01 (R1) and 0.02 (R2); the design expected the largest under 0.02 (§7.7 (3)).
+    expect(largest <= 2n, `${id}: the largest difference is ${largest} cents`).toBe(true);
   });
 
   it(`${R} the gross-up needs at most ${id === "r1" ? 5 : 6} assess calls in any year (strategies-outputs-web §7.6, §7.7)`, () => {
@@ -675,9 +676,8 @@ describe("R4 a lognormal sanity check (strategies-outputs-web §7.9; r4.md; D17)
       expect(Math.abs(median / r4Expected.medianEndingReal - 1)).toBeLessThanOrEqual(r4Expected.medianToleranceRel);
       expect([out.summary.endingWealthReal.p10, out.summary.endingWealthReal.p25]).toEqual(["0", "0"]);
       expect([r4Expected.percentilesEndingReal.p10, r4Expected.percentilesEndingReal.p25]).toEqual([0, 0]);
-      // Measured (see the file's header): 7,040 of 10,000 and 337,269.91.
-      expect(out.successPaths).toBe(7040);
-      expect(out.summary.endingWealthReal.p50).toBe("33726991");
+      // Measured (see the file's header): 7,040 of 10,000 and 337,269.91. Not pinned here: T41's
+      // digests pin the engine's numbers; the gate's criteria are the two tolerances above.
       // HC-E3 on the gate's own run: two threads give the same output as inline, timing aside.
       const threaded = await runSimulation(input, { threads: 2 });
       const { timing: _a, ...inline } = out;
