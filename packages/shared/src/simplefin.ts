@@ -111,9 +111,13 @@ export const SimplefinAccountSet = z
   .passthrough();
 export type SimplefinAccountSet = z.infer<typeof SimplefinAccountSet>;
 
-/** What `readSimplefinAccountSet` left out, as an entry for the connection (the shape of `ConnectionError`). */
+/**
+ * What `readSimplefinAccountSet` left out, as an entry for the connection (the shape of
+ * `ConnectionError`). `errlist.unreadable` names no account: the Bridge's problem report could
+ * not be read, so the whole response is not taken as complete (audit a4-sync-parse-03, second round).
+ */
 export interface SimplefinReadProblem {
-  code: "account.unreadable" | "transaction.unreadable";
+  code: "account.unreadable" | "transaction.unreadable" | "errlist.unreadable";
   message: string;
   accountId?: string;
 }
@@ -125,7 +129,7 @@ export interface SimplefinReadResult {
   problems: SimplefinReadProblem[];
 }
 
-/** The body is not an account set at all (not an object, or `accounts` is not a list). */
+/** The body is not an account set at all (not an object, or `accounts` missing, null or not a list). */
 export class SimplefinShapeError extends Error {
   constructor(message: string) {
     super(message);
@@ -135,6 +139,25 @@ export class SimplefinShapeError extends Error {
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * What a response that is not an account set says about itself, for its error: the errlist
+ * entries as the connection would show them, then the plain messages that do not repeat one
+ * (as `errorsFromAccountSet` lists them, audit a4-sync-parse-12), sanitized and bounded.
+ */
+function bridgeSaid(errors: readonly string[], errlist: readonly SimplefinError[]): string {
+  const said: string[] = [];
+  const add = (text: string) => {
+    if (text && !said.includes(text)) said.push(text);
+  };
+  for (const e of errlist) if (e.code !== "unknown" || e.msg) add(describeSimplefinError(e));
+  const msgs = new Set(errlist.map((e) => sanitizeText(e.msg, 300)));
+  for (const s of errors) {
+    const text = sanitizeText(s, 300);
+    if (!msgs.has(text)) add(text);
+  }
+  return sanitizeText(said.join("; "), 200);
 }
 
 /** "balance-date: Required" for the first issue of a failed parse (our schema's words, never the value). */
@@ -150,29 +173,50 @@ function firstIssue(error: z.ZodError): string {
  * is recoverable"). An account that cannot be read is skipped and reported for itself, a
  * transaction that cannot be read is skipped and counted for its account, and every other
  * account is applied as usual; an `errlist` entry is never dropped (one without a code reads
- * as `unknown`). Only a body that is not an account set at all throws (`SimplefinShapeError`).
+ * as `unknown`). `errors` or `errlist` sent as a single value is a list of one; an `errlist`
+ * that is neither a list, an entry nor a message is reported (`errlist.unreadable`) and makes
+ * the response incomplete. Only a body that is not an account set at all throws
+ * (`SimplefinShapeError`): not an object, or `accounts` missing, null or not a list.
  * The input should already have gone through `jsonbSafe`, so that the ids read here are the
  * ones stored in the raw payload.
  */
 export function readSimplefinAccountSet(raw: unknown): SimplefinReadResult {
   if (!isPlainObject(raw)) throw new SimplefinShapeError("the response is not an account set");
-  const listOf = (key: "errors" | "errlist" | "accounts"): unknown[] => {
-    const value = raw[key];
-    if (value === undefined || value === null) return [];
-    if (!Array.isArray(value)) throw new SimplefinShapeError(`${key}: expected a list`);
-    return value;
-  };
-  const errors = listOf("errors").flatMap((e) => (typeof e === "string" ? [e] : typeof e === "number" ? [String(e)] : []));
-  const errlist = listOf("errlist").map((e): SimplefinError => {
+  const problems: SimplefinReadProblem[] = [];
+  // errors and errlist (audit a4-sync-parse-03, second round): a bare value is a list of one, and
+  // a missing or null one is empty, so their shape never costs the accounts.
+  const errorsValue = raw["errors"];
+  const errors = (Array.isArray(errorsValue) ? errorsValue : errorsValue === undefined || errorsValue === null ? [] : [errorsValue]).flatMap((e) =>
+    typeof e === "string" ? [e] : typeof e === "number" ? [String(e)] : [],
+  );
+  const errlistValue = raw["errlist"];
+  let errlistEntries: unknown[] = [];
+  if (Array.isArray(errlistValue)) errlistEntries = errlistValue;
+  else if (isPlainObject(errlistValue) || typeof errlistValue === "string") errlistEntries = [errlistValue];
+  else if (errlistValue !== undefined && errlistValue !== null) {
+    // Neither a list, an entry nor a message: what the Bridge reports about this response cannot be read at all.
+    problems.push({
+      code: "errlist.unreadable",
+      message: "The Bridge's list of problems could not be read, so this response was not taken as complete: pending items were kept, and the next sync asks again from the last complete one",
+    });
+  }
+  const errlist = errlistEntries.map((e): SimplefinError => {
     if (!isPlainObject(e)) return typeof e === "string" && e ? { code: "unknown", msg: e } : { code: "unknown" };
     const parsed = SimplefinError.parse(e);
     const out: SimplefinError = { ...parsed, code: parsed.code };
     for (const key of ["msg", "conn_id", "account_id"] as const) if (out[key] === undefined) delete out[key];
     return out;
   });
-  const problems: SimplefinReadProblem[] = [];
+  // accounts must be a list (an empty one is an account set). A 200 without one is not an answer
+  // to the request: read as an empty set it would move the high-water mark (second round, new issue).
+  const accountsValue = raw["accounts"];
+  if (!Array.isArray(accountsValue)) {
+    const said = bridgeSaid(errors, errlist);
+    const what = accountsValue === undefined || accountsValue === null ? "accounts: missing" : "accounts: expected a list";
+    throw new SimplefinShapeError(said ? `${what} (the Bridge said: ${said})` : what);
+  }
   const accounts: SimplefinAccount[] = [];
-  for (const entry of listOf("accounts")) {
+  for (const entry of accountsValue) {
     const id = isPlainObject(entry) && typeof entry["id"] === "string" && entry["id"] ? entry["id"] : undefined;
     const label = sanitizeText(isPlainObject(entry) && typeof entry["name"] === "string" ? entry["name"] : "", 100) || "Account";
     const fields = SimplefinAccountFields.safeParse(entry);
@@ -217,36 +261,47 @@ export function readSimplefinAccountSet(raw: unknown): SimplefinReadResult {
 
 const NOT_JSONB_SAFE = /\u0000|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 
+/** The deepest nesting `jsonbSafe` keeps: the value itself is level 1. */
+export const JSONB_SAFE_MAX_DEPTH = 1000;
+/** What stands in for a list or an object nested deeper than `JSONB_SAFE_MAX_DEPTH`. */
+export const JSONB_DEPTH_MARKER = `[not kept: nested more than ${JSONB_SAFE_MAX_DEPTH} levels deep]`;
+
 /**
- * A copy of a parsed JSON value that Postgres `jsonb` accepts: every NUL character and every
- * unpaired surrogate in a string or a key becomes U+FFFD (jsonb refuses `\u0000` and lone
- * surrogate escapes, so one such character in a bank's text failed the whole sync). Iterative,
- * so a deeply nested body cannot exhaust the stack.
+ * A copy of a parsed JSON value that Postgres `jsonb` accepts and that can be written: every
+ * NUL character and every unpaired surrogate in a string or a key becomes U+FFFD (jsonb refuses
+ * `\u0000` and lone surrogate escapes, so one such character in a bank's text failed the whole
+ * sync), and a list or an object nested deeper than `JSONB_SAFE_MAX_DEPTH` levels becomes
+ * `JSONB_DEPTH_MARKER` (audit a4-sync-parse-05, second round: `JSON.stringify`, which the driver
+ * runs on the value, overflows the stack at about 6,000 levels, and Postgres refuses jsonb nested
+ * 20,000 deep, so a 40 KB body of nested lists failed the sync and lost its payload). No
+ * account set comes near that depth. The copy itself is iterative, so any depth can be copied.
  */
 export function jsonbSafe(value: unknown): unknown {
   const clean = (s: string): string => s.replace(NOT_JSONB_SAFE, "\uFFFD");
-  const stack: Array<{ from: unknown; into: unknown[] | Record<string, unknown> }> = [];
-  const shell = (v: unknown): unknown => {
+  const stack: Array<{ from: unknown; into: unknown[] | Record<string, unknown>; depth: number }> = [];
+  /** `v` at nesting level `depth`: a scalar as it is, a container as an empty shell filled from the stack. */
+  const shell = (v: unknown, depth: number): unknown => {
+    if (typeof v === "object" && v !== null && depth > JSONB_SAFE_MAX_DEPTH) return JSONB_DEPTH_MARKER;
     if (Array.isArray(v)) {
       const into: unknown[] = new Array<unknown>(v.length);
-      stack.push({ from: v, into });
+      stack.push({ from: v, into, depth });
       return into;
     }
     if (typeof v === "object" && v !== null) {
       const into: Record<string, unknown> = {};
-      stack.push({ from: v, into });
+      stack.push({ from: v, into, depth });
       return into;
     }
     return typeof v === "string" ? clean(v) : v;
   };
-  const result = shell(value);
+  const result = shell(value, 1);
   while (stack.length > 0) {
-    const { from, into } = stack.pop()!;
+    const { from, into, depth } = stack.pop()!;
     if (Array.isArray(into)) {
       const list = from as unknown[];
-      for (let i = 0; i < list.length; i++) into[i] = shell(list[i]);
+      for (let i = 0; i < list.length; i++) into[i] = shell(list[i], depth + 1);
     } else {
-      for (const [key, v] of Object.entries(from as Record<string, unknown>)) into[clean(key)] = shell(v);
+      for (const [key, v] of Object.entries(from as Record<string, unknown>)) into[clean(key)] = shell(v, depth + 1);
     }
   }
   return result;

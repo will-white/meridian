@@ -65,7 +65,7 @@ function returnModel(input: SimInput, summary: SimSummary | null | undefined): s
   if (summary !== undefined && summary !== null && m.kind !== "parametric") return modelText(summary.model);
   switch (m.kind) {
     case "historical":
-      return `Historical sequences (${m.cohorts === "auto" ? "complete stretches of history when enough exist, else wrap-around" : m.cohorts === "complete" ? "complete stretches of history only" : "every start year, wrapping around"})`;
+      return `Historical sequences (${m.cohorts === "auto" ? "complete stretches of history when every life is a fixed age and at least 30 stretches exist, else wrap-around" : m.cohorts === "complete" ? "complete stretches of history only" : "every start year, wrapping around"})`;
     case "bootstrap":
       return `Block bootstrap of the historical record, mean block ${m.meanBlockYears} years`;
     case "parametric": {

@@ -98,6 +98,64 @@ describe("the resolver through the real planner environment (seams §11 step 23)
     expect(engineIssue[0]!.message).toContain("100058 paths of 69 years");
   });
 
+  it("13 a birth year after the plan's start (2077 for Sam's 1977, or 2027) is an error issue on the form, not a throw from the real contribution limit", () => {
+    // The real contributionLimit refuses a negative age (RangeError); Sam owns R, whose contribution is counted.
+    expect(() => contributionLimit(2026, -1, "ira")).toThrow(RangeError);
+    for (const [birthYear, expected] of [
+      [2077, ["born_after_start@people.p2.birthYear", "horizon_too_long@people"]], // 2077 + 95 = 2172: 147 years
+      [2027, ["born_after_start@people.p2.birthYear"]], // 2027 + 95 = 2122: 97 years
+    ] as const) {
+      const doc = structuredClone(fixtureProfileDoc());
+      doc.people!.p2!.birthYear = birthYear;
+      const args = fixtureResolveArgs({ doc: RetirementProfileDoc.parse(doc) });
+      const server = resolvePlan(args, context());
+      const browser = resolvePlan(args, fixtureResolveContext());
+      const errorsOf = (r: typeof server) => r.issues.filter((i) => i.severity === "error").map((i) => `${i.code}@${i.path}`);
+      expect(server.input, String(birthYear)).toBeUndefined();
+      expect(errorsOf(server), String(birthYear)).toEqual(expected);
+      expect(errorsOf(browser), String(birthYear)).toEqual(expected);
+    }
+  });
+
+  it("C13 the real engine's return-model refusals come back at settings.returnModel", () => {
+    // Sam on a fixed life to 119: 2005 + 119 = 2124, 99 plan years against 98 years of data (1928 to 2025), so no
+    // complete cohort exists (98 − 99 + 1 = 0).
+    const doc = structuredClone(fixtureProfileDoc());
+    doc.people!.p2! = { ...doc.people!.p2!, birthYear: 2005, longevity: { mode: "fixed", age: 119 } };
+    const longArgs = fixtureResolveArgs({ doc: RetirementProfileDoc.parse(doc) });
+    longArgs.settings = { ...longArgs.settings, returnModel: { kind: "historical", cohorts: "complete" } };
+    const long = resolvePlan(longArgs, context());
+    expect(long.input).toBeUndefined();
+    expect(long.issues.filter((i) => i.severity === "error").map((i) => [i.code, i.path])).toEqual([["historical_horizon_too_long", "settings.returnModel"]]);
+    expect(long.issues.find((i) => i.code === "historical_horizon_too_long")!.message).toContain("99 years against 98 years of data");
+    // Stocks–bonds 0.9, bonds–bills 0.9 and stocks–bills −0.9 cannot hold together: the 3 × 3 block's determinant is
+    // 1 × (1 − 0.81) − 0.9 × (0.9 + 0.81) − 0.9 × (0.81 + 0.9) = 0.19 − 3.078 < 0.
+    const pdArgs = fixtureResolveArgs();
+    pdArgs.settings = {
+      ...pdArgs.settings,
+      returnModel: {
+        kind: "parametric",
+        preset: "custom",
+        params: {
+          meanKind: "arithmetic",
+          stocks: { meanBp: 1000, volBp: 2000 },
+          bonds: { meanBp: 500, volBp: 800 },
+          bills: { meanBp: 300, volBp: 300, persistenceBp: 0 },
+          inflation: { meanBp: 300, volBp: 400, persistenceBp: 5000 },
+          correlationBp: [
+            [10000, 9000, -9000, 0],
+            [9000, 10000, 9000, 0],
+            [-9000, 9000, 10000, 0],
+            [0, 0, 0, 10000],
+          ],
+        },
+      },
+    };
+    const pd = resolvePlan(pdArgs, context());
+    expect(pd.input).toBeUndefined();
+    expect(pd.issues.filter((i) => i.severity === "error").map((i) => [i.code, i.path])).toEqual([["correlation_not_positive_definite", "settings.returnModel"]]);
+  });
+
   it("every rule set the engine lists resolves and prepares", () => {
     for (const id of ENV.ruleSets) {
       const args = fixtureResolveArgs();
