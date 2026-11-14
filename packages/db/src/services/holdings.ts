@@ -295,9 +295,11 @@ export interface RebuildImpliedPricesResult {
  * snapshot row carrying a non-zero quantity and a price, on a non-cash security, upsert an
  * `implied` close under the precedence rule. Several accounts on one date: the row with the
  * largest `value_cents` wins, ties by `account_id` ascending, so the result never depends on
- * import order. A close of 0 is never derived from a row with a value: a row stored with a
- * 0 price beside a non-zero value (written before `statementPrice` applied) gives
- * value ÷ quantity instead, and nothing at all if even that rounds to 0. Implied rows in the
+ * import order. The close is the row's `statementPrice`, so a row stored before that rule
+ * applied with a price that does not produce its value (a 0.00, a stale or a mis-mapped price
+ * column beside a real value) gives value ÷ quantity instead, the row's own price standing
+ * only when it produces the value; a close of 0 is never derived from a row with a value
+ * (nothing is written if even value ÷ quantity rounds to 0). Implied rows in the
  * scope that no snapshot row derives any more are removed (a deleted or replaced snapshot
  * takes its prices with it); provider and manual rows are never touched. Idempotent: a second
  * run writes nothing.
@@ -325,8 +327,8 @@ export async function rebuildImpliedPrices(tx: DbOrTx, scope: RebuildImpliedPric
   for (const r of rows) {
     const key = `${r.securityId}|${r.date}`;
     if (winners.has(key)) continue;
-    let close = qtyFromDb(r.price)!;
-    if (close === 0n && r.valueCents !== 0n) close = impliedPrice(r.valueCents, qtyFromDb(r.quantity)!);
+    // The row's price as the snapshot writer would store it today, so a row stored before that rule heals here too.
+    const close = statementPrice(qtyFromDb(r.quantity), qtyFromDb(r.price), r.valueCents)!;
     if (close === 0n && r.valueCents !== 0n) continue;
     winners.set(key, { securityId: r.securityId, date: r.date, close });
   }

@@ -8,6 +8,7 @@ import {
   FIXED8_SCALE,
   holdingsAsOf,
   isInvestmentAccountType,
+  POSITION_TOLERANCE,
   summarizeRealized,
   valueLots,
   type AssetClass,
@@ -476,8 +477,11 @@ export interface PickSale {
  * The lots design's validation (seams C7): the row is a sell or a transfer out (400
  * `not_a_sale`); every lot exists (400 `lot_not_found`) and belongs to the same account and
  * security (400 `pick_security_mismatch`); Σ picks ≤ the sale (400 `picks_exceed_sale`); each
- * pick ≤ the lot's quantity open as of the sale, from a dry build without this sale's picks
- * (400 `pick_exceeds_lot`). Returns the picks with positions in input order.
+ * pick on a lot open as of the sale, from a dry build without this sale's picks, and at most
+ * 0.001 shares (`POSITION_TOLERANCE`) above its open quantity (400 `pick_exceeds_lot`): within
+ * the tolerance the engine takes exactly the lot (audit decision A3), so a pick of the
+ * statement's 0.3336 shares on a lot a split left at 0.33333333 is written. Returns the picks
+ * with positions in input order.
  */
 export async function validateLotPicks(tx: DbOrTx, sale: PickSale, picks: readonly LotPickInputRecord[]): Promise<Array<LotPickInputRecord & { position: number }>> {
   const isSale = sale.type === "sell" || (sale.type === "transfer" && sale.transferDirection === "out" && sale.securityId !== null);
@@ -526,7 +530,7 @@ export async function validateLotPicks(tx: DbOrTx, sale: PickSale, picks: readon
   const open = new Map(dry.result.lots.map((l) => [l.id, l.quantity]));
   for (const p of picks) {
     const available = open.get(p.lotId) ?? 0n;
-    if (p.quantity > available) {
+    if (available <= 0n || p.quantity > available + POSITION_TOLERANCE) {
       throw new PlanError(400, "pick_exceeds_lot", `Lot ${p.lotId} has ${fixed8ToDb(available)} shares open on ${sale.date}, not ${fixed8ToDb(p.quantity)}`);
     }
   }

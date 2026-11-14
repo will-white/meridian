@@ -38,7 +38,9 @@ import { addMonthsClamped, monthKey, type MonthKey } from "./months.js";
  *   position tolerance (`POSITION_TOLERANCE`) absorbs the 10⁻⁸ drift, in the position check AND
  *   in disposals: a sale or transfer out within the tolerance of the whole open position
  *   disposes of exactly the position (a hair above it is not an oversell, a hair below it leaves
- *   no dust lot), and a pick within the tolerance of its lot takes the lot. Basis, acquisition
+ *   no dust lot), and a pick within the tolerance of its lot takes exactly the lot, above or
+ *   below it, and counts as the shares it names (nothing of another lot for a hair above, no
+ *   dust for a hair below; the FIFO remainder is the sale less the picks). Basis, acquisition
  *   date and original quantity are unchanged; a lot a reverse split would round to 0 shares
  *   keeps one unit (10⁻⁸) so its basis stays on an open lot until a disposal realizes it.
  * - A transfer out disposes lots (picks, then FIFO) at basis with no gain (`term = none`) and
@@ -410,7 +412,9 @@ export function buildLots(input: LotBuildInput): LotBuildResult {
     // Within the tolerance of the whole open position the row disposes of exactly the position:
     // split rounding and statement precision neither oversell it nor leave a dust lot behind.
     const open = openLots(securityId).reduce((acc, l) => acc + l.quantity, 0n);
-    let remaining = open > 0n && absBig(q - open) <= POSITION_TOLERANCE ? open : q;
+    const wholePosition = open > 0n && absBig(q - open) <= POSITION_TOLERANCE;
+    // What the picks have not accounted for yet: the sale's shares, or the position when the sale is a hair below it.
+    let remaining = wholePosition && open > q ? open : q;
     const picks = picksBySell.get(txn.id) ?? [];
     if (kind === "sell" && input.lotMethod === "specific" && picks.length === 0) {
       warnings.push({ code: "needs_lot_pick", txnId: txn.id, securityId });
@@ -421,19 +425,27 @@ export function buildLots(input: LotBuildInput): LotBuildResult {
         warnings.push({ code: "pick_unavailable", txnId: txn.id, securityId, quantity: pick.quantity, detail: pick.lotId });
         continue;
       }
-      let take = pick.quantity;
+      // A pick within the tolerance of its lot is that lot (audit decision A3): it takes exactly the
+      // lot, so no dust stays open below it, and it accounts for the shares it names, so a hair it
+      // names beyond the lot is not taken from another lot; the FIFO remainder is the sale less the picks.
+      const isLot = absBig(pick.quantity - lot.quantity) <= POSITION_TOLERANCE;
+      let take = isLot ? lot.quantity : pick.quantity;
       if (take > lot.quantity) {
-        if (take - lot.quantity > POSITION_TOLERANCE) warnings.push({ code: "pick_exceeds_lot", txnId: txn.id, securityId, quantity: pick.quantity, detail: lot.id });
+        warnings.push({ code: "pick_exceeds_lot", txnId: txn.id, securityId, quantity: pick.quantity, detail: lot.id });
         take = lot.quantity;
       }
-      if (take > remaining) {
+      let accounted = isLot ? pick.quantity : take;
+      if (accounted > remaining) {
         warnings.push({ code: "pick_exceeds_sale", txnId: txn.id, securityId, quantity: pick.quantity, detail: lot.id });
-        take = remaining;
+        accounted = remaining;
+        if (take > remaining) take = remaining;
       }
       if (take <= 0n) continue;
       pieces.push(consume(lot, take, txn.date));
-      remaining -= take;
+      remaining -= accounted;
     }
+    // A whole-position row takes every lot the picks left, whatever the picks' own hairs added up to.
+    if (wholePosition) remaining = openLots(securityId).reduce((acc, l) => acc + l.quantity, 0n);
     if (remaining > 0n) {
       for (const lot of openLots(securityId)) {
         if (remaining <= 0n) break;

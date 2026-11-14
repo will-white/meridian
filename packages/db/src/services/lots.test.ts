@@ -6,7 +6,7 @@ import { account, investmentTxn, lot, lotDisposal, lotPick } from "../schema/ind
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "../test/db.js";
 import { INV_SEED_TODAY, seedInvestmentFixture, type InvestmentSeed } from "../test/investmentSeed.js";
 import { listAudit } from "./audit.js";
-import { deleteInvestmentTxn } from "./investmentTxns.js";
+import { createInvestmentTxn, deleteInvestmentTxn } from "./investmentTxns.js";
 import { buildAccountLots, computeHoldings, listLots, listRealized, loadInvestmentTxns, rebuildLots, setLotPicks } from "./lots.js";
 import { createSecurity, setManualPrice } from "./securities.js";
 
@@ -334,5 +334,55 @@ describe.skipIf(!TEST_DATABASE_URL)("lots service (TC26)", () => {
     // The security filter and the all-accounts listing read the same state.
     const all = await listLots(t.db, { securityId: acme, asOf: "2026-06-30" });
     expect(all.lots.map((l) => [l.accountName, l.ticker, l.quantity])).toEqual([["As-of Brokerage", "ACME", f8("10")]]);
+  });
+
+  it("b2-investment-engines (second round), p3-09: a pick within 0.001 shares of its lot is accepted on both routes and takes exactly the lot", async () => {
+    const P = (await t.db.insert(account).values({ name: "Split Picks", type: "brokerage", taxTreatment: "taxable", onBudget: false, lotMethod: "specific" }).returning({ id: account.id }))[0]!.id;
+    const VXUS = S.securities.vxus;
+    // Two 1-share lots at 5.00, 1:3 → 0.33333333 each (basis 500 each); the sales are at 20.00 on 09-02.
+    for (const date of ["2025-03-03", "2025-03-04"] as const) await insertTxn({ accountId: P, securityId: VXUS, date, type: "buy", quantity: "1", price: "5", amountCents: -500n });
+    await insertTxn({ accountId: P, securityId: VXUS, date: "2025-09-01", type: "split", splitNum: 1, splitDen: 3, amountCents: 0n });
+    await t.db.transaction((tx) => rebuildLots(tx, P));
+    const [first, second] = await lotsOf(P);
+    expect([first!.quantity, second!.quantity]).toEqual([f8("0.33333333"), f8("0.33333333")]);
+    const sell = (quantity: string, lotPicks: Array<{ lotId: string; quantity: bigint }>) =>
+      createInvestmentTxn(t.db, { accountId: P, date: "2025-09-02", type: "sell", securityId: VXUS, quantity: f8(quantity), price: f8("20"), lotPicks }, { ...ctx(), today: INV_SEED_TODAY });
+    const pieces = async () => (await disposalsOf(P)).map((d) => [d.lotId, d.quantity, d.proceedsCents, d.basisCents, d.gainCents]);
+
+    // A hair above the lot (0.3336 against 0.33333333): written, and the lot alone is sold (0.3336 × 20.00 = 6.672 → 667).
+    const above = await sell("0.3336", [{ lotId: first!.id, quantity: f8("0.3336") }]);
+    expect(above.items[0]!.lotPicks.map((p) => [p.lotId, p.quantity])).toEqual([[first!.id, f8("0.3336")]]);
+    expect(above.rebuildWarnings).toEqual([]);
+    expect(await pieces()).toEqual([[first!.id, f8("0.33333333"), 667n, 500n, 167n]]);
+    expect((await lotsOf(P)).map((l) => [l.quantity, l.costBasisCents, l.closedDate])).toEqual([
+      [0n, 0n, "2025-09-02"],
+      [f8("0.33333333"), 500n, null],
+    ]);
+    // Through PUT …/lot-picks as well: cleared, the sale is FIFO and reaches into the second lot; picked again, it is the first lot alone.
+    const saleId = above.items[0]!.id;
+    expect((await setLotPicks(t.db, saleId, [], ctx())).warnings.map((w) => w.code)).toEqual(["needs_lot_pick"]);
+    expect((await disposalsOf(P)).map((d) => [d.lotId, d.quantity])).toEqual([
+      [first!.id, f8("0.33333333")],
+      [second!.id, f8("0.00026667")],
+    ]);
+    const repicked = await setLotPicks(t.db, saleId, [{ lotId: first!.id, quantity: f8("0.3336") }], ctx());
+    expect(repicked.warnings).toEqual([]);
+    expect(await pieces()).toEqual([[first!.id, f8("0.33333333"), 667n, 500n, 167n]]);
+    await deleteInvestmentTxn(t.db, saleId, {}, ctx());
+
+    // A hair below the lot (0.3333): the lot is closed, no 0.00003333-share lot with 0 basis is left (6.666 → 667).
+    const below = await sell("0.3333", [{ lotId: first!.id, quantity: f8("0.3333") }]);
+    expect(below.rebuildWarnings).toEqual([]);
+    expect(await pieces()).toEqual([[first!.id, f8("0.33333333"), 667n, 500n, 167n]]);
+    expect((await lotsOf(P)).map((l) => [l.quantity, l.costBasisCents, l.closedDate])).toEqual([
+      [0n, 0n, "2025-09-02"],
+      [f8("0.33333333"), 500n, null],
+    ]);
+
+    // Beyond the tolerance the pick is still refused (0.3345 is 0.00116667 above the second lot), and a lot the day's
+    // earlier sale closed takes no pick however small.
+    await expect(sell("0.3345", [{ lotId: second!.id, quantity: f8("0.3345") }])).rejects.toMatchObject({ status: 400, code: "pick_exceeds_lot", message: expect.stringContaining("has 0.33333333 shares open") });
+    await expect(sell("0.0005", [{ lotId: first!.id, quantity: f8("0.0005") }])).rejects.toMatchObject({ status: 400, code: "pick_exceeds_lot" });
+    expect((await disposalsOf(P)).map((d) => d.closeTxnId)).toEqual([below.items[0]!.id]);
   });
 });
