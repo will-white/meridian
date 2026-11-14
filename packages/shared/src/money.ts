@@ -27,3 +27,12 @@ export function formatCents(cents: bigint): string {
   const frac = (abs % 100n).toString().padStart(2, "0");
   return `${negative ? "-" : ""}${whole}.${frac}`;
 }
+
+/** Cents in dollars for a sentence, e.g. -1234567n -> "-$12,345.67" (audit a8-ledger-ui-01, second round: an API message speaks as the pages do). */
+export function formatDollars(cents: bigint): string {
+  const negative = cents < 0n;
+  const abs = negative ? -cents : cents;
+  const whole = (abs / 100n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const frac = (abs % 100n).toString().padStart(2, "0");
+  return `${negative ? "-" : ""}$${whole}.${frac}`;
+}

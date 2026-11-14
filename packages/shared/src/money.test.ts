@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCents, parseDecimalToCents } from "./money.js";
+import { formatCents, formatDollars, parseDecimalToCents } from "./money.js";
 
 describe("parseDecimalToCents", () => {
   it("parses SimpleFIN-style amounts", () => {
@@ -22,5 +22,15 @@ describe("formatCents", () => {
     for (const s of ["100.23", "-33293.43", "0.05", "-0.05", "0.00"]) {
       expect(formatCents(parseDecimalToCents(s))).toBe(s);
     }
+  });
+});
+
+describe("formatDollars (audit a8-ledger-ui-01, second round)", () => {
+  it("signs, groups and keeps the cents", () => {
+    expect(formatDollars(-1234567n)).toBe("-$12,345.67");
+    expect(formatDollars(5000n)).toBe("$50.00");
+    expect(formatDollars(-5n)).toBe("-$0.05");
+    expect(formatDollars(0n)).toBe("$0.00");
+    expect(formatDollars(999999999999999n)).toBe("$9,999,999,999,999.99");
   });
 });

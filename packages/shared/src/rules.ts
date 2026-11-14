@@ -280,3 +280,65 @@ export function evaluateRules(rules: readonly RuleLike[], input: RuleContext): R
   outcome.tags = [...tagSet];
   return outcome;
 }
+
+/**
+ * What "always do this" would do for the transaction just recategorized (audit a8-ledger-ui-09,
+ * second round), by the engine itself rather than by the shape of the rules:
+ *
+ * - `exists`: the rules already give this transaction the category, and a rule of the shape the
+ *   prompt writes (its only condition the payee, `equals`, matched as the engine matches it,
+ *   names and other names included; it sets the category and does not mark a transfer) is one
+ *   of the rules that reached it, so writing it again would only add a duplicate; or a new rule
+ *   would not be reached (an earlier rule stops the run) while the rules already give the
+ *   category. The rule named is the one that decided, or else the last such rule that matched.
+ * - `offer`: a rule "payee equals <name> → category" written after every other rule (where the
+ *   prompt puts it) would give the transaction the category, because later rules override
+ *   earlier ones.
+ * - `blocked`: it would not, and `ruleId` says why: an earlier rule ends the run (`stop`), marks
+ *   the transaction a transfer (`transfer`), or renames its payee so that the new rule's
+ *   condition no longer holds (`payee`). Writing the rule would change nothing for it.
+ */
+export type AlwaysRuleVerdict = { verdict: "offer" } | { verdict: "exists"; ruleId: string } | { verdict: "blocked"; ruleId: string; reason: "stop" | "transfer" | "payee" };
+
+/** The id the would-be rule is evaluated under; no stored rule has it (rule ids are UUIDs). */
+const ALWAYS_RULE_ID = "always-do-this";
+
+export function alwaysRuleVerdict(rules: readonly RuleLike[], input: RuleContext, categoryId: string): AlwaysRuleVerdict {
+  const byId = new Map(rules.map((r) => [r.id, r]));
+  const now = evaluateRules(rules, input);
+  // The rule that set the category the rules give now (later rules override earlier ones), when they give this one.
+  const decider =
+    now.categoryId === categoryId && now.transfer !== true
+      ? now.matchedRuleIds
+          .map((id) => byId.get(id)!)
+          .filter((r) => r.actions.setCategoryId !== undefined)
+          .pop()
+      : undefined;
+  if (decider) {
+    const sameShape = (r: RuleLike) => {
+      const c = r.conditions;
+      return c.payee?.op === "equals" && !c.description && !c.amount && c.accountId === undefined && !c.dayOfMonth && r.actions.setCategoryId === categoryId && r.actions.markTransfer !== true;
+    };
+    const existing = sameShape(decider) ? decider : now.matchedRuleIds.map((id) => byId.get(id)!).filter(sameShape).pop();
+    if (existing) return { verdict: "exists", ruleId: existing.id };
+  }
+  const last = rules.reduce((max, r) => Math.max(max, r.position), 0);
+  const candidate: RuleLike = { id: ALWAYS_RULE_ID, position: last + 1, enabled: true, conditions: { payee: { op: "equals", value: input.payee } }, actions: { setCategoryId: categoryId } };
+  const after = evaluateRules([...rules, candidate], input);
+  const reached = after.matchedRuleIds.includes(ALWAYS_RULE_ID);
+  if (reached && after.categoryId === categoryId && after.transfer !== true) return { verdict: "offer" };
+  // A new rule would not be reached, but the rules already give the category: the rule that does is named.
+  if (decider) return { verdict: "exists", ruleId: decider.id };
+  const matched = after.matchedRuleIds.filter((id) => id !== ALWAYS_RULE_ID).map((id) => byId.get(id)!);
+  const lastWith = (has: (r: RuleLike) => boolean) => matched.filter(has).pop();
+  if (!reached) {
+    // The run ends right after the rule that stops it; otherwise the payee was renamed before the new rule.
+    const stopper = matched[matched.length - 1];
+    if (stopper?.actions.stop) return { verdict: "blocked", ruleId: stopper.id, reason: "stop" };
+    const renamer = lastWith((r) => r.actions.setPayee !== undefined);
+    if (renamer) return { verdict: "blocked", ruleId: renamer.id, reason: "payee" };
+    return { verdict: "offer" };
+  }
+  const transfer = lastWith((r) => r.actions.markTransfer === true);
+  return transfer ? { verdict: "blocked", ruleId: transfer.id, reason: "transfer" } : { verdict: "offer" };
+}

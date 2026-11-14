@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import {
+  alwaysRuleCheck,
   createManualTransaction,
   deleteTransaction,
   enqueueJob,
@@ -14,6 +15,8 @@ import {
   updateTransaction,
 } from "@meridian/db";
 import {
+  AlwaysRuleCheck,
+  AlwaysRuleQuery,
   CreateManualTransactionBody,
   OkResponse,
   PairTransactionBody,
@@ -50,6 +53,13 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       ...(q.planScope !== undefined ? { planScope: q.planScope } : {}),
     });
     return { items: result.items.map(toTransactionView), nextCursor: result.nextCursor };
+  });
+
+  // Audit a8-ledger-ui-09, second round: the register asks before it offers "always do this".
+  r.get("/transactions/:id/always-rule", { schema: { params: UuidParams, querystring: AlwaysRuleQuery, response: { 200: AlwaysRuleCheck } } }, async (request) => {
+    const check = await alwaysRuleCheck(app.db, request.params.id, request.query.categoryId);
+    if (!check) throw notFound("Transaction not found");
+    return check;
   });
 
   r.get("/transactions/:id", { schema: { params: UuidParams, response: { 200: TransactionView } } }, async (request) => {

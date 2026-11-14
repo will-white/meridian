@@ -217,4 +217,4 @@ Tests:
 
 ### Checks (second round)
 
-`pnpm typecheck`, `pnpm lint` and `pnpm build` pass. Suites ran with `TEST_DATABASE_URL` and the `meridian_fix_a_` prefix, all with the lock-order check on, after the branch was brought in. Counts: shared 1051, db 460, api 377, worker 129 and web 559 tests pass. The branch had meanwhile gained Phase 4's migration `0013_phase4_retirement`, so this round's migration is `0014_ledger_decisions`, generated after it.
+`pnpm typecheck`, `pnpm lint` and `pnpm build` pass. Suites ran with `TEST_DATABASE_URL` and the `meridian_fix_a_` prefix, all with the lock-order check on, after the branch was brought in. Counts: shared 1051, db 460, api 377, worker 129 and web 559 tests pass. The branch had meanwhile gained Phase 4's migration `0013_phase4_retirement`, so this round's migration is `0014_ledger_decisions`, generated after it. The a8-ledger-ui second round then took decisions 128 to 130, so this round's are 131 to 135. After bringing that in (merge commit), all checks were run again and pass: shared 1058, db 464, api 379, worker 130 and web 567 tests.

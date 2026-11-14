@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   describeSimplefinError,
   impliedPrice,
@@ -18,7 +18,7 @@ import {
   type SimplefinReadProblem,
 } from "@meridian/shared";
 import type { Db } from "../index.js";
-import { account, type ConnectionError } from "../schema/index.js";
+import { account, importLog, job, type ConnectionError } from "../schema/index.js";
 import { upsertSimplefinAccount } from "./accounts.js";
 import { PlanError } from "./audit.js";
 import { errorMessageOf } from "./driverError.js";
@@ -356,6 +356,15 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
   const partlyRead = new Set(readProblems.flatMap((p) => (p.code === "transaction.unreadable" && p.accountId !== undefined ? [p.accountId] : [])));
   const feedErrors: ConnectionError[] = [];
   const balanceDates: IsoDate[] = [];
+  // Accounts reopened whose replay of the stored responses has not run yet (a8-ledger-ui-02, second round).
+  const catchingUp = new Set(
+    (
+      await db
+        .select({ accountId: sql<string>`${job.payload}->>'accountId'` })
+        .from(job)
+        .where(and(eq(job.type, "simplefin.reprocess_transactions"), inArray(job.status, ["queued", "running"]), sql`${job.payload}->>'reason' = 'account_reopened'`))
+    ).map((r) => r.accountId),
+  );
 
   for (const sf of options.accountSet.accounts) {
     const upserted = await db.transaction((tx) => upsertSimplefinAccount(tx, options.connectionId, sf));
@@ -438,7 +447,9 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
     if (options.importLogId) ingestOptions.importLogId = options.importLogId;
     if (options.windowStart) ingestOptions.windowStart = options.windowStart;
     // A list with a transaction left out is not the whole list: a pending row missing from it may be that one.
-    if (health.affects(sf) || unreadableErrlist || unreadable > 0 || partlyRead.has(accountLabel)) ingestOptions.keepUnmatchedPending = true;
+    // Nor is the ledger's view of a reopened account until its replay has run (a8-ledger-ui-02, second round): a
+    // purchase pending at the close may have posted before this window, in a payload the replay has yet to read.
+    if (health.affects(sf) || unreadableErrlist || unreadable > 0 || partlyRead.has(accountLabel) || catchingUp.has(accountId)) ingestOptions.keepUnmatchedPending = true;
     const stats = await ingestTransactions(db, incoming, ingestOptions);
     totals.created += stats.created;
     totals.updated += stats.updated;
@@ -497,10 +508,16 @@ export interface ReplayAccountSetResult {
  * of a sync) after a reader or ingest fix, including items older than the Bridge's 93-day window
  * that a full resync cannot reach. Replay mode (`ingestTransactions` with `replay`): posted
  * items the ledger lacks are inserted (or recognized as rows it has under another id, or as
- * rows the household deleted); a known row is left as it is, because the live feed keeps its
- * bank-owned fields current; pending items are never inserted and no pending row is replaced or
- * removed, because an old payload is not the feed's current view. Accounts, balances and
- * holdings are not touched (holdings have their own replay). Running it twice changes nothing.
+ * rows the household deleted); a known posted row is left as it is, because the live feed keeps
+ * its bank-owned fields current; pending items are never inserted and no pending row is
+ * removed, because an old payload is not the feed's current view. A pending row whose purchase
+ * the payload shows posted goes through what the sync does to it (audit a8-ledger-ui-02, second
+ * round: an account closed while a purchase was pending took none of the payloads in which it
+ * posted): under the same id the row is posted, under a new id the pending row the payload no
+ * longer lists is replaced in place, so it stays one row with the household's edits. Only rows
+ * the ledger held when the payload was fetched are matched (`importLogId`'s start). Accounts,
+ * balances and holdings are not touched (holdings have their own replay). Running it twice
+ * changes nothing.
  */
 export async function replayAccountSetTransactions(db: Db, options: { connectionId: string; accountSet: SimplefinAccountSet; importLogId?: string; now?: Date }): Promise<ReplayAccountSetResult> {
   const rules = await loadRules(db);
@@ -511,6 +528,8 @@ export async function replayAccountSetTransactions(db: Db, options: { connection
     .from(account)
     .where(eq(account.connectionId, options.connectionId));
   const byExternalId = new Map(accounts.filter((a) => a.externalId !== null && !a.closed).map((a) => [a.externalId!, a]));
+  // When the payload was fetched: the pending rows the ledger held then are the ones it can post (a8-ledger-ui-02, second round).
+  const [fetched] = options.importLogId ? await db.select({ startedAt: importLog.startedAt }).from(importLog).where(eq(importLog.id, options.importLogId)) : [];
   let accountsUnknown = 0;
   let earliest: IsoDate | undefined;
   for (const sf of options.accountSet.accounts) {
@@ -519,18 +538,29 @@ export async function replayAccountSetTransactions(db: Db, options: { connection
       accountsUnknown++;
       continue;
     }
+    // Pending items go in too, so the ingest knows which pending rows the payload still lists; it inserts none of them.
     const incoming: IncomingTransaction[] = [];
     for (const t of sf.transactions) {
       const amount = parseSimplefinAmount(t.amount);
       if (!amount) continue;
       const item = toIncomingTransaction(t, amount.cents, householdDay);
-      if (item.pending) continue;
       incoming.push(item);
-      if (!earliest || item.date < earliest) earliest = item.date;
+      if (!item.pending && (!earliest || item.date < earliest)) earliest = item.date;
     }
-    const stats = await ingestTransactions(db, incoming, { accountId: acct.id, accountType: acct.type, source: "simplefin", rules, replay: true, ...(options.importLogId ? { importLogId: options.importLogId } : {}) });
+    const stats = await ingestTransactions(db, incoming, {
+      accountId: acct.id,
+      accountType: acct.type,
+      source: "simplefin",
+      rules,
+      replay: true,
+      ...(options.importLogId ? { importLogId: options.importLogId } : {}),
+      ...(fetched ? { replayFetchedAt: fetched.startedAt } : {}),
+    });
     for (const key of Object.keys(totals) as Array<keyof typeof totals>) totals[key] += stats[key];
+    if (stats.earliestReleased && (!earliest || stats.earliestReleased < earliest)) earliest = stats.earliestReleased;
   }
-  const transfersPaired = totals.created > 0 && earliest ? await db.transaction((tx) => pairTransfersInDb(tx, { since: earliest! })) : 0;
+  // As after a sync: inserted rows, replaced pending rows and released partners may pair.
+  const pairing = totals.created > 0 || totals.replacedPending > 0 || totals.releasedTransfers > 0;
+  const transfersPaired = pairing && earliest ? await db.transaction((tx) => pairTransfersInDb(tx, { since: earliest! })) : 0;
   return { accounts: options.accountSet.accounts.length, accountsUnknown, stats: totals, transfersPaired };
 }

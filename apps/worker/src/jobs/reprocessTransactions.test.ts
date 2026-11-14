@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { account, category, connection, deleteTransaction, enqueueJob, importLog, job, setTransactionSplits, split, transaction, type Db, type JobRow } from "@meridian/db";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "@meridian/db/testing";
@@ -27,7 +27,9 @@ function fakeJob(p: Record<string, unknown>): JobRow {
  * Audit a5-ingest-transfers-13: stored sync payloads can be replayed for their transactions, so
  * an item an older reader or ingest missed is read again even when it is older than the
  * Bridge's 93-day window. A replay inserts only posted items the ledger lacks; it never inserts
- * a pending item, removes a pending row or changes a row the ledger has.
+ * a pending item, removes a pending row or changes a posted row the ledger has. A pending row
+ * whose purchase a payload shows posted goes through what the sync does to it (audit
+ * a8-ledger-ui-02, second round).
  */
 describe.skipIf(!TEST_DATABASE_URL)("simplefin.reprocess_transactions (audit a5-ingest-transfers-13)", () => {
   let t: TestDb;
@@ -125,6 +127,40 @@ describe.skipIf(!TEST_DATABASE_URL)("simplefin.reprocess_transactions (audit a5-
     // Replayed once more, nothing changes.
     expect(await runReprocessTransactionsJob(ctx, fakeJob({ connectionId }))).toMatchObject({ created: 0, payloadsFailedSync: 1 });
     expect(await db.select().from(transaction).where(eq(transaction.externalId, "ELEC"))).toHaveLength(1);
+  });
+
+  it("a8-ledger-ui-02, second round: the replay a reopen queues posts the purchases that were pending at the close, in place", async () => {
+    // Sep 30, before the close: two purchases pending, one categorized and noted by the household.
+    const atClose = payload("2026-09-30", [pending("P-HW", "2026-09-29", "-42.00", "HARDWARE STORE"), pending("P-GIFT", "2026-09-30", "-25.00", "GIFT SHOP")]);
+    // Oct 8, closed: the hardware store posted under its id, the gift shop under a new one.
+    const whileClosed = payload("2026-10-08", [{ ...posted("P-HW", "2026-10-02", "-42.00", "HARDWARE STORE"), transacted_at: unix("2026-09-29") }, posted("GIFT-9", "2026-10-03", "-25.00", "GIFT SHOP #9")]);
+    const [l0] = await db
+      .insert(importLog)
+      .values([
+        { connectionId, kind: "simplefin.sync", status: "ok", startedAt: new Date("2026-09-30T18:00:00Z"), rawPayload: atClose },
+        { connectionId, kind: "simplefin.sync", status: "ok", startedAt: new Date("2026-10-08T18:00:00Z"), rawPayload: whileClosed },
+      ])
+      .returning({ id: importLog.id });
+    const [hw, gift] = await db
+      .insert(transaction)
+      .values([
+        { accountId, externalId: "P-HW", source: "simplefin", date: "2026-09-29", amountCents: -4200n, rawDescription: "HARDWARE STORE", pending: true, importLogId: l0!.id, notes: "the new shelf" },
+        { accountId, externalId: "P-GIFT", source: "simplefin", date: "2026-09-30", amountCents: -2500n, rawDescription: "GIFT SHOP", pending: true, importLogId: l0!.id, notes: "for Sam" },
+      ])
+      .returning({ id: transaction.id });
+
+    const queued = await enqueueJob(db, "simplefin.reprocess_transactions", { connectionId, reason: "account_reopened", accountId, dedupeKey: `account_reopened:${accountId}` }, { dedupe: true });
+    expect(await drainQueue(ctx)).toBe(1);
+    expect((await db.select().from(job).where(eq(job.id, queued.id)))[0]).toMatchObject({ status: "done" });
+    const rows = await db.select().from(transaction).where(inArray(transaction.id, [hw!.id, gift!.id])).orderBy(asc(transaction.date));
+    expect(rows.map((r) => ({ ext: r.externalId, pending: r.pending, date: r.date, notes: r.notes }))).toEqual([
+      { ext: "P-HW", pending: false, date: "2026-09-29", notes: "the new shelf" },
+      { ext: "GIFT-9", pending: false, date: "2026-10-03", notes: "for Sam" },
+    ]);
+    // This run's summary (the earlier runs of this file replaced nothing) counts the gift shop's replacement.
+    const summaries = await db.select().from(importLog).where(eq(importLog.kind, "simplefin.reprocess"));
+    expect(summaries.filter((r) => r.stats?.["replacedPending"] === 1)).toHaveLength(1);
+    expect(await db.select().from(transaction).where(inArray(transaction.externalId, ["GIFT-9", "P-GIFT", "P-HW"]))).toHaveLength(2);
   });
 
   it("a missing connection is a no-op", async () => {
