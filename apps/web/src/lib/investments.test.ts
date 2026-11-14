@@ -47,6 +47,7 @@ import {
   valuationDescription,
   canEditSecurityClass,
   cashStatText,
+  holdingAccountsToggleText,
   holdingLineLabel,
   holdingRowKey,
   investmentAccountOptions,
@@ -496,6 +497,19 @@ describe("audit b6: holdings, income filter, rebalance notes and the chart range
     expect(canEditSecurityClass({ securityId: "v", type: "etf" }, true)).toBe(false);
     expect(holdingRowKey({ securityId: "v" })).toBe("v");
     expect(holdingRowKey({ securityId: null })).toBe("inferred-cash");
+  });
+  it("b6 second round: a Holdings row's toggle counts the accounts its sub-rows come from, not its lines", () => {
+    // The Cash (USD) row on the lots basis: B's plug, R's reported cash and B's trade cash are three lines from two accounts.
+    const cash = [
+      { accountId: "b", kind: "cash_plug" as const },
+      { accountId: "r", kind: "cash" as const },
+      { accountId: "b", kind: "cash" as const },
+    ];
+    expect(holdingAccountsToggleText(cash)).toBe("2 accounts");
+    const oneAccount = [cash[0]!, cash[2]!];
+    expect(holdingAccountsToggleText(oneAccount)).toBe("1 account");
+    const position = [{ accountId: "b", kind: "position" as const }];
+    expect(holdingAccountsToggleText(position)).toBe("1 account");
   });
   it("b6-11: the account filter lists the household's investment accounts, and stays while one is chosen", () => {
     const accounts = [

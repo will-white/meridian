@@ -1042,6 +1042,9 @@ describe("Phase 1/2 contracts extended for Phase 3", () => {
       totalCents: "452520000",
       dayChangeCents: "3600000",
       dayChangeBp: 80,
+      dayChangePrior: "2026-10-12",
+      dayChangeAsOf: "2026-10-13",
+      dayChangeCarriedPrior: null,
       staleAccounts: [{ id: U3, name: "HSA", valuationDate: "2026-09-01" }],
       fidelityCounts: { balance_only: 0, positions: 1, full_history: 1 },
       awaitingReconcile: 0,
@@ -1049,6 +1052,25 @@ describe("Phase 1/2 contracts extended for Phase 3", () => {
       priceFeed: { configured: true, expectedDate: "2026-10-13", stale: 1, notFound: 0, error: 0 },
     });
     bad(investments, { asOf: "2026-10-13", totalCents: "1" });
+    // Audit b6-08, second round: the block carries the closes the day change runs between and the carried prior close, as the Portfolio's does.
+    const carried = {
+      asOf: "2026-10-09",
+      totalCents: "1810000",
+      dayChangeCents: "33000",
+      dayChangeBp: 185,
+      dayChangePrior: "2026-10-08",
+      dayChangeAsOf: "2026-10-09",
+      dayChangeCarriedPrior: { date: "2026-09-09", sources: ["implied"] },
+      staleAccounts: [],
+      fidelityCounts: { balance_only: 0, positions: 1, full_history: 0 },
+      awaitingReconcile: 0,
+      securitiesNeedingReview: 0,
+      priceFeed: { configured: false, expectedDate: "2026-10-09", stale: 0, notFound: 0, error: 0 },
+    };
+    ok(investments, carried);
+    bad(investments, { ...carried, dayChangeCarriedPrior: { date: "2026-09-09", sources: ["guess"] } });
+    const { dayChangeCarriedPrior: _dropped, ...withoutCarried } = carried;
+    bad(investments, withoutCarried);
     const breakdown = DashboardView.shape.netWorth.shape.breakdown;
     ok(breakdown, null);
     ok(breakdown, { investmentsCents: "452520000", investmentsAsOf: "2026-10-13", cashCents: "575000", debtCents: "-45000", otherCents: "0" });

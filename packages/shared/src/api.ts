@@ -1254,6 +1254,11 @@ export const DashboardView = z.object({
       totalCents: CentsString,
       dayChangeCents: CentsString.nullable(),
       dayChangeBp: z.number().int().nullable(),
+      /** The closes the day change runs between, as the Portfolio's `dayChange.prior` and `asOf`. */
+      dayChangePrior: IsoDateString.nullable(),
+      dayChangeAsOf: IsoDateString.nullable(),
+      /** The Portfolio's `dayChange.carriedPrior`: the older close the change is measured from when the prior day had none (audit decision A16). */
+      dayChangeCarriedPrior: z.object({ date: IsoDateString, sources: z.array(HoldingPriceSource) }).nullable(),
       staleAccounts: z.array(z.object({ id: z.string().uuid(), name: z.string(), valuationDate: IsoDateString.nullable() })),
       fidelityCounts: z.object({ balance_only: z.number().int(), positions: z.number().int(), full_history: z.number().int() }),
       /** Positions or full-history accounts whose latest statement date has no reconciliation on or after it. */

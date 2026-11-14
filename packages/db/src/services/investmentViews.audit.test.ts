@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseFixed8 } from "@meridian/shared";
-import { account, balanceSnapshot, holdingSnapshot, security } from "../schema/index.js";
+import { mulToCents, parseFixed8 } from "@meridian/shared";
+import { account, balanceSnapshot, holdingSnapshot, price, security } from "../schema/index.js";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "../test/db.js";
 import { INV_SEED_NOW, INV_SEED_TODAY, seedInvestmentFixture, seedInvestmentLots, type InvestmentSeed } from "../test/investmentSeed.js";
-import { createInvestmentTxn } from "./investmentTxns.js";
-import { classifiedLines, getHoldings, getPortfolio, investmentContext, knownBasisValue, rebalanceInputOf, suggestRebalance, type RebalanceInput } from "./investmentViews.js";
+import { createInvestmentTxn, deleteInvestmentTxn } from "./investmentTxns.js";
+import { classifiedLines, dashboardInvestments, getHoldings, getPortfolio, investmentContext, knownLotsCoverage, rebalanceInputOf, suggestRebalance, type RebalanceInput } from "./investmentViews.js";
 import { computeHoldings } from "./lots.js";
 
 /**
@@ -76,15 +76,31 @@ describe.skipIf(!TEST_DATABASE_URL)("audit b6: investment views", () => {
     expect(sell).toMatchObject({ amountCents: 937990n, estimatedGainCents: 102053n, note: "may realize about $1,020.53 of gains (not counting 10 sh whose basis is unknown); the lots view shows which lots" });
   });
 
-  it("b6-01: the known-basis value of a line, and the sell note without unknown-basis shares", () => {
-    const line = { valueCents: 1562500n, quantity: f8("50"), price: f8("312.5") };
-    expect(knownBasisValue(line, 0n)).toBe(1562500n);
-    // 1,562,500 − 10 × 312.50
-    expect(knownBasisValue(line, f8("10"))).toBe(1250000n);
-    // More unknown shares than the statement holds (the lots disagree with it): capped at the line.
-    expect(knownBasisValue(line, f8("60"))).toBe(0n);
-    // A value-only line cannot be split by shares.
-    expect(knownBasisValue({ valueCents: 100000n, quantity: null, price: null }, f8("1"))).toBeNull();
+  it("b6-01: the known-basis lots of a line, and the sell note without unknown-basis shares", () => {
+    const price = f8("312.5");
+    const line = (shares: string) => ({ valueCents: mulToCents(f8(shares), price), quantity: f8(shares), price });
+    // 40 known shares (basis 1,080,000, 1,250,000 at 312.50, unrealized 170,000), 10 without a basis.
+    const engine = { quantity: f8("50"), costBasisCents: 1080000n, unrealizedCents: 170000n, unknownBasisQuantity: f8("10"), price };
+    const matched = { ...engine, quantity: f8("40"), unknownBasisQuantity: 0n };
+    expect(knownLotsCoverage(line("40"), matched)).toEqual({ coveredValueCents: 1250000n, gainCents: 170000n, partial: false });
+    // The statement holds the 50 shares: the known lots are 40 of them, the row is partial (first round).
+    expect(knownLotsCoverage(line("50"), engine)).toEqual({ coveredValueCents: 1250000n, gainCents: 170000n, partial: true });
+    // Second round: a statement the lots disagree with never changes the known lots' gain (−142,500 and
+    // −1,080,000 when the unknown shares were taken off the statement's 40, or more than all of its 5).
+    expect(knownLotsCoverage(line("40"), engine)).toEqual({ coveredValueCents: 1250000n, gainCents: 170000n, partial: true });
+    expect(knownLotsCoverage(line("5"), { ...engine, quantity: f8("100"), unknownBasisQuantity: f8("60") })).toEqual({ coveredValueCents: 1250000n, gainCents: 170000n, partial: true });
+    // Lots for fewer shares than the statement: 20 × 312.50 − 500,000, and partial.
+    expect(knownLotsCoverage(line("40"), { quantity: f8("20"), costBasisCents: 500000n, unrealizedCents: 125000n, unknownBasisQuantity: 0n, price })).toEqual({ coveredValueCents: 625000n, gainCents: 125000n, partial: true });
+    // Within the position check's 0.001 sh the lots match the statement.
+    expect(knownLotsCoverage(line("40.0005"), matched).partial).toBe(false);
+    // No close for the lots (or another one): the known shares at the line's price, 40 × 312.50.
+    expect(knownLotsCoverage(line("40"), { ...matched, unrealizedCents: null, price: null })).toEqual({ coveredValueCents: 1250000n, gainCents: 170000n, partial: false });
+    expect(knownLotsCoverage(line("40"), { ...matched, unrealizedCents: 160000n, price: f8("310") })).toEqual({ coveredValueCents: 1250000n, gainCents: 170000n, partial: false });
+    // A value-only line cannot be compared: covered whole when every lot has a basis, else uncovered.
+    expect(knownLotsCoverage({ valueCents: 1300000n, quantity: null, price: null }, matched)).toEqual({ coveredValueCents: 1300000n, gainCents: 220000n, partial: false });
+    expect(knownLotsCoverage({ valueCents: 1300000n, quantity: null, price: null }, engine)).toEqual({ coveredValueCents: null, gainCents: null, partial: true });
+    // No known lot at all: no basis.
+    expect(knownLotsCoverage(line("10"), { quantity: f8("10"), costBasisCents: null, unrealizedCents: null, unknownBasisQuantity: f8("10"), price })).toEqual({ coveredValueCents: null, gainCents: null, partial: false });
     const input: RebalanceInput = {
       accounts: [
         {
@@ -198,5 +214,78 @@ describe.skipIf(!TEST_DATABASE_URL)("audit b6: investment views", () => {
     expect(all.totalCents).toBe(4525200n);
     expect(all.series.accounts.map((a) => a.accountId).sort()).toEqual([S.accounts.brokerage, S.accounts.roth].sort());
     expect(all.series.total.at(-1)).toBe(4525200n);
+  });
+
+  it("b6-01, second round: when the lots hold more shares than the statement (lots_mismatch), the gain is still the known lots' own", async () => {
+    const { db, S } = await fresh();
+    const B = S.accounts.brokerage;
+    // The reviewer's probe d4: 10 VTI moved in on 2026-05-01 without a basis, but the statements still show 40 VTI.
+    await createInvestmentTxn(db, { accountId: B, date: "2026-05-01", type: "transfer", direction: "in", securityId: S.securities.vti, quantity: f8("10"), amountCents: 0n }, ctx());
+    const engine = (await computeHoldings(db, { accountIds: [B], asOf: "2026-10-13" })).rows.find((r) => r.securityId === S.securities.vti)!;
+    expect(engine).toMatchObject({ quantity: f8("50"), costBasisCents: 1080000n, unrealizedCents: 170000n, unknownBasisQuantity: f8("10") });
+
+    const onlyB = await getHoldings(db, { ...q, accountId: B });
+    expect(onlyB.accountWarnings.map((w) => w.kind)).toContain("lots_mismatch");
+    // Value: the statement's 40 × 312.50 = 1,250,000. The known lots: 40 sh, basis 1,080,000, worth
+    // 40 × 312.50 = 1,250,000, gain 170,000 (the engine's figure); gainBp 170,000 / 1,080,000 = 1574.
+    // The first round took the 10 unknown shares off the statement's 40: 937,500 − 1,080,000 = −142,500 (−1319 bp).
+    const vti = onlyB.rows.find((r) => r.ticker === "VTI")!;
+    expect(vti).toMatchObject({ quantity: f8("40"), valueCents: 1250000n, costBasisCents: 1080000n, coverage: "partial", gainCents: 170000n, gainBp: 1574 });
+    expect(vti.accounts).toEqual([expect.objectContaining({ accountId: B, valueCents: 1250000n, costBasisCents: 1080000n, gainCents: 170000n, unknownBasisQuantity: f8("10") })]);
+
+    // The rebalance starts from the same known-lots gain, so the taxable sell estimates a gain, not a loss.
+    const c = await investmentContext(db, q);
+    const input = rebalanceInputOf(c, classifiedLines(c));
+    const bVti = input.accounts.find((a) => a.id === B)!.lines.find((l) => l.securityId === S.securities.vti)!;
+    expect(bVti).toMatchObject({ valueCents: 1250000n, unrealizedGainCents: 170000n, unknownBasisQuantity: f8("10") });
+    const sells = suggestRebalance({ ...input, targetsBp: [{ assetClass: "us_stock", targetBp: 3000 }, { assetClass: "intl_stock", targetBp: 3000 }, { assetClass: "bonds", targetBp: 3000 }, { assetClass: "cash", targetBp: 1000 }] })!.trades.filter(
+      (x) => x.accountId === B && x.action === "sell",
+    );
+    // us_stock 2,701,800 − truncDiv(4,525,200 × 3000, 10000) = 1,344,240 over; R sells its 625,000 first, B the
+    // other 719,240. Estimate truncDiv(170,000 × 719,240, 1,250,000) = 97,816 (it was −142,500 × … = −81,993).
+    expect(sells).toEqual([
+      expect.objectContaining({
+        securityId: S.securities.vti,
+        amountCents: 719240n,
+        estimatedGainCents: 97816n,
+        note: "may realize about $978.16 of gains (not counting 10 sh whose basis is unknown); the lots view shows which lots",
+      }),
+    ]);
+  });
+
+  it("b6-01, second round: lots that cover fewer shares than the statement cover only their own shares (views design test 3)", async () => {
+    const { db, S } = await fresh();
+    const B = S.accounts.brokerage;
+    // Test 3's demotion: without the 04-14 buy the lots hold 20 VTI (basis 500,000) of the statement's 40.
+    await deleteInvestmentTxn(db, S.txns["buyVti2"]!, {}, ctx());
+    const engine = (await computeHoldings(db, { accountIds: [B], asOf: "2026-10-13" })).rows.find((r) => r.securityId === S.securities.vti)!;
+    expect(engine).toMatchObject({ quantity: f8("20"), costBasisCents: 500000n, unrealizedCents: 125000n, unknownBasisQuantity: 0n });
+    const onlyB = await getHoldings(db, { ...q, accountId: B });
+    expect(onlyB.accountWarnings.map((w) => w.kind)).toContain("lots_mismatch");
+    // The known lots: 20 × 312.50 = 625,000 against 500,000, gain 125,000 (2500 bp); the other 20 statement
+    // shares have no lot, so the row is partial. Before, all 1,250,000 counted against 500,000: +750,000 (+150 %).
+    const vti = onlyB.rows.find((r) => r.ticker === "VTI")!;
+    expect(vti).toMatchObject({ quantity: f8("40"), valueCents: 1250000n, costBasisCents: 500000n, coverage: "partial", gainCents: 125000n, gainBp: 2500 });
+    expect(vti.accounts).toEqual([expect.objectContaining({ accountId: B, costBasisCents: 500000n, basisSource: "lots", gainCents: 125000n, lotCount: 1 })]);
+  });
+
+  it("b6-08, second round: the Dashboard's day change carries the carried prior close, as the Portfolio's does", async () => {
+    const { db, S } = await fresh();
+    // No BND close on 10-12: R's BND day change is measured from the 10-09 close (74.50 → 74.80 on 100 sh = +3,000).
+    await db.delete(price).where(and(eq(price.securityId, S.securities.bnd), eq(price.date, "2026-10-12")));
+    const p = await getPortfolio(db, { ...q, period: "1m", priceFeed: false });
+    expect(p.dayChange).toMatchObject({ asOf: "2026-10-13", prior: "2026-10-12", carriedPrior: { date: "2026-10-09", sources: ["provider"] } });
+    const d = (await dashboardInvestments(db, { today: TODAY, now: NOW, priceProvider: null }))!;
+    // The block says what the Portfolio says: the same change, the closes it runs between and the carried close.
+    expect(d).toMatchObject({
+      dayChangeCents: p.dayChange.cents,
+      dayChangeBp: p.dayChange.bp,
+      dayChangeAsOf: "2026-10-13",
+      dayChangePrior: "2026-10-12",
+      dayChangeCarriedPrior: { date: "2026-10-09", sources: ["provider"] },
+    });
+    // On the seed (every close there) nothing is carried.
+    await db.insert(price).values({ securityId: S.securities.bnd, date: "2026-10-12", close: "74.9", adjClose: "74.9", source: "provider", provider: "tiingo", suspect: false, fetchedAt: NOW });
+    expect(await dashboardInvestments(db, { today: TODAY, now: NOW, priceProvider: null })).toMatchObject({ dayChangeCents: 36000n, dayChangeAsOf: "2026-10-13", dayChangePrior: "2026-10-12", dayChangeCarriedPrior: null });
   });
 });

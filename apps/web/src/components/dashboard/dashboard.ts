@@ -1,6 +1,7 @@
 import { addDays, truncDiv } from "@meridian/shared";
 import type { DashboardView } from "@meridian/shared";
 import { money, shortDate } from "../../lib/format.js";
+import { carriedPriorText } from "../../lib/investments.js";
 
 /**
  * Pure helpers for the dashboard cards. Every number is bigint cents until it
@@ -131,13 +132,20 @@ export function fidelityCountsText(c: InvestmentsBlock["fidelityCounts"]): strin
   return `${total} account${total === 1 ? "" : "s"}${parts.length > 0 ? `: ${parts.join(", ")}` : ""}`;
 }
 
-/** "+$360.00 (+0.8%) today" from the price movement on today's quantities; a neutral note when no account could be priced. */
-export function investmentsDayChangeText(inv: Pick<InvestmentsBlock, "dayChangeCents" | "dayChangeBp">): ChangeText {
+/**
+ * "+$360.00 (+0.8%) today" from the price movement on today's quantities; a neutral note when no
+ * account could be priced. When the prior close was carried from an older date (no close on the
+ * prior trading day), the change runs from that close and the card says so as the Portfolio does:
+ * "+$330.00 (+1.8%) since 09/09/26 (implied prices; no close on 10/08/26)" (audit decision A16).
+ */
+export function investmentsDayChangeText(inv: Pick<InvestmentsBlock, "dayChangeCents" | "dayChangeBp"> & Partial<Pick<InvestmentsBlock, "dayChangePrior" | "dayChangeCarriedPrior">>): ChangeText {
   if (inv.dayChangeCents === null) return { text: "No day change yet: prices or positions are pending", tone: "neutral" };
   const change = BigInt(inv.dayChangeCents);
   const signed = `${change > 0n ? "+" : ""}${money(inv.dayChangeCents)}`;
   const pct = inv.dayChangeBp === null ? "" : ` (${inv.dayChangeBp > 0 ? "+" : ""}${percentText(inv.dayChangeBp)})`;
-  return { text: `${signed}${pct} today`, tone: change > 0n ? "ok" : change < 0n ? "bad" : "neutral" };
+  const carried = inv.dayChangeCarriedPrior ?? null;
+  const when = carried && inv.dayChangePrior ? carriedPriorText(carried, inv.dayChangePrior) : "today";
+  return { text: `${signed}${pct} ${when}`, tone: change > 0n ? "ok" : change < 0n ? "bad" : "neutral" };
 }
 
 /** "2 accounts not yet checked against a statement"; null when every positions account has a reconciliation. */

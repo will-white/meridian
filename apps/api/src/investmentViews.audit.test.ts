@@ -1,8 +1,8 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
-import { account, holdingSnapshot, security } from "@meridian/db";
+import { account, holdingSnapshot, price, security } from "@meridian/db";
 import { INV_SEED_TODAY } from "@meridian/db/testing";
-import type { HoldingsView, PerformanceView, PortfolioView } from "@meridian/shared";
+import { DashboardView, type HoldingsView, type PerformanceView, type PortfolioView } from "@meridian/shared";
 import { TEST_DATABASE_URL } from "./test/helpers.js";
 import { freshInvestmentApp, type InvestmentApp } from "./test/investments.js";
 
@@ -73,5 +73,22 @@ describe.skipIf(!TEST_DATABASE_URL)("audit b6: investment view routes", () => {
     expect(h.rows.reduce((acc, r) => acc + BigInt(r.valueCents), 0n)).toBe(BigInt(h.totalCents));
     expect(h.rows.find((r) => r.type === "cash")).toMatchObject({ securityId: null, name: "Cash (USD)", valueCents: "170200", quantity: "1702" });
     expect(h.warnings).toEqual([]);
+  });
+
+  it("b6-08, second round: the Dashboard's investments card says when the day change is measured from a carried close", async () => {
+    A = await freshInvestmentApp({ lots: true });
+    // No BND close on 10-12: the change is measured from the 10-09 close for that line.
+    await A.t.db.db.delete(price).where(and(eq(price.securityId, A.S.securities.bnd), eq(price.date, "2026-10-12")));
+    const portfolio = await get<PortfolioView>(A, `/api/investments/portfolio?today=${TODAY}&period=1m`);
+    expect(portfolio.dayChange).toMatchObject({ prior: "2026-10-12", asOf: "2026-10-13", carriedPrior: { date: "2026-10-09", sources: ["provider"] } });
+    const dash = await get<DashboardView>(A, `/api/dashboard?today=${TODAY}`);
+    expect(dash.investments).toMatchObject({
+      dayChangeCents: portfolio.dayChange.cents,
+      dayChangeBp: portfolio.dayChange.bp,
+      dayChangePrior: "2026-10-12",
+      dayChangeAsOf: "2026-10-13",
+      dayChangeCarriedPrior: { date: "2026-10-09", sources: ["provider"] },
+    });
+    expect(DashboardView.safeParse(dash).success).toBe(true);
   });
 });

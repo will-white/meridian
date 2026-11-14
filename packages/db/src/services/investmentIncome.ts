@@ -3,6 +3,7 @@ import {
   addDays,
   addMonthsClamped,
   dayDiff,
+  evaluateRules,
   expectedPriceDate,
   incomeByMonth,
   isInvestmentAccountType,
@@ -19,11 +20,12 @@ import {
   type MonthKey,
 } from "@meridian/shared";
 import type { Db, DbOrTx } from "../index.js";
-import { account, category, householdSetting, investmentTxn, security, transaction } from "../schema/index.js";
+import { account, category, householdSetting, investmentTxn, payee, security, transaction } from "../schema/index.js";
 import { accountFidelities } from "./accountFidelity.js";
 import { PlanError, writeAudit, type AuditContext } from "./audit.js";
 import { enqueueJob } from "./jobs.js";
 import { loadInvestmentTxns } from "./lots.js";
+import { loadRules } from "./rules.js";
 import { earliestDataDate, firstDataDates, listInvestmentAccounts, valueAccountsOn, type InvestmentAccountRecord } from "./valuation.js";
 
 /**
@@ -461,6 +463,10 @@ export interface IncomeFeedCounts {
   upgraded: number;
   awaiting: number;
   unchanged: number;
+  /**
+   * Fed rows taken out of the plan: synthetic rows deleted (stale, or of a reinvested dividend), and
+   * bank rows of reinvested dividends given back their own category (audit decision A12).
+   */
   deleted: number;
 }
 
@@ -543,44 +549,72 @@ async function deleteStaleSyntheticRows(tx: DbOrTx, accountId: string): Promise<
   return deleted.length;
 }
 
+/** A dividend linked to the row (`transaction`) that has a reinvest row of the same account, security and date. */
+function linkedReinvestedDividend() {
+  return sql`exists (
+    select 1 from ${investmentTxn} d
+    where d.ledger_transaction_id = ${transaction.id}
+      and d.type = 'dividend'
+      and exists (
+        select 1 from ${investmentTxn} r
+        where r.account_id = d.account_id and r.type = 'reinvest' and r.date = d.date and r.security_id is not distinct from d.security_id
+      )
+  )`;
+}
+
 /**
- * Delete the unlocked synthetic rows of dividends that were reinvested: a `reinvest` row for the
- * same account, security and date says no cash arrived, so the dividend is not plan income
- * (views design D15, plan decision 13; audit decision A12). The link clears by `ON DELETE SET
- * NULL`. A bank row linked to such a dividend is the owner's and is left alone, as is a synthetic
- * row whose category the owner locked. Called by every feed pass and by the investment-transaction
- * writers, so a reinvest row recorded after its dividend was fed takes the row out at once.
+ * Take reinvested dividends back out of the plan: a `reinvest` row for the same account, security
+ * and date says no cash stayed, so the dividend is not plan income (views design D15, plan
+ * decision 13; audit decision A12 and its second round). The unlocked synthetic rows of such
+ * dividends are deleted (the link clears by `ON DELETE SET NULL`). A linked bank row the feed put
+ * in the feed category (unlocked) is given back what the household's own rules give it: the
+ * rule's category, else the payee's default, else none, which is what it would carry had the
+ * reinvest row come first; when the rules themselves give it the feed category it keeps it. The
+ * owner's locked categories are left alone. Called by every feed pass and by the
+ * investment-transaction writers, so a reinvest row recorded after its dividend was fed takes it
+ * out at once, in `link` and `create` mode alike. Returns how many rows left the plan.
  */
-export async function unfeedReinvestedDividends(tx: DbOrTx, accountIds: readonly string[]): Promise<number> {
+export async function unfeedReinvestedDividends(tx: DbOrTx, accountIds: readonly string[], now: Date = new Date()): Promise<number> {
   const ids = [...new Set(accountIds)];
   if (ids.length === 0) return 0;
   const deleted = await tx
     .delete(transaction)
-    .where(
-      and(
-        inArray(transaction.accountId, ids),
-        eq(transaction.source, "investment"),
-        eq(transaction.categoryLocked, false),
-        sql`exists (
-          select 1 from ${investmentTxn} d
-          where d.ledger_transaction_id = ${transaction.id}
-            and d.type = 'dividend'
-            and exists (
-              select 1 from ${investmentTxn} r
-              where r.account_id = d.account_id and r.type = 'reinvest' and r.date = d.date and r.security_id is not distinct from d.security_id
-            )
-        )`,
-      ),
-    )
+    .where(and(inArray(transaction.accountId, ids), eq(transaction.source, "investment"), eq(transaction.categoryLocked, false), linkedReinvestedDividend()))
     .returning({ id: transaction.id });
-  return deleted.length;
+  const feed = await feedCategory(tx);
+  if (feed.id === null) return deleted.length;
+  const bankRows = await tx
+    .select({
+      id: transaction.id,
+      accountId: transaction.accountId,
+      date: transaction.date,
+      amountCents: transaction.amountCents,
+      rawDescription: transaction.rawDescription,
+      payeeName: sql<string>`coalesce(${payee.name}, '')`,
+      payeeAliases: sql<string[]>`coalesce(${payee.aliases}, '[]'::jsonb)`,
+      payeeDefaultCategoryId: payee.defaultCategoryId,
+    })
+    .from(transaction)
+    .leftJoin(payee, eq(payee.id, transaction.payeeId))
+    .where(and(inArray(transaction.accountId, ids), ne(transaction.source, "investment"), eq(transaction.categoryLocked, false), eq(transaction.categoryId, feed.id), linkedReinvestedDividend()));
+  if (bankRows.length === 0) return deleted.length;
+  const rules = await loadRules(tx);
+  let unfed = 0;
+  for (const r of bankRows) {
+    const outcome = evaluateRules(rules, { payee: r.payeeName, payeeAliases: r.payeeAliases, description: r.rawDescription, amountCents: r.amountCents, accountId: r.accountId, date: r.date });
+    const own = outcome.categoryId !== undefined ? outcome.categoryId : (r.payeeDefaultCategoryId ?? null);
+    if (own === feed.id) continue;
+    await tx.update(transaction).set({ categoryId: own, updatedAt: now }).where(eq(transaction.id, r.id));
+    unfed++;
+  }
+  return deleted.length + unfed;
 }
 
 /** One account's feed pass (the caller owns the transaction). */
 export async function feedAccount(tx: DbOrTx, acct: { id: string; investmentIncomeFeed: InvestmentIncomeFeed }, feedCategoryId: string, now: Date = new Date()): Promise<IncomeFeedCounts> {
   const counts = zeroCounts();
   if (acct.investmentIncomeFeed === "off") return counts;
-  counts.deleted = (await deleteStaleSyntheticRows(tx, acct.id)) + (await unfeedReinvestedDividends(tx, [acct.id]));
+  counts.deleted = (await deleteStaleSyntheticRows(tx, acct.id)) + (await unfeedReinvestedDividends(tx, [acct.id], now));
   const reinvested = await loadReinvestKeys(tx, [acct.id], null, null);
   const candidates = await tx
     .select({

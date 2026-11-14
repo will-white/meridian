@@ -87,6 +87,20 @@ describe("investments block (Phase 3)", () => {
     expect(investmentsDayChangeText({ dayChangeCents: null, dayChangeBp: null })).toEqual({ text: "No day change yet: prices or positions are pending", tone: "neutral" });
   });
 
+  it("names the close a day change is measured from when it was carried, as the Portfolio does (audit b6-08, second round)", () => {
+    // Statement-implied prices only: no close on 10/08/26, so the 09/09/26 statement's prices were carried.
+    // A month's move, which the card called "today".
+    expect(investmentsDayChangeText({ dayChangeCents: "33000", dayChangeBp: 185, dayChangePrior: "2026-10-08", dayChangeCarriedPrior: { date: "2026-09-09", sources: ["implied"] } })).toEqual({
+      text: "+$330.00 (+1.8%) since 09/09/26 (implied prices; no close on 10/08/26)",
+      tone: "ok",
+    });
+    expect(investmentsDayChangeText({ dayChangeCents: "-4000", dayChangeBp: -9, dayChangePrior: "2026-10-12", dayChangeCarriedPrior: { date: "2026-10-09", sources: ["provider", "implied"] } }).text).toBe(
+      "-$40.00 (-0.0%) since 10/09/26 (feed and implied prices; no close on 10/12/26)",
+    );
+    // Nothing carried: the day's own move.
+    expect(investmentsDayChangeText({ dayChangeCents: "36000", dayChangeBp: 80, dayChangePrior: "2026-10-12", dayChangeCarriedPrior: null }).text).toBe("+$360.00 (+0.8%) today");
+  });
+
   it("writes the attention lines", () => {
     expect(awaitingReconcileText(0)).toBeNull();
     expect(awaitingReconcileText(1)).toBe("1 account not yet checked against a statement");

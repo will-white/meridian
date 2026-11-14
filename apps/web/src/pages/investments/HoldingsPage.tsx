@@ -17,6 +17,7 @@ import {
   formatBp,
   formatPpm,
   formatQuantity,
+  holdingAccountsToggleText,
   holdingLineLabel,
   holdingRowKey,
   investmentAccountOptions,
@@ -282,7 +283,7 @@ function HoldingRows({
         <td className="num">{formatPpm(r.expenseRatioPpm)}</td>
         <td className="actions">
           <button type="button" className="link small" onClick={onToggle}>
-            {open ? "hide" : `${r.accounts.length} account${r.accounts.length === 1 ? "" : "s"}`}
+            {open ? "hide" : holdingAccountsToggleText(r.accounts)}
           </button>
           {editor && (
             <button type="button" className="link small" onClick={() => editor.onEdit(!editing)}>

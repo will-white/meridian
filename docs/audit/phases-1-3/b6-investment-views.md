@@ -255,3 +255,70 @@ What changed: `canEditSecurityClass` hides the action for cash rows, including t
 Tests:
 - `apps/web/src/lib/investments.test.ts`: "b6-16 and b6-03: no class editor on the cash row (with or without a cash security); a key for the inferred-cash row".
 - Browser: the Cash (USD) row has no "class" button, and VTI still has one.
+
+## Second round
+
+An independent reviewer checked the first round and reopened three items (b6-investment-views-01 a regression, -02 and -08 incomplete) and raised one new issue. All four were judged real against the spec, the plans and the code, and reproduced; all four are fixed, none rejected or deferred. The decisions are amended in place in `docs/phase-3-plan.md` (A11, A12 and A16 say what the second round changed; the "Also fixed in this batch" line names the new issue), and the views design's §3.8, the feed run's step 2 (§3.13), the dashboard contract (§4), the Holdings and `InvestmentsCard` entries of §5 and tests 3 and 17 follow them.
+
+Every new or rewritten test was run against the code before this round's fix (the implementation files stashed, the tests kept; logs in the lane's scratch directory, `laneA/b6r2`), and all failed there: db `red-db.log` 7 of 7 (the two new b6-01 cases with gain −142,500 / −1319 bp and 750,000 / 15000 bp `full`, the rewritten `knownLotsCoverage` unit case, the two b6-02 cases with the bank row still in Dividends and `deleted 0`, the b6-08 case and test 17 without the block's new fields); shared `red-shared.log` 1 of 1 (the block without the fields parses); api `red-api.log` 2 of 2; web `red-web.log` 2 of 2 ("… today" for the carried close; no `holdingAccountsToggleText`).
+
+Checks: `pnpm typecheck` and `pnpm lint` pass. The suites of every package touched pass, with `TEST_DATABASE_URL` set: shared 1,058, worker 130 (it runs the feed), api 380, web 569, and db 468 of 469. The one db failure is "a cash transfer entered by hand between two accounts waits for the lock as well" in `conformanceLedger.round2.audit.test.ts` (batch a10). It is a timing race that also fails on the code before this round's fix, 2 of 12 runs (`head-flaky-lock.log`), and passes when run again; this round does not touch that path. `pnpm build` passes.
+
+The web changes were checked in the built app in headless Chromium: the API serving `apps/web/dist` on port 3481, database `meridian_fix_a_browser` (seeded by `laneA/b6r2/browser/seed.mts`; the server was stopped by its PID and the database dropped). The checks are in `check.cjs`, with output in `after-browser-base.txt` and `after-browser-lotsbuy.txt`: 19 checks, all passed, with no console errors and no failed API request. The screenshots are `after-01-holdings.png`, `after-01-allocation.png`, `after-08-dashboard.png`, `after-02-income.png` and `after-new-holdings.png`.
+
+### b6-investment-views-01, second round (reviewer: regression): a statement the lots disagree with turned the known lots' gain into a loss
+
+Status: fixed.
+
+What was wrong: the first round's `knownBasisValue` took the unknown-basis shares off the statement line's share count, not the lots'. That is right only when the lots match the statement. When they do not (`lots_mismatch`, the case the views design keeps showing the basis for), the gain stopped being the known lots' own. The reviewer's probe d4 transferred in 10 VTI without a basis and left the statements at 40. The engine reports the 40 known shares at +1,700.00. Holdings showed 937,500 − 1,080,000 = −1,425.00 (−13.19 %), and the Allocation estimated a loss on a sell of lots that were all in gain. A statement with fewer shares than the unknown ones read −100 %. The same rule also missed the other direction, the views design's own test 3: lots covering 20 of the statement's 40 shares counted the 20 without a lot as gain, +7,500.00 (+150 %) where the lots hold +1,250.00, and the row still read `full`.
+
+What changed (A11, second round): `knownLotsCoverage` replaces `knownBasisValue`. A sub-row's covered value is the known-basis lots' own value. It is the basis plus the engine's `unrealizedCents` when the engine priced the lots at the line's close, so Holdings and the lots view agree to the cent. Otherwise it is the known shares (`quantity − unknownBasisQuantity`) at the line's price. The gain is that value less the basis. The row is `partial` when some lots have no basis, or when the known lots hold a different number of shares than the line, beyond the position check's 0.001 shares (`POSITION_TOLERANCE`). A value-only line cannot be compared with the lots: it is covered whole when every lot has a basis, as before, else uncovered. The rebalance reads the same gain (`rebalanceInputOf` takes the sub-row's `gainCents`), so the estimate on d4's sell is +978.16, where it was −819.93.
+
+Tests:
+- `packages/db/src/services/investmentViews.audit.test.ts`:
+  - "b6-01, second round: when the lots hold more shares than the statement (lots_mismatch), the gain is still the known lots' own". This is the reviewer's d4, with a `lots_mismatch` warning. The row is value 1,250,000, cost 1,080,000, `partial`, gain 170,000, 1574 bp; it was −142,500 and −1319 bp. The 30/30/30/10 rebalance sells 719,240 of B's VTI, estimate truncDiv(170,000 × 719,240, 1,250,000) = 97,816.
+  - "b6-01, second round: lots that cover fewer shares than the statement cover only their own shares (views design test 3)". Gain 20 × 312.50 − 500,000 = 125,000, 2500 bp, `partial`; it was 750,000, 15000 bp, `full`.
+  - "b6-01: the known-basis lots of a line, and the sell note without unknown-basis shares" is rewritten for `knownLotsCoverage`. Its cases: matched lots; the first round's 50-share statement; d4; the reviewer's "more unknown shares than the statement" case (it asserted a value of 0 before, now +170,000); 20 of 40; within the 0.001-share tolerance; no close for the lots, or a different one; value-only lines; no known lot.
+- Browser: Holdings for Vanguard Brokerage, on d4 plus the reinvest of b6-02, whose 0.16 sh are a known lot too. The VTI row reads cost $10,849.10, partial, "+$1,700.90 +15.7%": 40.16 × 312.50 − 1,084,910. Its sub-row reads "basis unknown for 10 sh". The Allocation's sell note is "may realize about $978.68 of gains (not counting 10 sh whose basis is unknown)".
+
+### b6-investment-views-02, second round (reviewer: incomplete): in link mode a reinvested dividend's bank row stayed plan income
+
+Status: fixed.
+
+What was wrong: `unfeedReinvestedDividends` deleted synthetic rows only. In `link` mode, a feed pass that ran before the reinvest row arrived had already put the bank twin in the feed category. That category stayed, and so it did on a synthetic row already upgraded to its bank twin. The reviewer's probe d2, on B's 09-28 VTI dividend of 4,910: feed first, then the reinvest, left September's plan Dividends at 9,470. The reinvest first, then the feed, gave 4,560. The same data gave the plan two answers, depending on the order things arrived in. The first round had called such a bank row "the owner's". But a category set by hand is locked (`transactions.ts`), so an unlocked row in the feed category was put there by the feed.
+
+What changed (A12, second round): when a dividend is reinvested, a linked bank row that carries the feed category unlocked gets back what the household's own rules give it. That is the rule's category, else the payee's default, else none: what it carries when the reinvest row comes first. When the rules themselves give it the feed category, it keeps it, so a household rule "DIVIDEND → Dividends" gives the same answer in either order. A bank row the owner categorized by hand (locked) stays, as does a locked synthetic row. The same function runs where the first round's did: in every feed pass and in the investment-transaction writers (create, update, trade import) the moment a reinvest row is written. It returns the rows taken out of the plan, which the feed counts in `deleted` ("removed" on the Income page). A deleted or re-dated reinvest row still queues a feed pass, which categorizes the bank row again.
+
+Tests:
+- `packages/db/src/services/investmentIncome.audit.test.ts`:
+  - "b6-02, second round: in link mode a reinvested dividend's bank row leaves the plan whichever arrives first". Both orders of d2 give the bank row no category, the income row `linked`, `fed: false`, and September 4,150 + 410 = 4,560; feed first, it stayed 9,470.
+  - "b6-02, second round: a feed pass takes the feed category back from a reinvested dividend's bank row, leaving the household's own choices". Reinvest rows are written past the writers. The VTI bank row goes back to its rule's "Brokerage income". The VXUS row keeps Dividends, its rule's category. The hand-locked March row stays. The pass reports `deleted 1`, and a second pass reports `deleted 0`.
+- Browser (API in the signed-in page): the September plan Dividends actual is 4,560, and the 09-28 income row is reinvested, linked and not fed.
+
+### b6-investment-views-08, second round (reviewer: incomplete): the Dashboard called a carried month's move "today"
+
+Status: fixed.
+
+What was wrong: the Portfolio named the carried close, but the Dashboard's investments block carried only `dayChangeCents` and `dayChangeBp`, and the card printed "… today". The reviewer's probe d1 had the Roth on implied prices only. The Portfolio read "+$330.00 (+1.85%) since 09/09/26 (implied prices; no close on 10/08/26)". The Dashboard read "+$330.00 (+1.8%) today".
+
+What changed (A16, second round): `DashboardInvestmentsBlock` and the contract's `investments` block gain `dayChangePrior`, `dayChangeAsOf` and `dayChangeCarriedPrior`, the Portfolio's `dayChange.prior`, `asOf` and `carriedPrior`. Both mappers carry them: `apps/api/src/views/cashflow.ts` and `packages/db/src/services/dashboard.ts`. `investmentsDayChangeText` reads "+$330.00 (+1.8%) since 09/09/26 (implied prices; no close on 10/08/26)" when a close was carried, and "… today" otherwise. The wording is the Portfolio's: the new `carriedPriorText` is shared with `dayChangeSentence`.
+
+Tests:
+- `packages/db/src/services/investmentViews.audit.test.ts`: "b6-08, second round: the Dashboard's day change carries the carried prior close, as the Portfolio's does". There is no BND close on 10-12, so BND's change is 74.50 → 74.80 on 100 sh. The block matches the Portfolio: 40,000, 89 bp, prior 10-12, asOf 10-13, carried from 10-09 (`provider`). With the close restored the result is 36,000 and nothing is carried.
+- `apps/api/src/investmentViews.audit.test.ts`: "b6-08, second round: the Dashboard's investments card says when the day change is measured from a carried close". The routes agree, and the response parses as `DashboardView`.
+- `apps/web/src/components/dashboard/dashboard.test.ts`: "names the close a day change is measured from when it was carried, as the Portfolio does (audit b6-08, second round)".
+- `packages/shared/src/api.investments.test.ts`: the dashboard contract case takes the three fields, refuses an unknown price source and refuses a block without them.
+- Hand numbers updated: `packages/db/src/services/investmentViews.test.ts` "dashboard net worth breakdown and the investments block (test 17)", and `apps/api/src/dashboard.test.ts`: prior 10-12, asOf 10-13, `dayChangeCarriedPrior` null.
+- Browser: the Dashboard card reads "+$400.00 (+0.8%) since 10/09/26 (feed prices; no close on 10/12/26)". The Portfolio reads "+$400.00 (+0.89%) since 10/09/26 (…)": the card keeps its one-decimal percentage.
+
+### New (second round): the Holdings toggle counted lines, not accounts
+
+Status: fixed.
+
+What was wrong: the expand button read `${r.accounts.length} accounts`, but `r.accounts` has one entry per line. Once b6-12 made the inferred lines visible, the Cash (USD) row of a lots-basis household read "3 accounts" for B's plug, R's reported cash and B's trade cash: three lines from two accounts.
+
+What changed: the new `holdingAccountsToggleText` counts the distinct accounts the sub-rows come from, so the row reads "2 accounts" and still lists all three lines.
+
+Tests:
+- `apps/web/src/lib/investments.test.ts`: "b6 second round: a Holdings row's toggle counts the accounts its sub-rows come from, not its lines". Three lines from two accounts give "2 accounts"; two lines of one account give "1 account".
+- Browser: after a post-statement buy, the Cash (USD) row reads "2 accounts" and expands to three sub-rows; VTI still reads "2 accounts". At 390 px there is no horizontal page scroll.

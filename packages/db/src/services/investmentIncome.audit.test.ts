@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, lt } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseFixed8, type PlanCategoryRowResult } from "@meridian/shared";
-import { balanceSnapshot, investmentTxn, job, transaction } from "../schema/index.js";
+import { balanceSnapshot, category, investmentTxn, job, rule, transaction } from "../schema/index.js";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "../test/db.js";
 import { INV_SEED_NOW, INV_SEED_TODAY, seedInvestmentFixture, seedInvestmentLots, type InvestmentSeed } from "../test/investmentSeed.js";
 import { getInvestmentIncome, runInvestmentIncomeFeed, setInvestmentIncomeFeed } from "./investmentIncome.js";
@@ -134,5 +134,74 @@ describe.skipIf(!TEST_DATABASE_URL)("audit b6: investment income", () => {
     // A one-month window ending mid-month lists the two months it touches.
     const m = await getInvestmentIncome(db, { ...q, period: "1m" });
     expect(m.months.map((x) => x.month)).toEqual(["2026-09", "2026-10"]);
+  });
+
+  const monthDividends = async (db: TestDb["db"], S: InvestmentSeed, month: string) => {
+    const plan = await getPlan(db, { from: month, to: month, today: TODAY });
+    const row = plan.rows.find((r): r is PlanCategoryRowResult => r.kind === "category" && r.categoryId === S.categories.dividends)!;
+    return row.cells[0]!.actualCents;
+  };
+  const bankCategory = async (db: TestDb["db"], id: string) => {
+    const [row] = await db.select({ categoryId: transaction.categoryId, categoryLocked: transaction.categoryLocked }).from(transaction).where(eq(transaction.id, id));
+    return row;
+  };
+  // B's 09-28 VTI dividend (4,910, linked to the 09-29 bank row) bought back: 0.16 sh × 306.875 = 49.10.
+  const reinvestVtiSep = (db: TestDb["db"], S: InvestmentSeed) =>
+    createInvestmentTxn(db, { accountId: S.accounts.brokerage, date: "2026-09-28", type: "reinvest", securityId: S.securities.vti, quantity: f8("0.16"), price: f8("306.875") }, ctx());
+
+  it("b6-02, second round: in link mode a reinvested dividend's bank row leaves the plan whichever arrives first", async () => {
+    // Order 1, the reviewer's probe d2: B's feed categorizes its seven bank rows, then the reinvest row is recorded.
+    const first = await fresh();
+    const B = first.S.accounts.brokerage;
+    expect(await runInvestmentIncomeFeed(first.db, { accountIds: [B], now: NOW })).toMatchObject({ categorized: 7 });
+    // September: 4,150 (09-22) + 4,910 (09-29) + 410 (09-30) = 9,470.
+    expect(await monthDividends(first.db, first.S, "2026-09")).toBe(9470n);
+    await reinvestVtiSep(first.db, first.S);
+    // The writer takes the feed category back at once: no cash stayed, so September is 4,150 + 410 = 4,560 (it stayed 9,470).
+    expect(await bankCategory(first.db, first.S.ledger["divVtiSep"]!)).toEqual({ categoryId: null, categoryLocked: false });
+    expect(await monthDividends(first.db, first.S, "2026-09")).toBe(4560n);
+    const income = await getInvestmentIncome(first.db, { ...q, accountId: B });
+    expect(income.rows.find((r) => r.id === first.S.txns["divVtiSep"])).toMatchObject({ reinvested: true, ledgerTransactionId: first.S.ledger["divVtiSep"], linkStatus: "linked", fed: false });
+    // A feed pass leaves it out (nothing to take back, nothing categorized).
+    expect(await runInvestmentIncomeFeed(first.db, { accountIds: [B], now: NOW })).toMatchObject({ categorized: 0, deleted: 0, unchanged: 6 });
+    expect(await monthDividends(first.db, first.S, "2026-09")).toBe(4560n);
+    await t!.cleanup();
+    t = undefined;
+
+    // Order 2 on a fresh seed: the reinvest row first, then the feed. The same plan.
+    const second = await fresh();
+    await reinvestVtiSep(second.db, second.S);
+    expect(await runInvestmentIncomeFeed(second.db, { accountIds: [second.S.accounts.brokerage], now: NOW })).toMatchObject({ categorized: 6 });
+    expect(await bankCategory(second.db, second.S.ledger["divVtiSep"]!)).toEqual({ categoryId: null, categoryLocked: false });
+    expect(await monthDividends(second.db, second.S, "2026-09")).toBe(4560n);
+  });
+
+  it("b6-02, second round: a feed pass takes the feed category back from a reinvested dividend's bank row, leaving the household's own choices", async () => {
+    const { db, S } = await fresh();
+    const B = S.accounts.brokerage;
+    const [brokerage] = await db.insert(category).values({ name: "Brokerage income", bucket: "income", position: 2 }).returning({ id: category.id });
+    // The household's rules: VTI dividends to "Brokerage income", VXUS dividends to Dividends (the feed category).
+    await db.insert(rule).values([
+      { name: "VTI dividends", position: 1, conditions: { description: { op: "contains", value: "DIVIDEND VTI" } }, actions: { setCategoryId: brokerage!.id } },
+      { name: "VXUS dividends", position: 2, conditions: { description: { op: "contains", value: "DIVIDEND VXUS" } }, actions: { setCategoryId: S.categories.dividends } },
+    ]);
+    expect(await runInvestmentIncomeFeed(db, { accountIds: [B], now: NOW })).toMatchObject({ categorized: 7 });
+    // The owner put the March VTI dividend in Dividends by hand (locked).
+    await db.update(transaction).set({ categoryLocked: true }).where(eq(transaction.id, S.ledger["divVtiMar"]!));
+    // Reinvest rows written directly (as an import from before this fix left them), bypassing the writers.
+    await db.insert(investmentTxn).values([
+      { accountId: B, securityId: S.securities.vti, date: "2026-09-28", sequence: 99, type: "reinvest", quantity: "0.16", price: "306.875", amountCents: -4910n, source: "manual" },
+      { accountId: B, securityId: S.securities.vxus, date: "2026-09-22", sequence: 99, type: "reinvest", quantity: "0.625", price: "66.4", amountCents: -4150n, source: "manual" },
+      { accountId: B, securityId: S.securities.vti, date: "2026-03-25", sequence: 99, type: "reinvest", quantity: "0.16", price: "285", amountCents: -4560n, source: "manual" },
+    ]);
+    // One bank row goes back to what the rules give it (09-29 VTI: "Brokerage income"); the VXUS rule
+    // already gives the feed category and the March row is the owner's: both stay.
+    expect(await runInvestmentIncomeFeed(db, { accountIds: [B], now: NOW })).toMatchObject({ categorized: 0, deleted: 1, unchanged: 4 });
+    expect(await bankCategory(db, S.ledger["divVtiSep"]!)).toEqual({ categoryId: brokerage!.id, categoryLocked: false });
+    expect(await bankCategory(db, S.ledger["divVxusSep"]!)).toEqual({ categoryId: S.categories.dividends, categoryLocked: false });
+    expect(await bankCategory(db, S.ledger["divVtiMar"]!)).toEqual({ categoryId: S.categories.dividends, categoryLocked: true });
+    // September in the plan: 4,150 (VXUS, by the household's rule) + 410 = 4,560.
+    expect(await monthDividends(db, S, "2026-09")).toBe(4560n);
+    expect(await runInvestmentIncomeFeed(db, { accountIds: [B], now: NOW })).toMatchObject({ categorized: 0, deleted: 0, unchanged: 4 });
   });
 });

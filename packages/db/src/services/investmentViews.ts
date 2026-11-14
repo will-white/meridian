@@ -9,6 +9,7 @@ import {
   MAX_SERIES_DAYS,
   mulToCents,
   periodChange,
+  POSITION_TOLERANCE,
   quantityForCents,
   TaxTreatment as TaxTreatmentEnum,
   truncDiv,
@@ -1012,14 +1013,14 @@ export interface CoveredBasis {
   costBasisCents: bigint | null;
   basisSource: "lots" | "statement" | null;
   /**
-   * The value of the shares `costBasisCents` covers: the line's value, less the value of its
-   * unknown-basis shares (a transfer in without a basis) at the line's price. Null when no basis
-   * is known, or when a line without a share count or price cannot be split.
+   * The value of what `costBasisCents` covers: for the lots, the known-basis lots' own value
+   * (`knownLotsCoverage`); for a statement's basis or cash, the line's value. Null when no basis
+   * is known, or when a line without a share count or price holds lots without a basis.
    */
   coveredValueCents: bigint | null;
   /** `coveredValueCents − costBasisCents`: the gain on the known lots only (lots design D12, §3.14). */
   gainCents: bigint | null;
-  /** Some of the line's shares have no known basis (they are not in the covered value or the gain). */
+  /** The basis covers only part of the line: shares without a known basis, or lots that do not match the statement. */
   partial: boolean;
   lotCount: number | null;
   unknownBasisQuantity: Fixed8 | null;
@@ -1027,24 +1028,50 @@ export interface CoveredBasis {
 
 const NO_BASIS: CoveredBasis = { costBasisCents: null, basisSource: null, coveredValueCents: null, gainCents: null, partial: false, lotCount: null, unknownBasisQuantity: null };
 
+/** What a line's known-basis lots cover: their value at the line's price, their gain, and whether part of the line is left out. */
+export interface KnownLotsCoverage {
+  /** The known lots' value (null when they cannot be valued against the line). */
+  coveredValueCents: bigint | null;
+  /** `coveredValueCents − costBasisCents`: the known lots' own gain. */
+  gainCents: bigint | null;
+  /** The line's shares and the known lots differ: shares without a basis, or a statement the lots do not explain. */
+  partial: boolean;
+}
+
 /**
- * The value of a line's known-basis shares: all of it without unknown-basis shares; else the value
- * less `mulToCents(unknown, price)` (the unknown part capped at the line's quantity), or null when
- * the line has no share count or price to split it by.
+ * The known-basis lots of a line on the lots basis (audit decision A11, second round): their value
+ * and gain come from the lots themselves, never from the statement's share count, so a statement the
+ * lots disagree with (`lots_mismatch`) cannot turn their gain into a loss. The engine's own
+ * `unrealizedCents` (covered value = basis + unrealized) when it priced the lots at the line's close,
+ * so the Holdings row and the lots view agree to the cent; else the known shares at the line's price.
+ * `partial` when some lots have no basis or the known lots hold a different number of shares than
+ * the line (beyond the position check's 0.001 sh). A line without a share count or a price cannot
+ * be compared: its whole value is covered when no lot lacks a basis, else it is uncovered.
  */
-export function knownBasisValue(line: Pick<ViewLine, "valueCents" | "quantity" | "price">, unknownBasisQuantity: Fixed8): bigint | null {
-  if (unknownBasisQuantity <= 0n) return line.valueCents;
-  if (line.quantity === null || line.price === null || line.quantity <= 0n) return null;
-  const unknown = unknownBasisQuantity < line.quantity ? unknownBasisQuantity : line.quantity;
-  return line.valueCents - mulToCents(unknown, line.price);
+export function knownLotsCoverage(
+  line: Pick<ViewLine, "valueCents" | "quantity" | "price">,
+  engine: Pick<HoldingResult, "quantity" | "costBasisCents" | "unrealizedCents" | "unknownBasisQuantity" | "price">,
+): KnownLotsCoverage {
+  const basis = engine.costBasisCents;
+  const unknown = engine.unknownBasisQuantity;
+  if (basis === null) return { coveredValueCents: null, gainCents: null, partial: false };
+  if (line.quantity === null || line.price === null) {
+    if (unknown > 0n) return { coveredValueCents: null, gainCents: null, partial: true };
+    return { coveredValueCents: line.valueCents, gainCents: line.valueCents - basis, partial: false };
+  }
+  const knownQuantity = engine.quantity - unknown;
+  const covered = engine.unrealizedCents !== null && engine.price === line.price ? basis + engine.unrealizedCents : mulToCents(knownQuantity, line.price);
+  const gap = knownQuantity - line.quantity;
+  return { coveredValueCents: covered, gainCents: covered - basis, partial: unknown > 0n || gap > POSITION_TOLERANCE || gap < -POSITION_TOLERANCE };
 }
 
 /**
  * Cost basis per line (`${accountId}|${securityId}`): the lot engine's for accounts with trades
  * (shown even when the lots disagree with the statement, with a `lots_mismatch` warning), else
  * the statement's reported basis; cash and synthetic lines cost what they are worth. The engine's
- * basis covers its known lots only, so shares that arrived without a basis are left out of the
- * covered value and the gain (audit decision A11) rather than counted as gain.
+ * basis covers its known lots only, so the covered value and the gain are the known lots' own
+ * (`knownLotsCoverage`): shares that arrived without a basis, or that no lot explains, are never
+ * counted as gain (audit decision A11 and its second round).
  */
 export function holdingCostBasis(ctx: InvestmentContext): Map<string, CoveredBasis> {
   const out = new Map<string, CoveredBasis>();
@@ -1060,16 +1087,15 @@ export function holdingCostBasis(ctx: InvestmentContext): Map<string, CoveredBas
       }
       const engine = a.fidelityRecord?.lastTradeDate ? ctx.engineHoldings.get(k) : undefined;
       if (engine) {
-        const unknown = engine.unknownBasisQuantity;
-        const coveredValueCents = engine.costBasisCents === null ? null : knownBasisValue(l, unknown);
+        const known = knownLotsCoverage(l, engine);
         out.set(k, {
           costBasisCents: engine.costBasisCents,
           basisSource: "lots",
-          coveredValueCents,
-          gainCents: engine.costBasisCents === null || coveredValueCents === null ? null : coveredValueCents - engine.costBasisCents,
-          partial: engine.costBasisCents !== null && unknown > 0n,
+          coveredValueCents: known.coveredValueCents,
+          gainCents: known.gainCents,
+          partial: known.partial,
           lotCount: engine.lotCount,
-          unknownBasisQuantity: unknown,
+          unknownBasisQuantity: engine.unknownBasisQuantity,
         });
         continue;
       }
@@ -1672,6 +1698,11 @@ export interface DashboardInvestmentsBlock {
   totalCents: bigint;
   dayChangeCents: bigint | null;
   dayChangeBp: number | null;
+  /** The closes the day change runs between (the Portfolio's `dayChange.prior` and `asOf`). */
+  dayChangePrior: IsoDate | null;
+  dayChangeAsOf: IsoDate | null;
+  /** The older close the change is measured from when the prior day had none (audit decision A16, second round). */
+  dayChangeCarriedPrior: PortfolioDayChange["carriedPrior"];
   staleAccounts: Array<{ id: string; name: string; valuationDate: IsoDate | null }>;
   fidelityCounts: Record<InvestmentFidelity, number>;
   awaitingReconcile: number;
@@ -1705,6 +1736,9 @@ export async function dashboardInvestments(db: DbOrTx, q: { today: IsoDate; now:
     totalCents: ctx.accounts.reduce((acc, a) => acc + (a.valuation.valueCents ?? 0n), 0n),
     dayChangeCents: day.cents,
     dayChangeBp: day.bp,
+    dayChangePrior: day.prior,
+    dayChangeAsOf: day.asOf,
+    dayChangeCarriedPrior: day.carriedPrior,
     staleAccounts: ctx.accounts.filter((a) => a.valuationRef.valuationStale).map((a) => ({ id: a.id, name: a.name, valuationDate: a.valuationRef.valuationDate })),
     fidelityCounts,
     awaitingReconcile: awaiting.length,

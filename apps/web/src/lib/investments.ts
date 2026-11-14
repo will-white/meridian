@@ -262,6 +262,15 @@ export function holdingRowKey(r: Pick<HoldingRowView, "securityId">): string {
   return r.securityId ?? "inferred-cash";
 }
 
+/**
+ * The Holdings row's expand toggle: "2 accounts", counting the accounts its sub-rows come from. A
+ * row can hold several lines of one account (a lots-basis account's balance plug and trade cash).
+ */
+export function holdingAccountsToggleText(accounts: ReadonlyArray<Pick<HoldingAccountView, "accountId">>): string {
+  const n = new Set(accounts.map((a) => a.accountId)).size;
+  return `${n} account${n === 1 ? "" : "s"}`;
+}
+
 /** The class editor is offered for a security an owner can classify: never for cash (always class cash, never split). */
 export function canEditSecurityClass(r: Pick<HoldingRowView, "securityId" | "type">, viewer: boolean): boolean {
   return !viewer && r.securityId !== null && r.type !== "cash";
@@ -345,14 +354,21 @@ export function growthReasonText(reason: string | null): string {
  * price, say), the sentence says what it is measured from: "+$330.00 (+1.85%) since 09/09/26
  * (implied prices; no close on 10/08/26)", so a month's move never reads as one day's.
  */
+/**
+ * "since 09/09/26 (implied prices; no close on 10/08/26)": what a day change measured from a carried
+ * close is measured from (prices design §3.9, audit decision A16). The Portfolio and the Dashboard
+ * both say it.
+ */
+export function carriedPriorText(carried: NonNullable<PortfolioDayChangeView["carriedPrior"]>, prior: string): string {
+  const sources = carried.sources.map((s) => priceSourceLabel(s)).join(" and ");
+  return `since ${shortDate(carried.date)} (${sources ? `${sources} prices; ` : ""}no close on ${shortDate(prior)})`;
+}
+
 export function dayChangeSentence(d: { cents: string | null; bp?: number | null; prior: string | null; reason: string | null; carriedPrior?: PortfolioDayChangeView["carriedPrior"] }): string {
   if (d.cents === null) return d.reason ? `— (${dayChangeReasonText(d.reason)})` : "—";
   const pct = d.bp === null || d.bp === undefined ? "" : ` (${formatBp(d.bp, { places: 2, sign: true })})`;
   const carried = d.carriedPrior ?? null;
-  if (carried && d.prior) {
-    const sources = carried.sources.map((s) => priceSourceLabel(s)).join(" and ");
-    return `${signedMoney(d.cents)}${pct} since ${shortDate(carried.date)} (${sources ? `${sources} prices; ` : ""}no close on ${shortDate(d.prior)})`;
-  }
+  if (carried && d.prior) return `${signedMoney(d.cents)}${pct} ${carriedPriorText(carried, d.prior)}`;
   const since = d.prior ? ` since ${shortDate(d.prior)}` : "";
   return `${signedMoney(d.cents)}${pct}${since}`;
 }
