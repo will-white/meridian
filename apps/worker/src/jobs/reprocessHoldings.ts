@@ -4,6 +4,7 @@ import {
   applySimplefinHoldings,
   connection,
   emptyHoldingsStats,
+  errorMessageOf,
   getHouseholdSetting,
   householdToday,
   importLog,
@@ -111,7 +112,7 @@ export async function runReprocessHoldingsJob(ctx: JobContext, job: JobRow): Pro
           mergeHoldingsStats(stats, applied.stats);
           for (const e of applied.errors) pushError(e);
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
+          const message = errorMessageOf(err);
           pushError({ code: "holdings.parse_error", message: sanitizeText(`${acct.name}: ${message}`, 300), accountId: sanitizeText(sf.id, 100) });
         }
       }
@@ -126,7 +127,7 @@ export async function runReprocessHoldingsJob(ctx: JobContext, job: JobRow): Pro
     await ctx.db.update(importLog).set({ status: "ok", finishedAt: ctx.now(), stats: summaryStats, errors, message }).where(eq(importLog.id, summaryId));
     return { ...outcome, ...stats };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = errorMessageOf(err);
     await ctx.db.update(importLog).set({ status: "error", finishedAt: ctx.now(), message: sanitizeText(message, 300), errors }).where(eq(importLog.id, summaryId));
     throw err;
   }

@@ -1,4 +1,4 @@
-import { createDb } from "@meridian/db";
+import { createDb, errorMessageOf } from "@meridian/db";
 import { buildApp } from "./app.js";
 import { prepareDatabase } from "./boot.js";
 import { loadConfig } from "./config.js";
@@ -11,7 +11,7 @@ try {
   keyWarning = await prepareDatabase(db, config);
 } catch (err) {
   // A wrong SECRETS_KEY (or an unreachable database) stops the server with the reason, before it serves anything.
-  console.error(`[api] not starting: ${err instanceof Error ? err.message : String(err)}`);
+  console.error(`[api] not starting: ${errorMessageOf(err)}`);
   await client.end({ timeout: 5 });
   process.exit(1);
 }
