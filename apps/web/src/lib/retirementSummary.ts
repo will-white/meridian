@@ -1,8 +1,9 @@
-import { roundDivHalfAway, STORED_PERCENTILES, successBp, type RunPathResponse, type SimRunView, type SimSummary, type StrategyKind } from "@meridian/shared";
+import { roundDivHalfAway, STORED_PERCENTILES, successBp, type PathStory, type RunPathResponse, type SimRunView, type SimSummary, type StrategyKind } from "@meridian/shared";
+import type { FanChartInput } from "../components/charts/retirementOptions.js";
 import { money, shortDate } from "./format.js";
 import { successTone, type SuccessTone } from "./retirement.js";
 import { successText } from "./retirementCard.js";
-import { ageLabel, countText, ordinal, percentText, returnModelLabel } from "./retirementFormat.js";
+import { ageLabel, countText, ordinal, percentText, returnModelLabel, wholeDollars } from "./retirementFormat.js";
 
 /**
  * The Results page's summary (strategies-outputs-web §5.5 items 1, 2 and 4): the run header and its
@@ -187,4 +188,108 @@ export function pathCaption(path: Pick<RunPathResponse, "pathIndex" | "rank" | "
   const which = start === undefined ? `Path #${countText(path.pathIndex)}` : `The path that starts in ${start}`;
   const resimulated = path.source === "resimulated" ? " Re-simulated from the run's frozen input." : "";
   return `${which}, ranked ${ordinal(path.rank + 1)} of ${countText(paths)} by ending wealth. One simulated future, not a forecast, and not the same percentile of every column.${resimulated}`;
+}
+
+// ---- The path story in sentences (§3.12, §5.5 item 5) ----
+
+const BUCKET_PLURAL: Record<PathStory["depletion"][number]["bucket"], string> = {
+  taxable: "the taxable accounts",
+  pre_tax: "the pre-tax accounts",
+  roth: "the Roth accounts",
+  hsa: "the HSA",
+  cash: "the cash accounts",
+};
+
+const times = (n: number) => (n === 1 ? "once" : n === 2 ? "twice" : `${countText(n)} times`);
+
+/** "−1.8%" or "+3.1%" from truncated basis points (the shared `realReturnBp`). */
+function signedRate(bp: number): string {
+  const text = percentText(Math.abs(bp));
+  return bp < 0 ? `−${text}` : `+${text}`;
+}
+
+/** "91 and 88" from the ages of the people alive. */
+function andList(items: readonly string[]): string {
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/**
+ * The shared `pathStory` record as the Results page's sentences (§3.12): "The money ran out in
+ * 2053, at ages 91 and 88." or "Every year of spending was funded; the plan ended with $1,115,486
+ * in today's dollars."; "Markets returned −1.8% a year after inflation over the first 10 retirement
+ * years; the median path had +3.1%."; "The taxable accounts were empty by 2037, the pre-tax accounts
+ * by 2049, the Roth accounts by 2053."; then the strategy's cuts and raises, the years below plan
+ * and the largest tax bill.
+ */
+export function pathStoryText(story: PathStory, strategy?: StrategyKind | string): string[] {
+  const out: string[] = [];
+  if (story.outcome === "failed" && story.failureYear !== undefined) {
+    const ages = story.failureAges ?? [];
+    out.push(`The money ran out in ${story.failureYear}${ages.length === 0 ? "" : `, at ${ages.length === 1 ? "age" : "ages"} ${andList(ages.map(String))}`}.`);
+  } else {
+    out.push(`Every year of spending was funded; the plan ended with ${wholeDollars(story.endingRealCents)} in today's dollars.`);
+  }
+  const own = story.first10.realReturnBp;
+  if (own !== undefined) {
+    const median = story.first10.medianRealReturnBp;
+    out.push(`Markets returned ${signedRate(own)} a year after inflation over the first 10 retirement years${median === undefined ? "" : `; the median path had ${signedRate(median)}`}.`);
+  }
+  if (story.depletion.length > 0) {
+    const parts = story.depletion.map((d, i) => (i === 0 ? `${BUCKET_PLURAL[d.bucket]} ${d.bucket === "hsa" ? "was" : "were"} empty by ${d.year}` : `${BUCKET_PLURAL[d.bucket]} by ${d.year}`));
+    const sentence = parts.join(", ");
+    out.push(`${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}.`);
+  }
+  const e = story.events;
+  if (strategy === "guardrails" && e.cuts + e.raises + e.freezes > 0) {
+    const bits: string[] = [];
+    if (e.cuts > 0) bits.push(`cut spending ${times(e.cuts)}`);
+    if (e.raises > 0) bits.push(`raised it ${times(e.raises)}`);
+    if (e.freezes > 0) bits.push(`skipped the inflation raise ${times(e.freezes)}`);
+    out.push(`The guardrails ${andList(bits)}.`);
+  }
+  if (e.bandFloors + e.bandCeilings > 0) out.push(`Discretionary spending was held at the floor in ${countText(e.bandFloors)} and at the ceiling in ${countText(e.bandCeilings)} ${e.bandFloors + e.bandCeilings === 1 ? "year" : "years"}.`);
+  if (e.topUps > 0) out.push(`The withdrawal was topped up to pay essentials in ${countText(e.topUps)} ${e.topUps === 1 ? "year" : "years"}.`);
+  if (story.belowPlanYears > 0) out.push(`Spending was below the plan in ${countText(story.belowPlanYears)} ${story.belowPlanYears === 1 ? "year" : "years"}.`);
+  if (BigInt(story.peakTax.cents) > 0n) out.push(`The largest federal tax bill was ${wholeDollars(story.peakTax.cents)}, in ${story.peakTax.year}.`);
+  return out;
+}
+
+// ---- The fan's legend and its "Show as table" (§5.5 item 3) ----
+
+/** The HTML legend beside the fan: the two bands, the median and the selected path. */
+export function fanLegend(hasOverlay: boolean): Array<{ key: string; label: string }> {
+  const items = [
+    { key: "outer", label: "10th to 90th percentile" },
+    { key: "inner", label: "25th to 75th percentile" },
+    { key: "median", label: "Median" },
+  ];
+  if (hasOverlay) items.push({ key: "path", label: "This path" });
+  return items;
+}
+
+export interface FanTableRow {
+  year: number;
+  ages: string;
+  p10: string;
+  p25: string;
+  p50: string;
+  p75: string;
+  p90: string;
+  /** "94%" of all paths still funded at the end of the year (truncated). */
+  funded: string;
+}
+
+/** The fan as a table ("Show as table", §5.5 item 3) from the same chart input, money as "$1,234.56". */
+export function fanTableRows(chart: Pick<FanChartInput, "labels" | "years" | "bands" | "fundedBp" | "axis">, people: readonly SummaryPerson[] = []): FanTableRow[] {
+  return chart.years.map((year, i) => ({
+    year,
+    ages: chart.axis === "year" ? ageLabel(people.map((p) => year - p.birthYear)) : (chart.labels[i] ?? ""),
+    p10: money(chart.bands.p10[i] ?? null),
+    p25: money(chart.bands.p25[i] ?? null),
+    p50: money(chart.bands.p50[i] ?? null),
+    p75: money(chart.bands.p75[i] ?? null),
+    p90: money(chart.bands.p90[i] ?? null),
+    funded: chart.fundedBp?.[i] === undefined ? "—" : percentText(chart.fundedBp[i]!, 0),
+  }));
 }

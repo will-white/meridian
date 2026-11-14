@@ -1,8 +1,12 @@
 import {
   PLANNER_DISCLAIMER,
   STRATEGY_INFO,
+  type AllocationSource,
   type BaselineChange,
+  type BasisCoverage,
   type EffectiveInputsView,
+  type OwnerId,
+  type PlanBucket,
   type PlanIssue,
   type ProfileResponse,
   type RetirementRulesView,
@@ -15,7 +19,7 @@ import { ApiError } from "./api.js";
 import { money, shortDate } from "./format.js";
 import { successText } from "./retirementCard.js";
 import { clampPercentile } from "./retirementSummary.js";
-import { countText, durationText, percentText, returnModelLabel, strategyLabel, wholeDollars } from "./retirementFormat.js";
+import { BUCKETS, bucketLabel, countText, durationText, percentText, returnModelLabel, strategyLabel, wholeDollars } from "./retirementFormat.js";
 
 /**
  * The retirement pages' states as pure view models (strategies-outputs-web §5.1 to §5.9 and
@@ -559,3 +563,82 @@ export const NO_RUNS_TEXT = "No runs yet.";
 
 /** The strategy card texts, re-exported for the run-settings page with their labels in display order. */
 export const STRATEGY_CARDS = (Object.keys(STRATEGY_INFO) as Array<keyof typeof STRATEGY_INFO>).map((kind) => ({ kind, ...STRATEGY_INFO[kind] }));
+
+// ---- The profile's Accounts step (§5.2) ----
+
+const ALLOCATION_SOURCE_TEXT: Record<AllocationSource, string> = {
+  holdings: "from the holdings",
+  override: "typed",
+  profile_default: "your mix for unclassified accounts",
+  household_target: "the household targets (assumed)",
+  household_actual: "the household's overall mix (assumed)",
+  assumed: "60% stocks, 40% bonds (assumed)",
+  cash: "cash",
+  pretax_mix: "the pre-tax accounts' mix",
+};
+
+const COVERAGE_TEXT: Record<BasisCoverage, string> = { full: "cost basis known", partial: "cost basis partly unknown", none: "cost basis unknown", manual: "cost basis typed" };
+
+export interface AccountRow {
+  accountId: string;
+  name: string;
+  balance: string;
+  valuationDate: string;
+  included: boolean;
+  owner?: string;
+  basis?: string;
+  allocation?: string;
+  /** The account's issues (a borrowed allocation, an unknown basis), as their messages. */
+  warnings: string[];
+}
+
+export interface AccountGroup {
+  bucket: PlanBucket;
+  label: string;
+  link: NavItem;
+  accounts: AccountRow[];
+}
+
+/**
+ * The live accounts grouped by bucket (§5.2 "Accounts step"): balance, valuation date, owner, basis
+ * coverage, the allocation's source and the account's warnings from `issues`, each group linking to
+ * Accounts. Accounts outside every bucket (a 529, a credit card) are listed apart with the reason.
+ */
+export function accountGroups(
+  baseline: ProfileResponse["baseline"],
+  effective: EffectiveInputsView | null,
+  issues: readonly PlanIssue[],
+  people: { p1?: string; p2?: string } = {},
+): { groups: AccountGroup[]; outside: Array<{ name: string; reason: string }> } {
+  const ownerText = (o: OwnerId) => (o === "joint" ? "Joint" : (people[o] ?? (o === "p1" ? "Person 1" : "Person 2")));
+  const groups: AccountGroup[] = [];
+  for (const bucket of BUCKETS) {
+    const accounts = baseline.accounts.filter((a) => a.bucket === bucket);
+    if (accounts.length === 0) continue;
+    groups.push({
+      bucket,
+      label: bucketLabel(bucket),
+      link: { to: "/accounts", label: "Accounts" },
+      accounts: accounts.map((a) => {
+        const e = effective?.accounts.find((x) => x.accountId === a.accountId);
+        const row: AccountRow = {
+          accountId: a.accountId,
+          name: a.name,
+          balance: a.valueCents === undefined ? "—" : money(a.valueCents),
+          valuationDate: shortDate(a.valuationDate),
+          included: e?.included ?? false,
+          warnings: issues.filter((i) => i.accountId === a.accountId).map((i) => i.message),
+        };
+        if (e?.owner !== undefined) row.owner = ownerText(e.owner);
+        const coverage = e?.basisCoverage ?? a.basis?.coverage;
+        if (bucket === "taxable" && coverage !== undefined) row.basis = COVERAGE_TEXT[coverage];
+        if (e?.allocationSource !== undefined) row.allocation = ALLOCATION_SOURCE_TEXT[e.allocationSource];
+        return row;
+      }),
+    });
+  }
+  const outside = baseline.accounts
+    .filter((a) => a.bucket === undefined)
+    .map((a) => ({ name: a.name, reason: a.ineligible === "education" ? "An education account is not part of the retirement plan" : "Not an account the planner draws from" }));
+  return { groups, outside };
+}

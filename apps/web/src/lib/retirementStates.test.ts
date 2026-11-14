@@ -1,8 +1,10 @@
-import { ProfileResponse, RetirementProfileDoc, SimRunView, type BaselineChange, type PlanIssue, type ScenarioSummary } from "@meridian/shared";
-import { fixtureBaseline, fixtureProfileDoc } from "@meridian/shared/src/retirement/testFixtures.js";
+import { defaultRunSettings, ProfileResponse, RetirementProfileDoc, SimRunView, type BaselineChange, type PlanIssue, type ScenarioSummary } from "@meridian/shared";
+import { fixtureBaseline, fixtureProfileDoc, IDS } from "@meridian/shared/src/retirement/testFixtures.js";
 import { describe, expect, it } from "vitest";
 import { ApiError } from "./api.js";
+import { inlineIssues } from "./retirementForms.js";
 import {
+  accountGroups,
   activeNav,
   ageMonthsText,
   baselineBanner,
@@ -422,5 +424,29 @@ describe("§5.6 history", () => {
   it("the strategy cards in the order of STRATEGY_INFO", () => {
     expect(STRATEGY_CARDS.map((c) => c.kind)).toEqual(["constant_dollar", "fixed_percentage", "guardrails", "vpw", "floor_ceiling"]);
     expect(STRATEGY_CARDS[0]!.label).toBe("Constant inflation-adjusted");
+  });
+});
+
+describe("§5.2 the Accounts step: the live accounts by bucket", () => {
+  it("the fixture: groups in bucket order with balance, date, owner, basis, the allocation's source and the account's warnings; the 529 apart", () => {
+    const doc = RetirementProfileDoc.parse(fixtureProfileDoc());
+    const resolved = inlineIssues({ doc, baseline: fixtureBaseline(), settings: defaultRunSettings() }, { dataVersion: "2026.11.1", minStartYear: 2026, ruleSets: [{ id: "current_law", label: "Current law" }] }, "2026-10-14");
+    const { groups, outside } = accountGroups(fixtureBaseline(), resolved.effective ?? null, resolved.issues, { p1: "Alex", p2: "Sam" });
+    expect(groups.map((g) => [g.label, g.accounts.map((a) => a.name)])).toEqual([
+      ["Taxable", ["Old Brokerage", "Brokerage"]],
+      ["Pre-tax", ["Acme 401(k)"]],
+      ["Roth", ["Roth IRA"]],
+      ["HSA", ["HealthEquity HSA"]],
+      ["Cash", ["Checking", "Savings"]],
+    ]);
+    const old = groups[0]!.accounts[0]!;
+    expect(old).toMatchObject({ accountId: IDS.T, balance: "$4,325.00", valuationDate: "10/13/26", included: true, owner: "Joint", basis: "cost basis partly unknown", allocation: "from the holdings" });
+    expect(old.warnings.length).toBeGreaterThan(0);
+    expect(old.warnings).toEqual(resolved.issues.filter((i) => i.accountId === IDS.T).map((i) => i.message));
+    const k = groups[1]!.accounts[0]!;
+    expect(k).toMatchObject({ owner: "Alex", allocation: "the household targets (assumed)" });
+    expect(k.basis).toBeUndefined();
+    expect(groups.every((g) => g.link.to === "/accounts")).toBe(true);
+    expect(outside).toEqual([{ name: "College 529", reason: "An education account is not part of the retirement plan" }]);
   });
 });
