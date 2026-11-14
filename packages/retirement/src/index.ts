@@ -118,6 +118,13 @@ export type {
   StrategyIndex,
   StrategyTables,
 } from "./strategies/index.js";
+export { ASSESS_MAX_CALLS, createAssessment } from "./hooks.js";
+export type { AssessFn, Assessment, EngineHooks, YearView } from "./hooks.js";
+export { CARRY, CARRY_REC, PATH_FLAG, createPathState } from "./state.js";
+export type { MutableYearView, PathState } from "./state.js";
+export { PP, PP_COLUMNS, PP_HOUSEHOLD, PP_REC, assessInto, createAssessFn, prepareAssessYear } from "./assess.js";
+export { AC, AC_REC, SP, SP_REC, YEAR_FLAG, YR, YR_REC, createPathDetail, simulatePath } from "./loop.js";
+export type { PathDetail } from "./loop.js";
 export { EngineInputError, EngineInvariantError, EngineRuntimeError } from "./errors.js";
 export type { EngineRuntimeCode } from "./errors.js";
 export {
