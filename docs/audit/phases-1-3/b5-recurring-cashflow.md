@@ -230,3 +230,62 @@ What changed: `recurringTotalsLabel` says "net out" or "net in" when both direct
 Tests:
 - `apps/web/src/components/recurring/recurringAudit.test.ts`: "says net out or net in when both directions are listed, and plain magnitudes for one direction"
 - Browser: "5 items · net out $2,323.97/mo · $27,887.64/yr".
+
+## Second round
+
+An independent reviewer confirmed twelve of the fourteen first-round fixes and left two open, b5-04 and b5-05, both "incomplete": the reported case is fixed, a nearby case is not. It raised no new issues. Both cases were reproduced at HEAD and are real; both are fixed in `packages/db/src/services/recurring.ts`. Decisions A10 and A11 of `docs/phase-2-plan.md` were amended (no new number), and the recurring design (`docs/design/phase-2/recurring.md`, section C and C1) was edited to match.
+
+Every new test was run against the service as it was before the fix and failed: 6 of 6, output in the lane's scratch directory (`laneB/b5r2-red-db.txt`). The runs after the fix are `laneB/b5r2-green-db.txt`, `-worker.txt` and `-api.txt`.
+
+### Second round, b5-recurring-cashflow-04 (incomplete): an edit that lands while a detection run is in flight is reverted
+
+Status: fixed.
+
+What was wrong: `runRecurringDetection` read every recurring row once at its start, in one transaction and without row locks, and `suggestionRewrite` built on that copy. The first round's conditional update (`where status = 'suggested'`) only caught a confirm or dismiss. An edit that leaves the row a suggestion was overwritten with the copy the run had read. Reproduced with two real transactions (the owner's edit written but not yet committed when the run starts): a suggestion at −9.99 without a category, its charges since categorized as Entertainment. The owner sets −12.99 and Subscriptions, and after the run the row is back at −9.99 in Entertainment, while `amount_locked` still reads true. The run starts often while the owner is using the app: after every sync and after ledger edits, not only at night. The same unlocked read let the cleanup of suggestions that a run does not reproduce delete one the owner confirmed meanwhile. Reproduced: a lapsed suggestion confirmed while the run was about to delete it was deleted, and its links were nulled.
+
+What changed:
+- `upsertDetections` reads its group's rows and their links itself, when it upserts that group, with `SELECT … FOR UPDATE` (`lockGroupRows`). It no longer takes an `existing` argument. Three cases follow:
+  - An edit, confirm or dismiss that committed while the run was in flight is what the mapping and the rewrite build on.
+  - One still in flight holds the row. The run waits for it, then reads the committed row.
+  - One that starts after the read waits for the run and lands on top of its rewrite.
+
+  A locked amount, a locked schedule and a category set meanwhile are kept, and a row that is no longer a suggestion only gets `detected_at`. The rewrite therefore no longer needs the conditional update.
+- The run calls it only for groups that have a detection or a cancelled row (b5-05 below).
+- The cleanup selects the stale suggestions `FOR UPDATE`, so Postgres re-checks a row changed meanwhile. A suggestion confirmed or dismissed in that window is no longer stale and is kept with its links.
+
+The reviewer's other suggestion, `updated_at = best.updatedAt` in the update's condition, was not taken. It would leave an edited suggestion unrefreshed for that run, and it depends on every writer bumping `updated_at`. Decision A10 says so.
+
+Tests:
+- `packages/db/src/services/recurring.audit.test.ts`, suite "b5-04 (second round): an edit or a confirm that lands while a detection run is in flight". Each test holds the owner's write open in its own transaction, starts the run, waits until the run waits on the row lock (`pg_stat_activity`) and only then commits:
+  - "an edit to a suggestion made after the run read the rows is kept: the rewrite builds on the edited row". The reviewer's P4b: −12.99, `amount_locked`, Subscriptions, 6 links, `detected_at` of the run. Before the fix it was −9.99 in Entertainment.
+  - "a suggestion the owner confirms while the run is about to delete it as not reproduced is kept with its links". Last charge 09-05, run on 11-20: the item is active with its 6 links, and only the other lapsed suggestion is deleted. Before the fix both were deleted.
+- The first round's "a run that detected before the owner confirmed the suggestion only stamps detected_at" now calls the new signature (detections from a read before the confirm).
+
+### Second round, b5-recurring-cashflow-05 (incomplete): a resubscription on a different billing day is never suggested
+
+Status: fixed.
+
+What was wrong: the first round ran the detection of the charges after a cancel only when a detection of the whole group mapped to the cancelled row. That needs the old and new charges to score as one series, which happens only when the new charges fall on the old billing day. Billing usually restarts on the signup date, so the common case did not work. Reproduced (the reviewer's P5a): Netflix −15.49 on the 5th from March to August 2026, confirmed and cancelled on 08-10, then −15.49 on the 20th from 2026-11-20 on the same account. `detectRecurring` of the whole group returns nothing, while the new charges alone form a series. Monthly runs up to 2027-07-22 (9 new charges) created nothing, and the projection had no Netflix event.
+
+While fixing it, a second defect was found in the first round's code. The detection of the charges after a cancel took every later charge of the payee that the cancelled row did not hold, so it also detected the payee's other series. That series' row had already been claimed in the run, so it was inserted again as a duplicate suggestion, which took its charges. Reproduced: Apple with iCloud on the 10th (a suggestion) and Music on the 5th, cancelled and taken again on the same day. The run created 2 suggestions instead of 1.
+
+What changed:
+- For every cancelled row of a group, whether or not a detection mapped to it, the charges dated after its cancel (`status_changed_at`) that no cancelled row holds are detected on their own (`resubscriptionDetections`). That runs after the group's own detections, and the detections are mapped like any other:
+  - the suggestion of an earlier run is updated in place;
+  - a dismissed one absorbs them, as designed;
+  - a new series becomes a suggestion, with `new_recurring` when B9 calls it new.
+- Such a detection is dropped when it shares a charge with a series the run already placed on a row that is not cancelled: another series of the payee, or the resubscription when the whole group already proposes it. So nothing is suggested twice.
+- These detections are computed before the group writes anything. If the engine throws there, the payee is skipped (`groupsSkipped`, `onGroupError`) and its rows are left untouched, as when the engine throws for the whole group (C1).
+
+Decision A11 says so.
+
+Tests:
+- `packages/db/src/services/recurring.audit.test.ts`, suite "b5-05 (second round): every cancelled item hands on the charges after its cancel":
+  - "a resubscription billed on a different day is suggested, with a new-subscription alert, and stays one suggestion as it grows". The whole group detects nothing. The run on 2027-01-22 creates one suggestion: −15.49 fixed, anchor day 20, 3 links, next due 02-20, on Checking, in Subscriptions, with `new_recurring`. Checking's history starts 03-05, so the first new charge is 260 days in and 63 days old. Six monthly runs to 2027-07-22 each update it in place and raise nothing (9 links, next due 08-20). Confirmed, it is projected on 2027-08-20.
+  - "a resubscription the owner dismissed stays dismissed as its charges continue". Two more charges and a run: no suggestion and no alert.
+  - "another series of the same payee is not suggested a second time beside the resubscription". The Apple case: 3 rows. iCloud keeps its 11 links, the cancelled Music row keeps its 6, and the new Music suggestion has the 3 new charges and one `new_recurring`.
+- `packages/db/src/services/recurring.engineError.test.ts`, "logs the payee, counts it skipped, keeps its rows and finishes the run for the others". The engine is mocked to throw for a group of charges dated only after the cancel. The result is `groupsSkipped` 1, the error logged against Netflix, the cancelled row unchanged, and another payee's suggestion still created.
+
+### Checks
+
+`pnpm typecheck`, `pnpm lint` and `pnpm build` pass. The suites of the packages touched and of those that run the detection, with `TEST_DATABASE_URL` and prefix `meridian_fix_b_`, all pass: db 61 files and 455 tests, worker 15 and 130, api 46 and 375. Only `packages/db` changed (no app and no web code), so no browser check was needed. The two lock-wait tests passed in five repeated runs. After bringing in the branch (Phase 4's planner services and the a10 second round), `pnpm typecheck`, `pnpm lint`, `pnpm build` and the same suites were run again and pass: db 67 files and 541 tests, worker 15 and 130, api 47 and 379 (`laneB/b5r2-merge-*.txt`). No check failed inside the Phase 4 paths.
