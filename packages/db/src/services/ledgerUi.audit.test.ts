@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { isoDateToUtcMs, type IsoDate, type SimplefinAccountSet } from "@meridian/shared";
-import { account, category, connection, rule, split, transaction } from "../schema/index.js";
+import { account, category, connection, importLog, job, rule, split, transaction } from "../schema/index.js";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "../test/db.js";
 import { runRules } from "./rules.js";
 import { applyAccountSet, replayAccountSetTransactions } from "./sync.js";
@@ -13,7 +13,15 @@ import { markAsTransfers, pairTransactionsByHand } from "./transfers.js";
 type SfAccount = SimplefinAccountSet["accounts"][number];
 type SfTxn = SfAccount["transactions"][number];
 const unix = (date: IsoDate) => Math.floor(isoDateToUtcMs(date) / 1000) + 12 * 3600;
-const posted = (id: string, date: IsoDate, amount: string, description: string): SfTxn => ({ id, posted: unix(date), amount, description, pending: false });
+const posted = (id: string, date: IsoDate, amount: string, description: string, transactedOn?: IsoDate): SfTxn => ({
+  id,
+  posted: unix(date),
+  amount,
+  description,
+  pending: false,
+  ...(transactedOn ? { transacted_at: unix(transactedOn) } : {}),
+});
+const pendingItem = (id: string, date: IsoDate, amount: string, description: string): SfTxn => ({ id, posted: 0, transacted_at: unix(date), amount, description, pending: true });
 const audit = () => ({ userId: null, batchId: randomUUID() });
 
 /**
@@ -199,5 +207,110 @@ describe.skipIf(!TEST_DATABASE_URL)("ledger pages, the services behind them (aud
     // What the reopen queues (simplefin.reprocess_transactions) replays every stored payload; these are the payloads.
     for (const set of [day1, ...weekly]) await replayAccountSetTransactions(t.db, { connectionId, accountSet: { errors: [], errlist: [], accounts: [set] }, now: new Date("2026-10-30T18:00:00Z") });
     expect(await ids()).toEqual(["S1", "S2", "S3", "S4"]);
+  });
+
+  /**
+   * Second round (the reviewer's probe chk11Reopen): a purchase pending when the account was
+   * closed usually posts under the same id while it is closed. The replay skipped a known id,
+   * so the row stayed pending, and the next live sync, whose window starts after the day it
+   * posted, deleted it as a pending row the feed no longer lists.
+   */
+  describe("a8-ledger-ui-02, second round: a purchase pending when the account was closed is not lost when it posts while it is closed", () => {
+    const rows = async (accountId: string) =>
+      (await t.db.select({ id: transaction.id, ext: transaction.externalId, pending: transaction.pending, date: transaction.date, amount: transaction.amountCents, notes: transaction.notes, categoryId: transaction.categoryId }).from(transaction).where(eq(transaction.accountId, accountId)))
+        .map((r) => ({ ...r, amount: r.amount.toString() }))
+        .sort((a, b) => (a.ext ?? "").localeCompare(b.ext ?? ""));
+    const replayAll = async (sets: SfAccount[]) => {
+      for (const set of sets) await replayAccountSetTransactions(t.db, { connectionId, accountSet: { errors: [], errlist: [], accounts: [set] }, now: new Date("2026-10-30T18:00:00Z") });
+    };
+    /** Sep 30: the hardware store purchase is pending, and the household categorizes it and writes a note on it. */
+    const openWithPending = async () => {
+      const first = acct("SAV", "Savings", [pendingItem("T1", "2026-09-29", "-42.00", "HARDWARE STORE")]);
+      await sync([first], [], "2026-09-23", "2026-09-30");
+      const [sav] = await t.db.select().from(account).where(eq(account.externalId, "SAV"));
+      const [row] = await t.db.select().from(transaction).where(eq(transaction.accountId, sav!.id));
+      await updateTransaction(t.db, row!.id, { categoryId: home, notes: "the new shelf" });
+      await t.db.update(account).set({ closed: true }).where(eq(account.id, sav!.id));
+      return { sav: sav!.id, rowId: row!.id, first };
+    };
+
+    it("posted under the same id: the replay posts the row, with the household's category and note, and the next sync keeps it", async () => {
+      const { sav, rowId, first } = await openWithPending();
+      // Oct 8 and Oct 22, closed: the purchase has posted (Oct 2) under its id; interest comes in. The sync takes none of it.
+      const oct8 = acct("SAV", "Savings", [posted("T1", "2026-10-02", "-42.00", "HARDWARE STORE", "2026-09-29")]);
+      const oct22 = acct("SAV", "Savings", [posted("T9", "2026-10-20", "5.00", "INTEREST")]);
+      await sync([oct8], [], "2026-09-23", "2026-10-08");
+      await sync([oct22], [], "2026-10-01", "2026-10-22");
+      expect((await rows(sav)).map((r) => `${r.ext}:${r.pending ? "pending" : "posted"}`)).toEqual(["T1:pending"]);
+
+      // Oct 30: reopened; the queued replay reads every stored payload, then the next sync asks from the mark.
+      await t.db.update(account).set({ closed: false }).where(eq(account.id, sav));
+      await replayAll([first, oct8, oct22]);
+      expect(await rows(sav)).toEqual([
+        { id: rowId, ext: "T1", pending: false, date: "2026-09-29", amount: "-4200", notes: "the new shelf", categoryId: home },
+        expect.objectContaining({ ext: "T9", pending: false, amount: "500" }),
+      ]);
+      await sync([acct("SAV", "Savings", [posted("T10", "2026-10-29", "-3.00", "FEE")])], [], "2026-10-15", "2026-10-30");
+      expect((await rows(sav)).map((r) => `${r.ext}:${r.pending ? "pending" : "posted"}`)).toEqual(["T1:posted", "T10:posted", "T9:posted"]);
+      // Replayed again, nothing changes.
+      await replayAll([first, oct8, oct22]);
+      expect(await rows(sav)).toHaveLength(3);
+    });
+
+    it("posted under a new id: the replay replaces the pending row in place, as the sync would have, so it is one row and keeps its edits", async () => {
+      const { sav, rowId, first } = await openWithPending();
+      const oct8 = acct("SAV", "Savings", [posted("T1-POSTED", "2026-10-02", "-42.00", "HARDWARE STORE #12")]);
+      await sync([oct8], [], "2026-09-23", "2026-10-08");
+      await t.db.update(account).set({ closed: false }).where(eq(account.id, sav));
+      await replayAll([first, oct8]);
+      expect(await rows(sav)).toEqual([{ id: rowId, ext: "T1-POSTED", pending: false, date: "2026-10-02", amount: "-4200", notes: "the new shelf", categoryId: home }]);
+      await sync([acct("SAV", "Savings", [])], [], "2026-10-15", "2026-10-30");
+      expect(await rows(sav)).toHaveLength(1);
+    });
+
+    it("a sync that runs before the reopen's replay keeps the account's pending rows; once the replay is done, a pending row the bank dropped goes as usual", async () => {
+      const { sav, rowId, first } = await openWithPending();
+      // A second purchase, pending at the close, that the bank then drops (a hold released).
+      const withHold = acct("SAV", "Savings", [pendingItem("T1", "2026-09-29", "-42.00", "HARDWARE STORE"), pendingItem("H1", "2026-09-30", "-100.00", "HOTEL HOLD")]);
+      await t.db.update(account).set({ closed: false }).where(eq(account.id, sav));
+      await sync([withHold], [], "2026-09-23", "2026-09-30");
+      await t.db.update(account).set({ closed: true }).where(eq(account.id, sav));
+      const oct8 = acct("SAV", "Savings", [posted("T1", "2026-10-02", "-42.00", "HARDWARE STORE", "2026-09-29")]);
+      await sync([oct8], [], "2026-09-23", "2026-10-08");
+
+      // Reopened: the API queues the replay; a sync already due runs first, with a window that starts after Oct 2.
+      await t.db.update(account).set({ closed: false }).where(eq(account.id, sav));
+      const [waiting] = await t.db
+        .insert(job)
+        .values({ type: "simplefin.reprocess_transactions", payload: { connectionId, reason: "account_reopened", accountId: sav, dedupeKey: `account_reopened:${sav}` }, status: "queued", runAt: new Date("2026-10-30T18:00:00Z") })
+        .returning({ id: job.id });
+      try {
+        await sync([acct("SAV", "Savings", [])], [], "2026-10-15", "2026-10-30");
+        expect((await rows(sav)).map((r) => `${r.ext}:${r.pending ? "pending" : "posted"}`)).toEqual(["H1:pending", "T1:pending"]);
+        await replayAll([first, withHold, oct8]);
+        await t.db.update(job).set({ status: "done" }).where(eq(job.id, waiting!.id));
+        await sync([acct("SAV", "Savings", [])], [], "2026-10-15", "2026-10-31");
+        expect(await rows(sav)).toEqual([{ id: rowId, ext: "T1", pending: false, date: "2026-09-29", amount: "-4200", notes: "the new shelf", categoryId: home }]);
+      } finally {
+        await t.db.delete(job).where(eq(job.id, waiting!.id));
+      }
+    });
+
+    it("guard: a replay never gives an old posted item a pending row the ledger got after that payload was fetched", async () => {
+      // Oct 8's response carried a coffee an older reader missed; Oct 10's sync brought a second coffee, still pending.
+      const [l8, l10] = await t.db
+        .insert(importLog)
+        .values([
+          { connectionId, kind: "simplefin.sync", status: "ok", startedAt: new Date("2026-10-08T18:00:00Z") },
+          { connectionId, kind: "simplefin.sync", status: "ok", startedAt: new Date("2026-10-10T18:00:00Z") },
+        ])
+        .returning({ id: importLog.id });
+      const oct10 = acct("CHK", "Everyday", [pendingItem("COF-NEW", "2026-10-09", "-4.50", "SQ *BLUE BOTTLE")]);
+      await applyAccountSet(t.db, { connectionId, accountSet: { errors: [], errlist: [], accounts: [oct10] }, windowStart: "2026-10-01", importLogId: l10!.id, now: new Date("2026-10-10T18:00:00Z") });
+      const [chk] = await t.db.select().from(account).where(eq(account.externalId, "CHK"));
+      const oct8 = acct("CHK", "Everyday", [posted("COF-OLD", "2026-10-07", "-4.50", "SQ *BLUE BOTTLE")]);
+      await replayAccountSetTransactions(t.db, { connectionId, accountSet: { errors: [], errlist: [], accounts: [oct8] }, importLogId: l8!.id, now: new Date("2026-10-30T18:00:00Z") });
+      expect((await rows(chk!.id)).map((r) => `${r.ext}:${r.pending ? "pending" : "posted"}`)).toEqual(["COF-NEW:pending", "COF-OLD:posted"]);
+    });
   });
 });

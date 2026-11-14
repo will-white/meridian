@@ -78,14 +78,44 @@ export function isHandEntered(a: Pick<AccountView, "connectionId" | "externalId"
  * a8-ledger-ui-01). The amount typed stays what it was: a type change between a debt (card,
  * loan) and anything else changes the stored balance's sign, so "Car loan" added as Checking
  * with 15,000 owes 15,000 as a loan. Null when nothing needs saying: the same side, a feed
- * account (the bank's balance keeps its sign) or no balance.
+ * account (the bank's balance keeps its sign), no balance, or a change the API refuses
+ * (`typeChangeRefusal` says that one instead: second round).
  */
 export function typeChangeQuestion(a: Pick<AccountView, "name" | "type" | "connectionId" | "externalId" | "balanceCents">, next: AccountType): string | null {
   if (next === a.type || a.balanceCents === null || !isHandEntered(a) || isDebtType(a.type) === isDebtType(next)) return null;
+  if (typeChangeRefusal(a, next) !== null) return null;
   const typed = isDebtType(a.type) ? -BigInt(a.balanceCents) : BigInt(a.balanceCents);
   const stored = isDebtType(next) ? -typed : typed;
+  const change = `Change ${a.name} to ${accountTypeLabel(next)}?`;
+  const becomes = `its balance becomes ${money(stored.toString())}, and its earlier balances change the same way.`;
+  // An amount owed or a worth is never said as a negative amount (second round): a balance typed
+  // below zero becomes a card in credit, or an account below zero.
+  if (typed < 0n) return isDebtType(next) ? `${change} It will be ${money((-typed).toString())} in credit: ${becomes}` : `${change} I${becomes.slice(1)}`;
   const what = isDebtType(next) ? `will owe ${money(typed.toString())}` : `will be worth ${money(typed.toString())}`;
-  return `Change ${a.name} to ${accountTypeLabel(next)}? It ${what}: its balance becomes ${money(stored.toString())}, and its earlier balances change the same way.`;
+  return `${change} It ${what}: ${becomes}`;
+}
+
+/**
+ * Why `PATCH /accounts/:id {type}` would be refused, said on the page before anything is asked
+ * or sent (audit a8-ledger-ui-01, second round), or null when the API takes the change. The
+ * API's rule (400 `debt_balance_positive`): for an account without a connection, the balance
+ * after the change (negated for a hand-entered account that crosses the line between a debt
+ * and anything else, decision 90) may not leave a loan above zero. A card may be in credit, so
+ * only a change to Loan is refused.
+ */
+export function typeChangeRefusal(a: Pick<AccountView, "name" | "type" | "connectionId" | "externalId" | "balanceCents">, next: AccountType): string | null {
+  if (next !== "loan" || next === a.type || a.connectionId !== null || a.balanceCents === null) return null;
+  const balance = BigInt(a.balanceCents);
+  const flips = isHandEntered(a) && !isDebtType(a.type);
+  const after = flips ? -balance : balance;
+  if (after <= 0n) return null;
+  const head = `${a.name} can't be changed to ${accountTypeLabel(next)}`;
+  const rule = "a loan's balance is what it owes, never above zero";
+  if (flips) {
+    return `${head} while its balance is ${money(a.balanceCents)}: a type change keeps the amount typed, so as a loan its balance would be ${money(after.toString())}, and ${rule}. Record a balance of zero or more first, or keep its type.`;
+  }
+  if (isDebtType(a.type)) return `${head} while it is ${money(a.balanceCents)} in credit: ${rule}. Record what it owes first, or keep its type.`;
+  return `${head} while its balance is ${money(a.balanceCents)}: it keeps the bank's balance, and ${rule}. Record a balance of zero or less first, or keep its type.`;
 }
 
 /**

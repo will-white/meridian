@@ -1,10 +1,9 @@
 import { MutationObserver, QueryClient, type InfiniteData } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AccountView, HouseholdSettingView, RuleView, TransactionList, TransactionView } from "@meridian/shared";
+import type { AccountView, HouseholdSettingView, TransactionList, TransactionView } from "@meridian/shared";
 import * as apiModule from "./api.js";
-import { closeQuestion, netWorthCents, parseManualBalance, parseThreshold, reopenNotice, typeChangeQuestion } from "./accountForms.js";
+import { closeQuestion, netWorthCents, parseManualBalance, parseThreshold, reopenNotice, typeChangeQuestion, typeChangeRefusal } from "./accountForms.js";
 import { accountTypeLabel } from "./format.js";
-import { existingAlwaysRule } from "./recategorize.js";
 import { recategorizeOptions } from "./registerMutations.js";
 import { buildManualTransaction, parseTags, splitTransferQuestion, transactionEditBody, transactionEditForm, transferLabel, withCategory } from "./register.js";
 import { buildRule, emptyRuleForm, ruleAccountOptions, ruleCategoryOptions, ruleFormFrom } from "./rulesForm.js";
@@ -69,6 +68,52 @@ describe("a8-ledger-ui-01: a type change says what a hand-entered balance become
     expect(typeChangeQuestion(acct({ connectionId: U(9), externalId: "X" }), "loan")).toBeNull();
     expect(typeChangeQuestion(acct({ externalId: "X" }), "loan")).toBeNull();
     expect(typeChangeQuestion(acct({ balanceCents: null }), "loan")).toBeNull();
+  });
+});
+
+describe("a8-ledger-ui-01, second round: a change the API would refuse is said on the page, never asked", () => {
+  it("a hand-entered Checking at -50.00 cannot become a Loan: the page says why instead of asking to confirm 'will owe -$50.00'", () => {
+    const old = acct({ name: "Old checking", balanceCents: "-5000" });
+    expect(typeChangeRefusal(old, "loan")).toBe(
+      "Old checking can't be changed to Loan while its balance is -$50.00: a type change keeps the amount typed, so as a loan its balance would be $50.00, and a loan's balance is what it owes, never above zero. Record a balance of zero or more first, or keep its type.",
+    );
+    expect(typeChangeQuestion(old, "loan")).toBeNull();
+  });
+  it("a card in credit, and an account a removed connection left, keep their sign, so the same rule refuses them", () => {
+    expect(typeChangeRefusal(acct({ name: "Store card", type: "credit", balanceCents: "2000" }), "loan")).toBe(
+      "Store card can't be changed to Loan while it is $20.00 in credit: a loan's balance is what it owes, never above zero. Record what it owes first, or keep its type.",
+    );
+    expect(typeChangeRefusal(acct({ name: "Old savings", type: "savings", externalId: "X", balanceCents: "10000" }), "loan")).toBe(
+      "Old savings can't be changed to Loan while its balance is $100.00: it keeps the bank's balance, and a loan's balance is what it owes, never above zero. Record a balance of zero or less first, or keep its type.",
+    );
+  });
+  it("what the API takes is not refused: a feed account, a loan that ends at zero or below, a card, the same type", () => {
+    expect(typeChangeRefusal(acct({}), "loan")).toBeNull();
+    expect(typeChangeRefusal(acct({ balanceCents: "0" }), "loan")).toBeNull();
+    expect(typeChangeRefusal(acct({ connectionId: U(9), externalId: "X", balanceCents: "10000" }), "loan")).toBeNull();
+    expect(typeChangeRefusal(acct({ type: "credit", balanceCents: "-12000" }), "loan")).toBeNull();
+    expect(typeChangeRefusal(acct({ balanceCents: "-5000" }), "credit")).toBeNull();
+    expect(typeChangeRefusal(acct({ type: "loan", balanceCents: "-5000" }), "loan")).toBeNull();
+    expect(typeChangeRefusal(acct({ balanceCents: null }), "loan")).toBeNull();
+  });
+  it("no question names a negative amount owed or a negative worth", () => {
+    for (const from of ["checking", "credit", "loan", "asset"] as const) {
+      for (const to of ["checking", "credit", "loan", "asset"] as const) {
+        for (const balanceCents of ["-5000", "0", "5000"]) {
+          if (from === "loan" && balanceCents === "5000") continue;
+          const a = acct({ type: from, balanceCents });
+          const q = typeChangeQuestion(a, to);
+          expect(q ?? "").not.toMatch(/owe -|worth -/);
+          if (typeChangeRefusal(a, to) !== null) expect(q).toBeNull();
+        }
+      }
+    }
+    expect(typeChangeQuestion(acct({ name: "Old checking", balanceCents: "-5000" }), "credit")).toBe(
+      "Change Old checking to Credit card? It will be $50.00 in credit: its balance becomes $50.00, and its earlier balances change the same way.",
+    );
+    expect(typeChangeQuestion(acct({ name: "Store card", type: "credit", balanceCents: "2000" }), "checking")).toBe(
+      "Change Store card to Checking? Its balance becomes -$20.00, and its earlier balances change the same way.",
+    );
   });
 });
 
@@ -247,34 +292,6 @@ describe("a8-ledger-ui-16 and -05: the category change shows at once, goes back 
   });
 });
 
-describe("a8-ledger-ui-09: the rule 'always do this' would duplicate is found as the rules engine matches", () => {
-  const rule = (over: Partial<RuleView> = {}): RuleView => ({
-    id: U(500),
-    name: "Cafe Rio → Dining",
-    position: 2,
-    enabled: true,
-    conditions: { payee: { op: "equals", value: "cafe rio" } },
-    actions: { setCategoryId: U(301) },
-    createdAt: "2026-11-01T00:00:00Z",
-    problems: [],
-    ...over,
-  });
-  const target = { payeeName: "Café Rio", categoryId: U(301) };
-  it("case and Latin accents folded, as the engine folds them; a case-sensitive rule compares exactly", () => {
-    expect(existingAlwaysRule([rule()], target)?.id).toBe(U(500));
-    expect(existingAlwaysRule([rule({ conditions: { payee: { op: "equals", value: "cafe rio", caseSensitive: true } } })], target)).toBeUndefined();
-    expect(existingAlwaysRule([rule({ conditions: { payee: { op: "equals", value: "Café Rio", caseSensitive: true } } })], target)?.id).toBe(U(500));
-  });
-  it("not a rule that contains the name, adds a condition, sets another category, is off, or marks the row a transfer", () => {
-    for (const other of [
-      rule({ conditions: { payee: { op: "contains", value: "cafe rio" } } }),
-      rule({ conditions: { payee: { op: "equals", value: "cafe rio" }, accountId: U(1) } }),
-      rule({ actions: { setCategoryId: U(302) } }),
-      rule({ enabled: false }),
-      rule({ actions: { setCategoryId: U(301), markTransfer: true } }),
-    ]) {
-      expect(existingAlwaysRule([other], target)).toBeUndefined();
-    }
-    expect(existingAlwaysRule(undefined, target)).toBeUndefined();
-  });
-});
+// a8-ledger-ui-09: which rule "always do this" would duplicate, folded as the engine folds names, is
+// decided by the rules engine itself since the second round (alwaysRuleVerdict, with these cases
+// in packages/shared/src/rules.test.ts) and asked of the API (GET /transactions/:id/always-rule).

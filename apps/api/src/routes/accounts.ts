@@ -26,7 +26,7 @@ import {
   AccountView,
   CreateManualAccountBody,
   defaultTaxTreatment,
-  formatCents,
+  formatDollars,
   isDebtAccountType,
   isInvestmentAccountType,
   LinkFeedAccountBody,
@@ -124,7 +124,7 @@ function assertBalanceFitsType(current: BalanceSignRow, nextType: AccountType, f
   if (current.connectionId !== null || current.balanceCents === null || nextType === current.type) return;
   const next = flip ? -current.balanceCents : current.balanceCents;
   if (manualBalanceProblem(nextType, next)) {
-    throw badRequest(`A loan owes money, so its balance cannot be positive: as a loan, this account's balance of ${formatCents(current.balanceCents)} would be ${formatCents(next)}. Update its balance first, or keep its type`, "debt_balance_positive");
+    throw badRequest(`A loan owes money, so its balance cannot be positive: as a loan, this account's balance of ${formatDollars(current.balanceCents)} would be ${formatDollars(next)}. Update its balance first, or keep its type`, "debt_balance_positive");
   }
 }
 

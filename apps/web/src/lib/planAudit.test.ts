@@ -192,9 +192,9 @@ describe("b7-plan-ui-04: the drill-down panel and drag to recategorize", () => {
   });
 
   it("offers the register's 'always do this' rule after a move, for a transaction with a payee", () => {
-    expect(recategorizePrompt(txn({ categoryId: RENT }), RENT)).toEqual({ payeeName: "AMAZON", categoryId: RENT });
+    expect(recategorizePrompt(txn({ categoryId: RENT }), RENT)).toEqual({ transactionId: "44444444-4444-4444-8444-444444444444", payeeName: "AMAZON", categoryId: RENT });
     expect(recategorizePrompt(txn({ payeeName: null, categoryId: RENT }), RENT)).toBeNull();
-    expect(alwaysRuleBody({ payeeName: "AMAZON", categoryId: RENT }, "Shopping")).toEqual({
+    expect(alwaysRuleBody({ transactionId: "44444444-4444-4444-8444-444444444444", payeeName: "AMAZON", categoryId: RENT }, "Shopping")).toEqual({
       name: "AMAZON → Shopping",
       conditions: { payee: { op: "equals", value: "AMAZON" } },
       actions: { setCategoryId: RENT },

@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import {
   addDays,
   classifyInvestmentInflow,
@@ -18,7 +18,7 @@ import {
   type RuleLike,
 } from "@meridian/shared";
 import type { DbOrTx } from "../index.js";
-import { account, investmentTxn, split, transaction, transactionAlias } from "../schema/index.js";
+import { account, importLog, investmentTxn, split, transaction, transactionAlias } from "../schema/index.js";
 import { PayeeCache } from "./payees.js";
 import { addTransactionTags, tagsForTransactions } from "./tags.js";
 import { lockLedger } from "./ledgerLock.js";
@@ -76,12 +76,20 @@ export interface IngestOptions {
    */
   accountType?: AccountType;
   /**
-   * Replaying a stored payload (audit a5-ingest-transfers-13): posted items are upserted by id
-   * (or found as duplicates) and inserted when the ledger lacks them; pending items are never
-   * inserted, no pending row is replaced or removed, and no re-keyed row is looked for, because
-   * an old payload is not the feed's current view.
+   * Replaying a stored payload (audit a5-ingest-transfers-13): posted items are found by id (or
+   * as duplicates) and inserted when the ledger lacks them; pending items are never inserted, no
+   * pending row is removed, no re-keyed row is looked for and a known row's bank-owned fields are
+   * not refreshed, because an old payload is not the feed's current view. What a pending row
+   * goes through when its purchase posts is done as the sync does it (audit a8-ledger-ui-02,
+   * second round: an account closed while a purchase was pending got none of the payloads in
+   * which it posted): a posted item under the row's id posts the row, and a posted item under a
+   * new id replaces, in place, a pending row the payload no longer lists. Posting is final, so
+   * an older payload cannot undo a newer view; a row the ledger got after the payload was
+   * fetched (`replayFetchedAt`) is never matched to it.
    */
   replay?: boolean;
+  /** Replay: when the payload was fetched (its sync's start). Pending rows the ledger got from a later sync are not its candidates. */
+  replayFetchedAt?: Date;
 }
 
 export interface IngestStats {
@@ -480,8 +488,9 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
         else fresh.push(item);
         continue;
       }
-      // A replayed payload is older than the live feed, which keeps a known row's bank-owned fields current.
-      if (options.replay) continue;
+      // A replayed payload is older than the live feed, which keeps a known row's bank-owned fields current,
+      // except for a pending row that the payload shows posted (a8-ledger-ui-02, second round): posting is final.
+      if (options.replay && !(row.pending && !item.pending)) continue;
       const patch: Partial<typeof transaction.$inferInsert> = {};
       if (row.date !== item.date && !item.undated) patch.date = item.date;
       if (row.amountCents !== item.amountCents) patch.amountCents = item.amountCents;
@@ -505,8 +514,21 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
       }
     }
 
-    // Pending rows the feed might have re-issued under a new id: every pending row of the account (a5-ingest-transfers-03).
-    const localPending: TxnRow[] = feed && !options.replay ? await tx.select().from(transaction).where(and(eq(transaction.accountId, options.accountId), eq(transaction.pending, true))) : [];
+    // Pending rows the feed might have re-issued under a new id: every pending row of the account (a5-ingest-transfers-03);
+    // in a replay, those the ledger already held when the payload was fetched (a8-ledger-ui-02, second round).
+    const pendingOfAccount = and(eq(transaction.accountId, options.accountId), eq(transaction.pending, true));
+    const fetchedAt = options.replayFetchedAt;
+    const localPending: TxnRow[] = !feed
+      ? []
+      : options.replay && fetchedAt
+        ? (
+            await tx
+              .select()
+              .from(transaction)
+              .leftJoin(importLog, eq(importLog.id, transaction.importLogId))
+              .where(and(pendingOfAccount, or(isNull(transaction.importLogId), isNull(importLog.id), lte(importLog.startedAt, fetchedAt))))
+          ).map((r) => r.transaction)
+        : await tx.select().from(transaction).where(pendingOfAccount);
     const replacements = new Map<string, { local: TxnRow; listed: boolean }>();
     if (localPending.length > 0) {
       const freshPosted = fresh.filter((f) => !f.pending).map(asIncoming);

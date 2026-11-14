@@ -7,7 +7,7 @@ import { accountTypeLabel, money, shortDate } from "../lib/format.js";
 import { lastReconciliationText, positionsMatchText } from "../lib/investmentForms.js";
 import { taxTreatmentLabel } from "../lib/investments.js";
 import { linkableFeedAccounts, linkConfirmText, linkResultText } from "../lib/ledgerCorrections.js";
-import { balanceFieldLabel, closeQuestion, isDebtType, netWorthCents, owedText, parseManualBalance, parseThreshold, reopenNotice, typeChangeQuestion } from "../lib/accountForms.js";
+import { balanceFieldLabel, closeQuestion, isDebtType, netWorthCents, owedText, parseManualBalance, parseThreshold, reopenNotice, typeChangeQuestion, typeChangeRefusal } from "../lib/accountForms.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
 import { FidelityBadge } from "../components/investments/FidelityBadge.js";
 import { useIsViewer } from "../components/investments/queries.js";
@@ -219,7 +219,12 @@ export function AccountsPage() {
       if (v["closed"] === false && a.connectionId !== null) void qc.invalidateQueries({ queryKey: ["connections"] });
     },
   });
+  // Audit a8-ledger-ui-01, second round: a type change the API would refuse is said here, never asked and then refused.
+  const [typeRefusal, setTypeRefusal] = useState<string | null>(null);
   const changeType = (a: AccountView, next: AccountView["type"]) => {
+    const refusal = typeChangeRefusal(a, next);
+    setTypeRefusal(refusal);
+    if (refusal !== null) return;
     // Audit a8-ledger-ui-01: say what the balance becomes before a hand-entered balance changes sign.
     const question = typeChangeQuestion(a, next);
     if (question !== null && !window.confirm(question)) return;
@@ -289,6 +294,7 @@ export function AccountsPage() {
       </div>
       <ErrorText error={accounts.error} />
       <ErrorText error={update.error} />
+      {typeRefusal && <ErrorText error={new Error(typeRefusal)} />}
       <ErrorText error={link.error} />
       {accounts.isPending && <p className="muted">Loading accounts…</p>}
       {linkNotice && <p className="notice">{linkNotice}</p>}

@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useState, type FormEvent } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router";
-import { formatCents, formatFixed8, isInvestmentAccountType, parseLooseDecimal } from "@meridian/shared";
+import { formatCents, formatFixed8, INVESTMENT_ACCOUNT_TYPES, isInvestmentAccountType, parseLooseDecimal } from "@meridian/shared";
 import type { AccountView, CashInference, HoldingSnapshotView, InvestmentIncomeFeed, InvestmentTxnList, InvestmentTxnView, LotMethod, SecurityView, SnapshotSummaryView, UpdateInvestmentTxnBody } from "@meridian/shared";
 import { api, query } from "../../lib/api.js";
 import { accountTypeLabel, money, shortDate } from "../../lib/format.js";
@@ -28,6 +28,11 @@ const CASH_INFERENCE: ReadonlyArray<readonly [CashInference, string]> = [
   ["off", "Positions only"],
 ];
 const FEED_MODES: readonly InvestmentIncomeFeed[] = ["off", "link", "create"];
+/** "Brokerage, 401(k), IRA, Roth IRA, HSA or 529 plan": the investment types by their labels (decision 100). */
+const INVESTMENT_TYPE_NAMES = (() => {
+  const names = INVESTMENT_ACCOUNT_TYPES.map(accountTypeLabel);
+  return `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
+})();
 
 /**
  * One investment account (imports design §5): the header with its derived
@@ -78,7 +83,7 @@ export function AccountInvestmentsPage() {
   if (!investment) {
     return (
       <Empty>
-        {account.name} is a {accountTypeLabel(account.type).toLowerCase()} account. Set its type to brokerage, 401k, IRA, Roth, HSA or 529 on the <Link to="/accounts">Accounts page</Link> to track positions and trades.
+        {account.name} is a {accountTypeLabel(account.type).toLowerCase()} account. Set its type to {INVESTMENT_TYPE_NAMES} on the <Link to="/accounts">Accounts page</Link> to track positions and trades.
       </Empty>
     );
   }

@@ -4,7 +4,7 @@ import { Link, useSearchParams } from "react-router";
 import { formatFixed8, isIsoDate, parseFixed8 } from "@meridian/shared";
 import type { AccountView, LotDisposalView, RealizedGainsResponse } from "@meridian/shared";
 import { api, query } from "../../lib/api.js";
-import { money, shortDate, titleCase } from "../../lib/format.js";
+import { accountTypeLabel, money, shortDate } from "../../lib/format.js";
 import { localToday } from "../../lib/plan.js";
 import { changeTone, formatQuantity, investmentAccountOptions, signedMoney } from "../../lib/investments.js";
 import { disposalNote, realizedRange, realizedYears, splitDisposals, termLabel } from "../../lib/lots.js";
@@ -106,7 +106,7 @@ export function RealizedPage() {
               <option value="">All accounts</option>
               {accountOptions.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.name} ({titleCase(a.type)})
+                  {a.name} ({accountTypeLabel(a.type)})
                 </option>
               ))}
             </select>

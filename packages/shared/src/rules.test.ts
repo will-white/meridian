@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateRules, RuleActions, RuleConditions, ruleInputProblem, ruleMatches, storedRuleProblems, type RuleLike } from "./rules.js";
+import { alwaysRuleVerdict, evaluateRules, RuleActions, RuleConditions, ruleInputProblem, ruleMatches, storedRuleProblems, type RuleLike } from "./rules.js";
 
 const CAT_GROCERIES = "11111111-1111-4111-8111-111111111111";
 const CAT_SHOPPING = "22222222-2222-4222-8222-222222222222";
@@ -217,5 +217,74 @@ describe("a stored rule that cannot run as written says so (a6-text-rules-accoun
     expect(ruleInputProblem(long)?.code).toBe("invalid_regex");
     expect(storedRuleProblems(long)).toEqual([]);
     expect(ruleMatches(long, { ...ctx, description: "A".repeat(300) })).toBe(true);
+  });
+});
+
+/**
+ * Audit a8-ledger-ui-09, second round: what "always do this" (a rule "payee equals <name> →
+ * category" written after every other rule) would do for the transaction just recategorized,
+ * by the engine itself: later rules override earlier ones and `stop` ends the run.
+ */
+describe("alwaysRuleVerdict (audit a8-ledger-ui-09, second round)", () => {
+  const COFFEE = "44444444-4444-4444-8444-444444444444";
+  const DINING = "55555555-5555-4555-8555-555555555555";
+  const row = { payee: "Blue Bottle Coffee", payeeAliases: [], description: "SQ *BLUE BOTTLE COFFEE", amountCents: -550n, accountId: ACCT_CHECKING, date: "2026-11-10" };
+  const exact = rule("r3", 3, { payee: { op: "equals", value: "Blue Bottle Coffee" } }, { setCategoryId: COFFEE });
+
+  it("the rule exists and the engine reaches it: named, no offer", () => {
+    expect(alwaysRuleVerdict([exact], row, COFFEE)).toEqual({ verdict: "exists", ruleId: "r3" });
+    // Folded as the engine folds: case and Latin accents.
+    const cafe = { ...row, payee: "Café Rio" };
+    expect(alwaysRuleVerdict([rule("c", 1, { payee: { op: "equals", value: "cafe rio" } }, { setCategoryId: COFFEE })], cafe, COFFEE)).toEqual({ verdict: "exists", ruleId: "c" });
+    expect(alwaysRuleVerdict([rule("c", 1, { payee: { op: "equals", value: "cafe rio", caseSensitive: true } }, { setCategoryId: COFFEE })], cafe, COFFEE)).toEqual({ verdict: "offer" });
+    // A later rule that sets the same category does not make the exact rule any less a duplicate.
+    expect(alwaysRuleVerdict([exact, rule("r5", 5, { payee: { op: "contains", value: "coffee" } }, { setCategoryId: COFFEE })], row, COFFEE)).toEqual({ verdict: "exists", ruleId: "r3" });
+  });
+
+  it("a later rule overrides it (the reviewer's probe): the engine gives Dining, so the offer stands, and the new rule would win", () => {
+    const broader = rule("r5", 5, { payee: { op: "contains", value: "coffee" } }, { setCategoryId: DINING });
+    expect(evaluateRules([exact, broader], row).categoryId).toBe(DINING);
+    expect(alwaysRuleVerdict([exact, broader], row, COFFEE)).toEqual({ verdict: "offer" });
+  });
+
+  it("an earlier rule that stops the run: neither the old rule nor a new one is reached, and the rule that stops is named", () => {
+    const stopper = rule("r1", 1, { payee: { op: "contains", value: "Coffee" } }, { setCategoryId: DINING, stop: true });
+    expect(alwaysRuleVerdict([stopper, exact], row, COFFEE)).toEqual({ verdict: "blocked", ruleId: "r1", reason: "stop" });
+    expect(alwaysRuleVerdict([stopper], row, COFFEE)).toEqual({ verdict: "blocked", ruleId: "r1", reason: "stop" });
+    // A rule that stops the run after giving the category already does what the prompt would.
+    const settles = rule("r1", 1, { description: { op: "contains", value: "BLUE BOTTLE" } }, { setCategoryId: COFFEE, stop: true });
+    expect(alwaysRuleVerdict([settles, rule("r5", 5, { payee: { op: "contains", value: "coffee" } }, { setCategoryId: DINING })], row, COFFEE)).toEqual({ verdict: "exists", ruleId: "r1" });
+    // A stop rule that does not match this transaction blocks nothing.
+    expect(alwaysRuleVerdict([rule("r1", 1, { payee: { op: "contains", value: "Tea" } }, { setCategoryId: DINING, stop: true }), exact], row, COFFEE)).toEqual({ verdict: "exists", ruleId: "r3" });
+  });
+
+  it("a rule that marks the transaction a transfer, or renames its payee before the new rule would see it, is named", () => {
+    const transfer = rule("t", 1, { description: { op: "contains", value: "BLUE BOTTLE" } }, { markTransfer: true });
+    expect(alwaysRuleVerdict([transfer, exact], row, COFFEE)).toEqual({ verdict: "blocked", ruleId: "t", reason: "transfer" });
+    const rename = rule("n", 1, { description: { op: "startsWith", value: "SQ *" } }, { setPayee: "Square merchant" });
+    expect(alwaysRuleVerdict([rename], row, COFFEE)).toEqual({ verdict: "blocked", ruleId: "n", reason: "payee" });
+  });
+
+  it("a disabled rule, another category, an added condition or a rule that decides by its description is no duplicate", () => {
+    for (const other of [
+      rule("r3", 3, { payee: { op: "equals", value: "Blue Bottle Coffee" } }, { setCategoryId: COFFEE }, false),
+      rule("r3", 3, { payee: { op: "equals", value: "Blue Bottle Coffee" } }, { setCategoryId: DINING }),
+      rule("r3", 3, { payee: { op: "equals", value: "Blue Bottle Coffee" }, amount: { minCents: "-1000" } }, { setCategoryId: COFFEE }),
+      rule("r3", 3, { description: { op: "contains", value: "BLUE BOTTLE" } }, { setCategoryId: COFFEE }),
+      rule("r3", 3, { payee: { op: "contains", value: "Blue Bottle" } }, { setCategoryId: COFFEE }),
+    ]) {
+      expect(alwaysRuleVerdict([other], row, COFFEE)).toEqual({ verdict: "offer" });
+    }
+    expect(alwaysRuleVerdict([], row, COFFEE)).toEqual({ verdict: "offer" });
+  });
+
+  it("a payee's other names count as the engine counts them: a later rule on a merged name overrides", () => {
+    const walmart = { ...row, payee: "Walmart", payeeAliases: ["Walmart Supercenter"], description: "WAL-MART SUPERCENTER #1234" };
+    const groceries = rule("g", 1, { payee: { op: "equals", value: "Walmart" } }, { setCategoryId: COFFEE });
+    const household = rule("h", 2, { payee: { op: "equals", value: "Walmart Supercenter" } }, { setCategoryId: DINING });
+    expect(alwaysRuleVerdict([groceries, household], walmart, COFFEE)).toEqual({ verdict: "offer" });
+    expect(alwaysRuleVerdict([groceries, household], { ...walmart, payeeAliases: [] }, COFFEE)).toEqual({ verdict: "exists", ruleId: "g" });
+    // A rule on the merged name that sets the category decides every row of the payee: no second rule.
+    expect(alwaysRuleVerdict([household], walmart, DINING)).toEqual({ verdict: "exists", ruleId: "h" });
   });
 });
