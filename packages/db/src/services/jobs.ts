@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import type { Db, DbOrTx } from "../index.js";
 import { connection, importLog, job } from "../schema/index.js";
+import { lastErrorsKeepingSyncGaps } from "./syncGaps.js";
 
 export type JobRow = typeof job.$inferSelect;
 export type JobType = JobRow["type"];
@@ -114,7 +115,7 @@ export const STALE_JOB_MESSAGE = "The worker stopped before this job finished (i
  * every half hour for ever, and the single try a failing connection gets (audit decision 27)
  * stays single. A SimpleFIN job's open import log rows are closed as errors, and a sync's
  * connection records the attempt as a failed sync does, so the scheduler spaces the next one
- * from it.
+ * from it (and, like one, keeps its sync.gap notices: audit a3-sync-core, second round).
  */
 export async function requeueStaleJobs(db: Db, olderThanMinutes = 30): Promise<StaleJobsOutcome> {
   const cutoff = new Date(Date.now() - olderThanMinutes * 60_000);
@@ -148,7 +149,7 @@ export async function requeueStaleJobs(db: Db, olderThanMinutes = 30): Promise<S
       if (row.type === "simplefin.sync" || row.type === "simplefin.balances") {
         await tx
           .update(connection)
-          .set({ status: "error", lastError: STALE_JOB_MESSAGE, lastErrors: [], lastAttemptAt: now, updatedAt: now })
+          .set({ status: "error", lastError: STALE_JOB_MESSAGE, lastErrors: lastErrorsKeepingSyncGaps([]), lastAttemptAt: now, updatedAt: now })
           .where(and(eq(connection.id, connectionId), inArray(connection.status, ["ok", "error", "auth_required"])));
       }
     });

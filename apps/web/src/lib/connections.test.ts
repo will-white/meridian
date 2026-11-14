@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lastAttemptFailed, syncAdvice, syncControls, syncSummary } from "./connections.js";
+import { dismissGapPrompt, dismissibleGap, lastAttemptFailed, syncAdvice, syncControls, syncSummary } from "./connections.js";
 
 const healthy = {
   status: "ok" as const,
@@ -76,5 +76,20 @@ describe("syncControls", () => {
     expect(syncControls({ ...healthy, status: "error" })).toEqual({ syncNow: true, balancesOnly: false, fullResync: true });
     // Still claiming: "Sync now" retries the claim; there is no access URL to resync with.
     expect(syncControls({ ...healthy, status: "claiming" })).toEqual({ syncNow: true, balancesOnly: false, fullResync: false });
+  });
+});
+
+describe("a3-sync-core (second round): a sync.gap notice the household can put away", () => {
+  const gap = { code: "sync.gap", message: "Transactions dated 2026-05-25 to 2026-07-18 may be missing.", from: "2026-05-25", to: "2026-07-18" };
+  it("is a sync.gap entry that names its days; nothing else on the connection is dismissed", () => {
+    expect(dismissibleGap(gap)).toEqual({ from: "2026-05-25", to: "2026-07-18" });
+    expect(dismissibleGap({ code: "sync.gap", message: "The last complete sync was 2026-06-01." })).toBeNull();
+    expect(dismissibleGap({ code: "con.auth", message: "re-authenticate", from: "2026-05-25", to: "2026-07-18" })).toBeNull();
+    expect(dismissibleGap({ code: "act.failed", message: "could not read", accountId: "CHK" })).toBeNull();
+  });
+  it("asks first, saying when to do it", () => {
+    expect(dismissGapPrompt({ from: "2026-05-25", to: "2026-07-18" })).toBe(
+      "Dismiss the notice about 2026-05-25 to 2026-07-18? Do it once a CSV import from the bank covers those days: no sync asks the Bridge for them again.",
+    );
   });
 });

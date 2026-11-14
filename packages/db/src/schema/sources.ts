@@ -4,6 +4,9 @@ export interface ConnectionError {
   code: string;
   message: string;
   accountId?: string;
+  /** A `sync.gap` notice: the first and the last day it names (ISO dates). It stays on the connection until it is dismissed. */
+  from?: string;
+  to?: string;
 }
 
 /** Phase 3: what a csv connection's saved mapping describes. */
@@ -69,7 +72,11 @@ export const connection = pgTable("connection", {
    */
   syncedThrough: date("synced_through"),
   lastError: text("last_error"),
-  /** SimpleFIN errlist entries (and holdings notes) from the last successful sync, sanitized; emptied when a sync fails. */
+  /**
+   * SimpleFIN errlist entries (and holdings notes) from the last successful sync, sanitized;
+   * emptied when a sync fails. `sync.gap` notices are the exception: they name days no later
+   * sync asks for, so they stay until the household dismisses them (`lastErrorsKeepingSyncGaps`).
+   */
   lastErrors: jsonb("last_errors").$type<ConnectionError[]>().notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

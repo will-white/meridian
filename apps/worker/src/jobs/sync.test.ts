@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { account, balanceSnapshot, category, connection, enqueueJob, holdingSnapshot, householdSetting, importLog, investmentTxn, job, price, security, transaction, type Db, type JobRow } from "@meridian/db";
+import { account, balanceSnapshot, category, connection, dismissSyncGap, enqueueJob, holdingSnapshot, householdSetting, importLog, investmentTxn, job, price, security, transaction, type Db, type JobRow } from "@meridian/db";
 import { ACCOUNTS, BROKERAGE_ACCOUNT, createTestDb, FIXTURE_END, FIXTURE_START, renderAccountSet, TEST_DATABASE_URL, type TestDb } from "@meridian/db/testing";
 import { addDays, encryptSecret, generateSecretsKey, isoDateToUtcMs, type IsoDate, type SimplefinAccountSet } from "@meridian/shared";
 import type { WorkerConfig } from "../env.js";
@@ -509,16 +509,22 @@ describe.skipIf(!TEST_DATABASE_URL)("sync high-water mark", () => {
     await t.db.update(connection).set({ syncedThrough: "2026-06-01" }).where(eq(connection.id, connectionId));
     await syncOn("2026-10-20");
     expect(startAsked(requests[0]!)).toBe("2026-07-19");
+    // An ordinary sync would have asked from 7 days before the mark (2026-05-25), for items that post late (a3-sync-core, second round).
     const gap = {
       code: "sync.gap",
-      message: "The last complete sync was 2026-06-01. A sync asks the Bridge for at most 93 days, so transactions from 2026-06-02 to 2026-07-18 were not requested. Import a CSV from the bank for that period if any are missing.",
+      message:
+        "Transactions dated 2026-05-25 to 2026-07-18 may be missing: the last complete sync was 2026-06-01, and a sync asks the Bridge for at most 93 days, so those days were not asked for again (they start 7 days before that sync, for items that post late). Import a CSV from the bank for that period, then dismiss this notice.",
+      from: "2026-05-25",
+      to: "2026-07-18",
     };
     expect(await conn()).toMatchObject({ status: "ok", syncedThrough: "2026-10-20", lastErrors: [gap] });
     const [log] = await t.db.select().from(importLog).where(eq(importLog.kind, "simplefin.sync")).orderBy(desc(importLog.startedAt), desc(importLog.id)).limit(1);
     expect(log!.errors).toEqual([gap]);
-    // The next sync has nothing to report.
+    // The next sync has nothing new to report; the notice stays on the connection until it is dismissed (a3-sync-core, second round).
     await syncOn("2026-10-21");
-    expect((await conn()).lastErrors).toEqual([]);
+    expect((await conn()).lastErrors).toEqual([gap]);
+    const [next] = await t.db.select().from(importLog).where(eq(importLog.kind, "simplefin.sync")).orderBy(desc(importLog.startedAt), desc(importLog.id)).limit(1);
+    expect(next!.errors).toEqual([]);
   });
 
   it("a failed sync records the attempt, drops the previous sync's entries and leaves the last success and the mark alone", async () => {
@@ -531,6 +537,189 @@ describe.skipIf(!TEST_DATABASE_URL)("sync high-water mark", () => {
     expect(after.lastError).toMatch(/402/);
     expect(after.lastSyncAt).toEqual(before.lastSyncAt);
     expect(after.lastAttemptAt).toEqual(new Date("2026-10-22T12:00:00Z"));
+  });
+});
+
+/**
+ * Audit a3-sync-core, second round: an account that a Balances only refresh is the first to
+ * see (p1-01, live-04), and a sync.gap notice that outlives the sync that wrote it.
+ */
+describe.skipIf(!TEST_DATABASE_URL)("a3-sync-core (second round)", () => {
+  let t: TestDb;
+  let ctx: JobContext;
+  let connectionId: string;
+  const secretsKey = generateSecretsKey();
+  let now = new Date("2026-10-10T12:00:00Z");
+  const requests: URL[] = [];
+  const config: WorkerConfig = { databaseUrl: "unused", secretsKey, workerId: "test-worker", syncIntervalHours: 6, pollIntervalMs: 10, initialWindowDays: 93, overlapDays: 7, requestTimeoutMs: 5000 };
+  const unix = (date: IsoDate, hour = 12) => Math.floor(isoDateToUtcMs(date) / 1000) + hour * 3600;
+  const day = (d: Date): IsoDate => d.toISOString().slice(0, 10) as IsoDate;
+  const startAsked = (url: URL): IsoDate | null => {
+    const start = url.searchParams.get("start-date");
+    return start ? day(new Date(Number(start) * 1000)) : null;
+  };
+  /** The accounts linked at the Bridge (id → the first day of the bank's history), and whether the bank can be read. */
+  const bridge = new Map<string, IsoDate>([["CHK", "2026-08-01"]]);
+  let needsLogin = false;
+  const respond = (url: URL): SimplefinAccountSet => {
+    const from = startAsked(url);
+    const balancesOnly = url.searchParams.get("balances-only") === "1";
+    return {
+      errors: [],
+      errlist: needsLogin ? [{ code: "con.auth", msg: "re-login" }] : [],
+      accounts: [...bridge].map(([id, first]): SfAccount => {
+        const transactions: SfTxn[] = [];
+        if (!balancesOnly) {
+          for (let d = first; d <= day(now); d = addDays(d, 1)) if (from === null || d >= from) transactions.push({ id: `${id}-${d}`, posted: unix(d), amount: "-10.00", description: "KING SOOPERS #0123", pending: false });
+        }
+        return { org: { name: "First Example Bank" }, id, name: `Account ${id}`, currency: "USD", balance: "100.00", "balance-date": unix(day(now), 6), transactions };
+      }),
+    };
+  };
+  const bridgeFetch = (async (input: string | URL | Request) => {
+    const url = new URL(String(input));
+    requests.push(url);
+    return new Response(JSON.stringify(respond(url)), { status: 200 });
+  }) as typeof fetch;
+  const run = async (date: IsoDate, type: "simplefin.sync" | "simplefin.balances" = "simplefin.sync") => {
+    now = new Date(`${date}T12:00:00Z`);
+    requests.length = 0;
+    await enqueueJob(t.db, type, { connectionId, manual: true });
+    await drainQueue(ctx);
+  };
+  const conn = async () => (await t.db.select().from(connection).where(eq(connection.id, connectionId)))[0]!;
+  /** The feed rows of one account, by the Bridge's id. */
+  const rowsOf = async (externalId: string) =>
+    (
+      await t.db
+        .select({ ext: transaction.externalId })
+        .from(transaction)
+        .innerJoin(account, eq(account.id, transaction.accountId))
+        .where(eq(account.externalId, externalId))
+        .orderBy(asc(transaction.externalId))
+    ).map((r) => r.ext);
+  const daysOf = (id: string, from: IsoDate, through: IsoDate) => {
+    const out: string[] = [];
+    for (let d = from; d <= through; d = addDays(d, 1)) out.push(`${id}-${d}`);
+    return out;
+  };
+  const gap = (from: IsoDate, to: IsoDate, lastComplete: IsoDate) => ({
+    code: "sync.gap",
+    message: `Transactions dated ${from} to ${to} may be missing: the last complete sync was ${lastComplete}, and a sync asks the Bridge for at most 93 days, so those days were not asked for again (they start 7 days before that sync, for items that post late). Import a CSV from the bank for that period, then dismiss this notice.`,
+    from,
+    to,
+  });
+
+  beforeAll(async () => {
+    t = await createTestDb();
+    ctx = { db: t.db, config, client: { allowedHosts: ["bridge.example.test"], fetch: bridgeFetch }, now: () => now, log: { info: () => {}, warn: () => {}, error: () => {} } };
+    const [row] = await t.db.insert(connection).values({ type: "simplefin", name: "Bank", status: "ok", accessUrlEnc: await encryptSecret(ACCESS, secretsKey) }).returning({ id: connection.id });
+    connectionId = row!.id;
+  });
+  afterAll(async () => {
+    await t?.cleanup();
+  });
+
+  it("p1-01, live-04: an account that a Balances only refresh finds, new or attached again, gets its history on the next full sync", async () => {
+    // 10-10: the first sync asks from 2026-07-09 (93 days back) and gets the checking account's 71 days (08-01 to 10-10).
+    await run("2026-10-10");
+    expect(startAsked(requests[0]!)).toBe("2026-07-09");
+    expect(await rowsOf("CHK")).toHaveLength(71);
+    expect((await conn()).syncedThrough).toBe("2026-10-10");
+
+    // 10-11: a second bank is linked at the Bridge, its history from 08-15, and the household presses Balances only.
+    bridge.set("SAV", "2026-08-15");
+    await run("2026-10-11", "simplefin.balances");
+    expect(requests[0]!.searchParams.get("balances-only")).toBe("1");
+    expect((await t.db.select({ id: account.id }).from(account).where(eq(account.externalId, "SAV"))).length).toBe(1);
+    // Its transactions were not asked for: the mark goes, as after a full sync whose window was short.
+    expect(await rowsOf("SAV")).toEqual([]);
+    expect((await conn()).syncedThrough).toBeNull();
+    // So the next full sync asks for the first-sync window (2026-10-11 - 93 days = 2026-07-10): all 58 days from 08-15 to 10-11.
+    await run("2026-10-11");
+    expect(startAsked(requests[0]!)).toBe("2026-07-10");
+    expect(await rowsOf("SAV")).toEqual(daysOf("SAV", "2026-08-15", "2026-10-11"));
+    expect(await rowsOf("SAV")).toHaveLength(58);
+    expect((await conn()).syncedThrough).toBe("2026-10-11");
+
+    // An account left without a connection when the household removed one is attached again by a Balances only refresh.
+    await t.db.insert(account).values({ name: "Old card", type: "credit", taxTreatment: "none", externalId: "OLD", connectionId: null });
+    bridge.set("OLD", "2026-09-20");
+    await run("2026-10-12", "simplefin.balances");
+    const [old] = await t.db.select({ connectionId: account.connectionId }).from(account).where(eq(account.externalId, "OLD"));
+    expect(old!.connectionId).toBe(connectionId);
+    expect((await conn()).syncedThrough).toBeNull();
+    await run("2026-10-12");
+    expect(startAsked(requests[0]!)).toBe("2026-07-11");
+    expect(await rowsOf("OLD")).toEqual(daysOf("OLD", "2026-09-20", "2026-10-12")); // 23 days
+    expect(await rowsOf("OLD")).toHaveLength(23);
+
+    // A Balances only refresh that finds nothing new leaves the mark alone.
+    await run("2026-10-12", "simplefin.balances");
+    expect((await conn()).syncedThrough).toBe("2026-10-12");
+  });
+
+  it("p1-01: a mark older than the window can reach stays after such a refresh, so the days it leaves out are still reported", async () => {
+    // The bank was unreadable from 06-01 (the last complete sync) to now. On 10-13 a Balances only refresh finds a new account.
+    await t.db.update(connection).set({ syncedThrough: "2026-06-01", lastErrors: [] }).where(eq(connection.id, connectionId));
+    bridge.set("NEW", "2026-09-01");
+    await run("2026-10-13", "simplefin.balances");
+    // The next sync asks for the whole first-sync window anyway (06-01 - 7 is before 2026-07-12), so the mark stays.
+    expect((await conn()).syncedThrough).toBe("2026-06-01");
+    await run("2026-10-13");
+    expect(startAsked(requests[0]!)).toBe("2026-07-12");
+    expect(await rowsOf("NEW")).toEqual(daysOf("NEW", "2026-09-01", "2026-10-13")); // 43 days
+    // An ordinary sync would have asked from 05-25: 05-25 to 07-11 were not asked for again.
+    expect(await conn()).toMatchObject({ syncedThrough: "2026-10-13", lastErrors: [gap("2026-05-25", "2026-07-11", "2026-06-01")] });
+  });
+
+  it("the sync.gap notice stays through later syncs, Balances only refreshes and failed syncs until it is dismissed; the same outage's notice is replaced, not repeated", async () => {
+    await t.db.update(connection).set({ syncedThrough: "2026-06-01", lastErrors: [] }).where(eq(connection.id, connectionId));
+    // 10-19: the bank still needs its login renewed. The window is capped at 2026-07-18 and the mark does not move.
+    needsLogin = true;
+    await run("2026-10-19");
+    expect(startAsked(requests[0]!)).toBe("2026-07-18");
+    expect(await conn()).toMatchObject({ status: "auth_required", syncedThrough: "2026-06-01" });
+    expect((await conn()).lastErrors.filter((e) => e.code === "sync.gap")).toEqual([gap("2026-05-25", "2026-07-17", "2026-06-01")]);
+    // 10-20, still broken: one day more is out of reach. The notice for this outage is replaced by the longer one.
+    await run("2026-10-20");
+    expect((await conn()).lastErrors.map((e) => e.code)).toEqual(["con.auth", "sync.gap"]);
+    expect((await conn()).lastErrors.filter((e) => e.code === "sync.gap")).toEqual([gap("2026-05-25", "2026-07-18", "2026-06-01")]);
+    const [log] = await t.db.select().from(importLog).where(eq(importLog.kind, "simplefin.sync")).orderBy(desc(importLog.startedAt), desc(importLog.id)).limit(1);
+    expect(log!.errors.filter((e) => e.code === "sync.gap")).toEqual([gap("2026-05-25", "2026-07-18", "2026-06-01")]);
+
+    // 10-20 later: re-authenticated. The sync is complete, the mark moves, and the notice is still there.
+    needsLogin = false;
+    await run("2026-10-20");
+    expect(await conn()).toMatchObject({ status: "ok", syncedThrough: "2026-10-20", lastErrors: [gap("2026-05-25", "2026-07-18", "2026-06-01")] });
+    // A Balances only refresh the same day, and the next sync, keep it.
+    await run("2026-10-20", "simplefin.balances");
+    expect((await conn()).lastErrors).toEqual([gap("2026-05-25", "2026-07-18", "2026-06-01")]);
+    await run("2026-10-21");
+    expect(startAsked(requests[0]!)).toBe("2026-10-13");
+    expect((await conn()).lastErrors).toEqual([gap("2026-05-25", "2026-07-18", "2026-06-01")]);
+    // A failed sync empties the entries of the last response, not the notice.
+    await t.db
+      .update(connection)
+      .set({ lastErrors: [{ code: "act.missingdata", message: "The Bridge returned incomplete data for this account.", accountId: "CHK" }, gap("2026-05-25", "2026-07-18", "2026-06-01")] })
+      .where(eq(connection.id, connectionId));
+    ctx.client.fetch = (async () => new Response("", { status: 402 })) as typeof fetch;
+    await run("2026-10-22");
+    expect(await conn()).toMatchObject({ status: "error", syncPaused: true, lastErrors: [gap("2026-05-25", "2026-07-18", "2026-06-01")] });
+    ctx.client.fetch = bridgeFetch;
+    await run("2026-10-22");
+    expect(await conn()).toMatchObject({ status: "ok", syncPaused: false, lastErrors: [gap("2026-05-25", "2026-07-18", "2026-06-01")] });
+
+    // Dismissed (after a CSV import of those days), it is gone, and the next sync does not bring it back.
+    expect(await dismissSyncGap(t.db, connectionId, "2026-05-25")).toBe(true);
+    expect((await conn()).lastErrors).toEqual([]);
+    await run("2026-10-23");
+    expect((await conn()).lastErrors).toEqual([]);
+
+    // A notice written before notices named their days goes with the next sync, as it always did.
+    await t.db.update(connection).set({ lastErrors: [{ code: "sync.gap", message: "The last complete sync was 2026-06-01." }] }).where(eq(connection.id, connectionId));
+    await run("2026-10-23");
+    expect((await conn()).lastErrors).toEqual([]);
   });
 });
 

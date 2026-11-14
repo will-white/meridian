@@ -1,7 +1,7 @@
 import type { AccountInvestmentView, AccountView, CategoryView, ConnectionView, ImportLogView, JobView, RuleView, TransactionView } from "@meridian/shared";
 import { CsvMapping, isInvestmentAccountType, PositionsCsvMapping, TradesCsvMapping } from "@meridian/shared";
 import type { account, category, connection, importLog, job, rule } from "@meridian/db";
-import type { AccountFidelityRecord, LoadedRule, TransactionListRow } from "@meridian/db";
+import type { AccountFidelityRecord, ConnectionError, LoadedRule, TransactionListRow } from "@meridian/db";
 import { toLastReconciliationView } from "./views/valuation.js";
 
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
@@ -86,6 +86,19 @@ export function toAccountView(
   };
 }
 
+/** One entry of `last_errors`; a sync.gap notice carries the days it names (audit a3-sync-core, second round). */
+function toConnectionErrorView(e: ConnectionError): ConnectionView["lastErrors"][number] {
+  const out: ConnectionView["lastErrors"][number] = { code: e.code, message: e.message };
+  if (e.accountId) out.accountId = e.accountId;
+  if (e.code === "sync.gap" && isIsoDate(e.from) && isIsoDate(e.to)) {
+    out.from = e.from;
+    out.to = e.to;
+  }
+  return out;
+}
+
+const isIsoDate = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+
 export function toConnectionView(
   r: typeof connection.$inferSelect & { accountCount: number; activeJob: typeof job.$inferSelect | undefined },
 ): ConnectionView {
@@ -103,7 +116,7 @@ export function toConnectionView(
     syncPaused: r.syncPaused,
     syncedThrough: r.syncedThrough,
     lastError: r.lastError,
-    lastErrors: r.lastErrors.map((e) => (e.accountId ? { code: e.code, message: e.message, accountId: e.accountId } : { code: e.code, message: e.message })),
+    lastErrors: r.lastErrors.map(toConnectionErrorView),
     csvMapping: bank?.success ? bank.data : null,
     csvKind: r.csvKind,
     positionsMapping: positions?.success ? positions.data : null,
