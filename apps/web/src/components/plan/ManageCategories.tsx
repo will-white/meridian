@@ -55,10 +55,17 @@ function Rename({ name, onSave, disabled }: { name: string; onSave: (name: strin
   );
 }
 
+/** What a bucket change does, asked before it is sent. */
+function bucketChangeConfirm(name: string, bucket: Bucket): string {
+  const income = bucket === "income" ? " Income does not roll over, so its rollover is switched off." : "";
+  return `Move "${name}" to ${titleCase(bucket)}? Its planned and actual amounts count in ${titleCase(bucket)} in every month, past months too, and it leaves a group of its old bucket.${income}`;
+}
+
 /**
  * Group and category management for the plan: create groups and categories,
- * rename, reorder with up/down buttons, move a category between groups, hide.
- * Every change invalidates the plan so the grid re-reads its row order.
+ * rename, reorder with up/down buttons, move a category between groups, change
+ * its bucket, hide or delete it. Every change invalidates the plan so the grid
+ * re-reads its row order. The owner's tool: the Plan page does not offer it to a viewer.
  */
 export function ManageCategories({ rows, onClose }: Props) {
   const qc = useQueryClient();
@@ -90,16 +97,19 @@ export function ManageCategories({ rows, onClose }: Props) {
     },
   });
   const updateCategory = useMutation({
-    mutationFn: ({ id, ...body }: { id: string; name?: string; hidden?: boolean; groupId?: string | null }) =>
+    mutationFn: ({ id, ...body }: { id: string; name?: string; hidden?: boolean; groupId?: string | null; bucket?: Bucket }) =>
       api<CategoryDetailView>(`/categories/${id}`, { method: "PATCH", body }),
     onSuccess: invalidate,
   });
+  /** 409 `in_use` (the server names what uses it and says to hide it instead) shows as the manager's error. */
+  const deleteCategory = useMutation({ mutationFn: (id: string) => api<{ ok: true }>(`/categories/${id}`, { method: "DELETE" }), onSuccess: invalidate });
   const reorderCategories = useMutation({
     mutationFn: (body: { groupId: string | null; ids: string[] }) => api<CategoryDetailView[]>("/categories/reorder", { method: "POST", body }),
     onSuccess: invalidate,
   });
-  const busy = [createGroup, updateGroup, deleteGroup, reorderGroups, createCategory, updateCategory, reorderCategories].some((m) => m.isPending);
-  const errors = [createGroup, updateGroup, deleteGroup, reorderGroups, createCategory, updateCategory, reorderCategories].map((m) => m.error).filter(Boolean);
+  const mutations = [createGroup, updateGroup, deleteGroup, reorderGroups, createCategory, updateCategory, deleteCategory, reorderCategories];
+  const busy = mutations.some((m) => m.isPending);
+  const errors = mutations.map((m) => m.error).filter(Boolean);
 
   const [newGroupName, setNewGroupName] = useState("");
   const [newGroupBucket, setNewGroupBucket] = useState<Bucket>("spending");
@@ -154,9 +164,36 @@ export function ManageCategories({ rows, onClose }: Props) {
             </option>
           ))}
       </select>
+      <select
+        aria-label={`Bucket for ${c.name}`}
+        value={c.bucket}
+        disabled={busy}
+        title={c.goal ? "A goal lives on a savings category" : "Every month of this category counts in the bucket you pick, past months too"}
+        onChange={(e) => {
+          const bucket = e.target.value as Bucket;
+          if (window.confirm(bucketChangeConfirm(c.name, bucket))) updateCategory.mutate({ id: c.categoryId, bucket });
+        }}
+      >
+        {BucketEnum.options.map((b) => (
+          <option key={b} value={b} disabled={c.goal !== null && b !== "savings"}>
+            {titleCase(b)}
+          </option>
+        ))}
+      </select>
       <label className="inline">
         <input type="checkbox" checked={c.hidden} disabled={busy} onChange={(e) => updateCategory.mutate({ id: c.categoryId, hidden: e.target.checked })} /> hidden
       </label>
+      <button
+        type="button"
+        className="link danger small"
+        disabled={busy}
+        aria-label={`Delete ${c.name}`}
+        onClick={() => {
+          if (window.confirm(`Delete the category "${c.name}"? Only a category no transaction, split, recurring item or goal uses can be deleted; hide it otherwise.`)) deleteCategory.mutate(c.categoryId);
+        }}
+      >
+        delete
+      </button>
     </li>
   );
 

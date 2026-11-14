@@ -67,10 +67,13 @@
 }
 .plan-cell.current { background: var(--plan-current-bg); }
 .plan-cell.overspent { background: var(--plan-warn-bg); }
-.plan-cell.total { flex-direction: row; align-items: center; justify-content: flex-end; gap: 0.6rem; font-size: 0.85em; }
-.plan-cell.total .plan-total-planned { color: var(--muted); }
+/* Subtotals stack like a category cell: planned, then actual and remaining (wrapping when the amounts are long). */
+.plan-cell.total { font-size: 0.85em; }
+.plan-cell.total .plan-total-planned { color: var(--muted); text-align: right; white-space: nowrap; }
+.plan-cell.total .plan-sub { font-size: 0.92em; }
 .plan-cell.total .plan-total-actual { color: var(--muted); }
-.plan-cell.total .plan-remaining { font-weight: 600; min-width: 5.5em; text-align: right; }
+.plan-cell.total .plan-remaining { font-weight: 600; }
+.plan-scroll.compact .plan-cell.total { align-items: flex-end; }
 
 .plan-planned { display: flex; align-items: center; gap: 0.25rem; }
 .plan-planned input {
@@ -83,6 +86,9 @@
   border-radius: 4px;
 }
 .plan-cell.auto .plan-planned input { color: var(--muted); font-style: italic; }
+/* A read-only value (a viewer, a month before the plan start) reads as text, not as a field. */
+.plan-cell.locked .plan-planned input { border-color: transparent; background: transparent; box-shadow: none; cursor: default; }
+.plan-cell.locked .plan-planned input:focus { outline: 1px dashed var(--line); }
 .plan-cell.auto .plan-planned input:focus { color: var(--ink); font-style: normal; }
 .plan-cell.invalid .plan-planned input, .plan-planned input[aria-invalid="true"] { border-color: var(--bad); }
 .plan-src {
@@ -113,18 +119,38 @@
 }
 .plan-cell:hover .plan-menu-btn, .plan-cell:focus-within .plan-menu-btn, .plan-menu-btn:focus { opacity: 1; }
 
-.plan-sub { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.5rem; font-size: 0.78em; line-height: 1.2; overflow: hidden; white-space: nowrap; }
-.plan-actual { color: var(--muted); text-decoration: none; }
-.plan-actual:hover { text-decoration: underline; color: var(--accent); }
+/* Rows are measured, so these lines may wrap: actual on the left, remaining on the right, notes under them. */
+.plan-sub { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 0 0.5rem; font-size: 0.78em; line-height: 1.25; }
+.plan-sub > *, .plan-notes > * { white-space: nowrap; }
+.plan-notes { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0 0.5rem; font-size: 0.72em; line-height: 1.25; }
+.plan-actual { background: none; border: none; padding: 0; font: inherit; color: var(--muted); text-decoration: none; cursor: pointer; }
+.plan-actual:hover, .plan-actual:focus-visible { text-decoration: underline; color: var(--accent); }
 .plan-remaining { color: var(--ok); }
 .plan-remaining.neg { color: var(--bad); }
 .plan-carried { color: var(--info); }
 .plan-cell.future .plan-carried { opacity: 0.6; }
 .plan-pending { color: var(--muted); font-style: italic; }
-.plan-scroll.compact .plan-cell.editable { flex-direction: row; align-items: center; gap: 0.4rem; }
-.plan-scroll.compact .plan-cell.editable .plan-planned { flex: 1 1 55%; min-width: 0; }
-.plan-scroll.compact .plan-cell.editable .plan-remaining { flex: 0 0 auto; font-size: 0.8em; }
-.plan-scroll.compact .plan-planned input { padding: 0.05rem 0.3rem; font-size: 0.85em; }
+/*
+ * Compact: the cell shows the remaining. The planned input lies over it, transparent, and shows
+ * the whole value while it has focus (click, Enter, Tab or arrows), so nothing is clipped.
+ */
+.plan-scroll.compact .plan-cell.editable .plan-planned { min-width: 0; }
+.plan-scroll.compact .plan-cell.editable .plan-remaining { flex: 1 1 auto; text-align: right; white-space: nowrap; font-size: 0.85em; }
+.plan-planned input.plan-compact-input {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 0.3rem;
+  right: 1.7rem;
+  width: auto;
+  min-width: 0;
+  padding: 0.05rem 0.3rem;
+  font-size: 0.85em;
+  opacity: 0;
+  z-index: 1;
+}
+.plan-planned input.plan-compact-input:focus { opacity: 1; z-index: 2; background: var(--panel); }
+.plan-scroll.compact .plan-menu-btn { position: relative; z-index: 3; }
 .plan-cell-error {
   position: absolute;
   left: 0.5rem;
@@ -148,19 +174,32 @@
   background: var(--panel);
 }
 .plan-strip .plan-name { z-index: 6; }
-.plan-strip-labels { align-items: flex-start; flex-direction: column; justify-content: center; gap: 0.1rem; padding: 0.4rem 0.6rem; }
+.plan-strip-labels { align-items: flex-start; flex-direction: column; justify-content: center; gap: 0.1rem; padding: 0.4rem 0.6rem; white-space: normal; }
+.plan-strip-caption { line-height: 1.3; }
 .plan-strip-cell { padding: 0.4rem 0.5rem; gap: 0.1rem; justify-content: flex-start; }
 .plan-strip-cell.warn { background: var(--plan-warn-bg); }
 .plan-strip-cell.warn .plan-strip-key { color: var(--bad); }
 .plan-strip-month { display: flex; align-items: center; gap: 0.3rem; flex-wrap: wrap; font-weight: 600; line-height: 1.4; }
 .plan-strip-month .badge { margin-left: 0; }
-.plan-uncat { text-decoration: none; }
+.plan-uncat { text-decoration: none; background: none; border: none; padding: 0; font: inherit; cursor: pointer; }
 .plan-strip-key { font-size: 1.15em; font-weight: 700; line-height: 1.3; }
-.plan-strip-totals { display: grid; grid-template-columns: 1fr 1fr; gap: 0 0.5rem; line-height: 1.3; color: var(--muted); }
-.plan-strip-labels .plan-strip-totals { display: block; }
+/* One named line per bucket; a narrow (compact) column shortens the name, never the amount. */
+.plan-strip-totals { display: flex; flex-direction: column; margin: 0; line-height: 1.3; color: var(--muted); }
+.plan-strip-total { display: flex; justify-content: space-between; gap: 0.4rem; min-width: 0; }
+.plan-strip-total dt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-strip-total dd { margin: 0; white-space: nowrap; }
 .plan-strip-pace { line-height: 1.3; color: var(--muted); min-height: 1.3em; }
 .plan-strip-cell.current .plan-strip-pace { color: var(--ink); }
 .plan-strip-cell.warn.current .plan-strip-pace { color: var(--bad); }
+
+/* Drill-down panel: the grid shrinks so both stay in view and a row can be dragged onto a category. */
+.plan-page.with-drill .plan-scroll { height: calc(58vh - 110px); }
+.plan-drill { margin-top: 0.75rem; max-height: 36vh; overflow: auto; }
+.plan-drill-head { position: sticky; top: 0; z-index: 1; background: var(--panel); padding-bottom: 0.4rem; }
+.plan-drill-table td { vertical-align: top; }
+.plan-drill-table select { max-width: 180px; }
+.plan-drill-draggable { cursor: grab; }
+.plan-menu-note { display: block; padding: 0.4rem 0.8rem; }
 
 /* Cell menu popover (fixed, outside the scroll clipping). */
 .plan-menu {
@@ -196,6 +235,7 @@
 @media (max-width: 800px) {
   .plan-page { --plan-name-w: 140px; --plan-col-w: 136px; }
   .plan-scroll { height: calc(100vh - 230px); }
+  .plan-page.with-drill .plan-scroll { height: calc(55vh - 120px); }
   .plan-scroll.compact { --plan-col-w: 110px; }
   .kind-category .plan-name { padding-left: 0.8rem; }
 }
