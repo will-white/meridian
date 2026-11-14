@@ -7,6 +7,7 @@ import { SimInput } from "./input.js";
 import { ClassWeights, PlanIssue } from "./primitives.js";
 import { RetirementProfileDoc } from "./profile.js";
 import { FanSeries, SimSummary, YearTable } from "./results.js";
+import { ParametricParams } from "./returnModel.js";
 import { RunSettings } from "./settings.js";
 import {
   FederalTaxPreviewRequest,
@@ -161,7 +162,43 @@ export const EffectiveInputsView = z.object({
 });
 export type EffectiveInputsView = z.infer<typeof EffectiveInputsView>;
 
-/** Route 1. `minStartYear` is the first year of the tax data, which the browser's `resolvePlan` needs (seams C47). */
+/**
+ * A parametric preset the run-settings form offers (`custom` is the form itself, seams G2):
+ * its label and the preset in the custom form's terms, each figure to the nearest basis point
+ * (C44, an engine output). `historical` is the lognormal the engine fits to the data's log
+ * returns, as arithmetic means and simple-return volatilities; `conservative` is the engine's
+ * geometric means with the data's simple-return volatilities. The engine runs the preset itself;
+ * these are for display and as a starting point.
+ */
+export const ReturnModelPresetView = z.object({
+  id: z.enum(["historical", "conservative"]),
+  label: z.string(),
+  params: ParametricParams,
+});
+export type ReturnModelPresetView = z.infer<typeof ReturnModelPresetView>;
+
+/**
+ * The return models' facts the browser cannot compute (C47: it may not import the engine or its
+ * data): the parametric presets, where a new custom model starts, and the calendar years of the
+ * return series the historical and bootstrap models draw from.
+ */
+export const RetirementReturnModelsMeta = z.object({
+  presets: z.array(ReturnModelPresetView),
+  /**
+   * Where a new custom model starts (seams G2: "means and volatilities; correlations and
+   * persistence from history"): the arithmetic means and sample standard deviations of the data
+   * file's simple annual returns, its inflation persistence and innovation correlations, bills not
+   * persistent, initial rates absent (the data's last year), each to the nearest basis point.
+   */
+  historyStartParams: ParametricParams,
+  history: z.object({ firstYear: z.number().int(), lastYear: z.number().int() }),
+});
+export type RetirementReturnModelsMeta = z.infer<typeof RetirementReturnModelsMeta>;
+
+/**
+ * Route 1. `minStartYear` is the first year of the tax data, which the browser's `resolvePlan` needs
+ * (seams C47); `returnModels` feeds the run-settings form's presets and its custom model.
+ */
 export const RetirementMeta = z.object({
   engineVersion: z.string(),
   dataVersion: z.string(),
@@ -169,6 +206,7 @@ export const RetirementMeta = z.object({
   ruleSets: z.array(z.object({ id: z.string(), label: z.string() })),
   limits: z.object({ minPaths: z.number().int(), maxPaths: z.number().int(), defaultPaths: z.number().int() }),
   defaultSettings: RunSettings,
+  returnModels: RetirementReturnModelsMeta,
   storedPercentiles: z.array(z.number().int()),
   medicareAge: z.number().int(),
   fullRetirementAge: z.array(

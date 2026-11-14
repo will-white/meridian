@@ -11,7 +11,6 @@ import {
   essentialsShareText,
   glidePathForm,
   glidePreview,
-  HISTORY_START_PARAMS,
   inlineIssues,
   isChanged,
   parametricForm,
@@ -19,6 +18,7 @@ import {
   parseParametricForm,
   parseRunSettingsForm,
   pathsField,
+  presetChoices,
   profileValue,
   removeGlidePoint,
   resetToProfile,
@@ -30,8 +30,12 @@ import {
   startScenarioDraft,
   valueAt,
 } from "./retirementForms.js";
+import { RETURN_MODELS_META } from "./retirementFixtures.js";
 
 const PROFILE = RetirementProfileDoc.parse(fixtureProfileDoc());
+/** What the run-settings form reads of `GET /meta`. */
+const META = { returnModels: RETURN_MODELS_META };
+const HISTORY = RETURN_MODELS_META.historyStartParams;
 
 function scenario(overrides: Record<string, unknown>, doc: RetirementProfileDoc | null): Pick<ScenarioView, "overrides" | "doc" | "revision"> {
   return { overrides, doc, revision: 4 };
@@ -195,12 +199,23 @@ describe("the household glide-path editor (seams G3)", () => {
 });
 
 describe("the custom parametric form (seams G2)", () => {
-  it("starts from history, parses back to the same integers, and is a valid ParametricParams", () => {
-    expect(ParametricParams.safeParse(HISTORY_START_PARAMS).success).toBe(true);
-    const form = parametricForm();
+  it("starts from history as GET /meta gives it, parses back to the same integers, and is a valid ParametricParams", () => {
+    expect(ParametricParams.safeParse(HISTORY).success).toBe(true);
+    const form = parametricForm(META);
     expect(form.stocks).toEqual({ mean: "11.85", vol: "19.4" });
     expect(form.inflation).toEqual({ mean: "3.11", vol: "3.9" });
-    expect(parseParametricForm(form)).toEqual({ ok: true, params: HISTORY_START_PARAMS });
+    expect(parseParametricForm(form, META)).toEqual({ ok: true, params: HISTORY });
+    // Whatever the server sends is the start: a data update reaches the form with the meta.
+    const moved = { returnModels: { ...RETURN_MODELS_META, historyStartParams: { ...HISTORY, stocks: { meanBp: 1150, volBp: 1900 } } } };
+    expect(parametricForm(moved).stocks).toEqual({ mean: "11.5", vol: "19" });
+  });
+
+  it("the preset choices are the meta's, then the custom model", () => {
+    expect(presetChoices(META)).toEqual([
+      { value: "historical", label: "Long-run history" },
+      { value: "conservative", label: "Conservative future" },
+      { value: "custom", label: "Your own returns and volatilities" },
+    ]);
   });
 
   it("R4's custom figures (r4.md §1) from typed percentages; correlations and persistence kept from the saved parameters", () => {
@@ -217,34 +232,34 @@ describe("the custom parametric form (seams G2)", () => {
         [0, 0, 0, 10000],
       ],
     });
-    expect(parametricForm(r4).inflation).toEqual({ mean: "2.5", vol: "1" });
-    const edited = { ...parametricForm(r4), stocks: { mean: "6.5", vol: "12" }, meanKind: "geometric" as const };
-    const parsed = parseParametricForm(edited, r4);
+    expect(parametricForm(META, r4).inflation).toEqual({ mean: "2.5", vol: "1" });
+    const edited = { ...parametricForm(META, r4), stocks: { mean: "6.5", vol: "12" }, meanKind: "geometric" as const };
+    const parsed = parseParametricForm(edited, META, r4);
     expect(parsed).toEqual({ ok: true, params: { ...r4, meanKind: "geometric", stocks: { meanBp: 650, volBp: 1200 } } });
   });
 
   it("refuses a mean outside −50% to 100%, a negative volatility and more than two decimals", () => {
-    const form = { ...parametricForm(), stocks: { mean: "-51", vol: "-1" }, bonds: { mean: "4.123", vol: "7" } };
-    const parsed = parseParametricForm(form);
+    const form = { ...parametricForm(META), stocks: { mean: "-51", vol: "-1" }, bonds: { mean: "4.123", vol: "7" } };
+    const parsed = parseParametricForm(form, META);
     expect(parsed.ok).toBe(false);
     if (!parsed.ok) expect(parsed.errors.map((e) => e.field)).toEqual(["stocks.mean", "stocks.vol", "bonds.mean"]);
-    expect(parseParametricForm({ ...parametricForm(), stocks: { mean: "−5", vol: "18" } })).toMatchObject({ ok: true, params: { stocks: { meanBp: -500, volBp: 1800 } } });
+    expect(parseParametricForm({ ...parametricForm(META), stocks: { mean: "−5", vol: "18" } }, META)).toMatchObject({ ok: true, params: { stocks: { meanBp: -500, volBp: 1800 } } });
   });
 });
 
 describe("the run-settings form (§5.4, plan decisions 6 and 7)", () => {
   it("a new scenario: the bootstrap with a mean block of 10, 10,000 paths, seed 1, constant spending; parsing it returns the defaults", () => {
     const base = defaultRunSettings();
-    const form = runSettingsForm();
+    const form = runSettingsForm(META);
     expect(form).toMatchObject({ model: "bootstrap", meanBlockYears: "10", paths: "10000", seed: "1", strategy: "constant_dollar", cashReserve: "0", taxableRebalance: "full", cohorts: "auto" });
-    expect(parseRunSettingsForm(form, base)).toEqual({ ok: true, settings: base });
+    expect(parseRunSettingsForm(form, base, META)).toEqual({ ok: true, settings: base });
   });
 
   it("the historical model: cohorts auto, complete or wrap; the paths field disabled and kept", () => {
     const base = RunSettings.parse({ ...defaultRunSettings(), paths: 2500 });
-    const form = { ...runSettingsForm(base), model: "historical" as const, cohorts: "complete" as const, paths: "not a number" };
+    const form = { ...runSettingsForm(META, base), model: "historical" as const, cohorts: "complete" as const, paths: "not a number" };
     expect(pathsField(form)).toEqual({ disabled: true, note: "One path per historical start year" });
-    const parsed = parseRunSettingsForm(form, base);
+    const parsed = parseRunSettingsForm(form, base, META);
     expect(parsed).toMatchObject({ ok: true, settings: { paths: 2500, returnModel: { kind: "historical", cohorts: "complete" } } });
     expect(pathsField({ model: "bootstrap" })).toEqual({ disabled: false });
   });
@@ -260,9 +275,9 @@ describe("the run-settings form (§5.4, plan decisions 6 and 7)", () => {
 
   it("strategies: the chosen kind from its fields, the others keep their defaults; a typed reserve in dollars", () => {
     const base = defaultRunSettings();
-    const form = runSettingsForm(base);
+    const form = runSettingsForm(META, base);
     expect(form.strategyFields).toMatchObject({ fixedRate: "4", upperBand: "20", cut: "10", stockReal: "5", bondReal: "1.9", maxRate: "10", floorCeilingRate: "", floor: "15", ceiling: "20" });
-    const guard = parseRunSettingsForm({ ...form, strategy: "guardrails", strategyFields: { ...form.strategyFields, cut: "12.5", planningAge: "97" }, cashReserve: "25,000" }, base);
+    const guard = parseRunSettingsForm({ ...form, strategy: "guardrails", strategyFields: { ...form.strategyFields, cut: "12.5", planningAge: "97" }, cashReserve: "25,000" }, base, META);
     expect(guard).toMatchObject({
       ok: true,
       settings: {
@@ -270,30 +285,30 @@ describe("the run-settings form (§5.4, plan decisions 6 and 7)", () => {
         withdrawalOrder: { kind: "default", cashReserveCents: "2500000" },
       },
     });
-    const fc = parseRunSettingsForm({ ...form, strategy: "floor_ceiling", strategyFields: { ...form.strategyFields, floorCeilingRate: "3.75" } }, base);
+    const fc = parseRunSettingsForm({ ...form, strategy: "floor_ceiling", strategyFields: { ...form.strategyFields, floorCeilingRate: "3.75" } }, base, META);
     expect(fc).toMatchObject({ ok: true, settings: { strategy: { kind: "floor_ceiling", rateBp: 375, floorBp: 1500, ceilingBp: 2000 } } });
-    const back = runSettingsForm((guard as { settings: RunSettings }).settings);
+    const back = runSettingsForm(META, (guard as { settings: RunSettings }).settings);
     expect(back.strategyFields.cut).toBe("12.5");
     expect(back.cashReserve).toBe("25000");
   });
 
   it("the custom preset keeps the saved correlations; flows-only and the payroll switch; errors by field", () => {
     const base = defaultRunSettings();
-    const form = { ...runSettingsForm(base), model: "parametric" as const, preset: "custom" as const, taxableRebalance: "flows_only" as const, includePayrollTax: false };
-    const parsed = parseRunSettingsForm(form, base);
-    expect(parsed).toMatchObject({ ok: true, settings: { returnModel: { kind: "parametric", preset: "custom", params: HISTORY_START_PARAMS }, portfolio: { taxableRebalance: "flows_only" }, tax: { includePayrollTax: false } } });
-    const bad = parseRunSettingsForm({ ...form, paths: "50", seed: "-1", custom: { ...form.custom, bills: { mean: "x", vol: "3" } }, strategy: "vpw", strategyFields: { ...form.strategyFields, lastWithdrawalAge: "80" } }, base);
+    const form = { ...runSettingsForm(META, base), model: "parametric" as const, preset: "custom" as const, taxableRebalance: "flows_only" as const, includePayrollTax: false };
+    const parsed = parseRunSettingsForm(form, base, META);
+    expect(parsed).toMatchObject({ ok: true, settings: { returnModel: { kind: "parametric", preset: "custom", params: HISTORY }, portfolio: { taxableRebalance: "flows_only" }, tax: { includePayrollTax: false } } });
+    const bad = parseRunSettingsForm({ ...form, paths: "50", seed: "-1", custom: { ...form.custom, bills: { mean: "x", vol: "3" } }, strategy: "vpw", strategyFields: { ...form.strategyFields, lastWithdrawalAge: "80" } }, base, META);
     expect(bad.ok).toBe(false);
     if (!bad.ok) expect(bad.errors.map((e) => e.field)).toEqual(["paths", "seed", "custom.bills.mean", "strategy.lastWithdrawalAge"]);
-    expect(parseRunSettingsForm({ ...runSettingsForm(base), model: "parametric", preset: "conservative" }, base)).toMatchObject({ ok: true, settings: { returnModel: { kind: "parametric", preset: "conservative" } } });
+    expect(parseRunSettingsForm({ ...runSettingsForm(META, base), model: "parametric", preset: "conservative" }, base, META)).toMatchObject({ ok: true, settings: { returnModel: { kind: "parametric", preset: "conservative" } } });
   });
 
   it("a fixed test model is shown, not offered, and kept as it is", () => {
     const base = RunSettings.parse({ ...defaultRunSettings(), returnModel: { kind: "fixed", series: [{ stocksPpm: 50000, bondsPpm: 30000, billsPpm: 20000, inflationPpm: 25000 }] } });
-    const form = runSettingsForm(base);
+    const form = runSettingsForm(META, base);
     expect(form.model).toBe("fixed");
     expect(pathsField(form).disabled).toBe(true);
-    expect(parseRunSettingsForm(form, base)).toEqual({ ok: true, settings: base });
+    expect(parseRunSettingsForm(form, base, META)).toEqual({ ok: true, settings: base });
   });
 });
 
