@@ -15,7 +15,9 @@ import {
   type IsoDate,
   type MonthKey,
   type PaceResult,
+  type PlannerEnv,
   type PriceProviderId,
+  type RetirementCard,
   type Schedule,
 } from "@meridian/shared";
 import type { DbOrTx } from "../index.js";
@@ -25,6 +27,7 @@ import { PlanError } from "./audit.js";
 import { projectForHousehold } from "./cashflow.js";
 import { dashboardInvestments, type DashboardInvestmentsBlock } from "./investmentViews.js";
 import { getPlan } from "./plan.js";
+import { retirementCard } from "./retirementCard.js";
 import { countUncategorized } from "./transactions.js";
 
 /**
@@ -111,7 +114,8 @@ export interface DashboardResult {
   review: { uncategorized: number; suggestedRecurring: number; alerts: number };
   /** `attention`: connections in auth_required or error, or with scheduled syncs paused (`syncPaused`). */
   sync: { lastSyncAt: Date | null; attention: Array<{ connectionId: string; name: string; status: ConnectionStatus; syncPaused: boolean }> };
-  retirement: null;
+  /** Phase 4 (inputs-and-data §4.9): the default scenario's newest finished run; null until a profile exists. */
+  retirement: RetirementCard | null;
   /** Phase 3: null without open investment accounts. */
   investments: DashboardInvestmentsBlock | null;
 }
@@ -122,6 +126,8 @@ export interface DashboardQuery {
   now?: Date;
   /** `PRICE_PROVIDER`; null (the default) = not configured. */
   priceProvider?: PriceProviderId | null;
+  /** The engine's facts for the retirement card's staleness; without them `stale` is null (not evaluated). */
+  planner?: PlannerEnv | undefined;
 }
 
 // ---- Bills due ----
@@ -327,7 +333,9 @@ export async function getDashboard(db: DbOrTx, q: DashboardQuery): Promise<Dashb
   const sync = await syncStatus(db);
   const investments = await dashboardInvestments(db, { today, now: q.now ?? new Date(), priceProvider: q.priceProvider ?? null });
 
-  return { today, plan: planBlock, cashFlow, billsDue, netWorth: worth, review, sync, retirement: null, investments };
+  const retirement = await retirementCard(db, { today, now: q.now, env: q.planner });
+
+  return { today, plan: planBlock, cashFlow, billsDue, netWorth: worth, review, sync, retirement, investments };
 }
 
 // ---- View ----
@@ -391,7 +399,7 @@ export function toDashboardView(d: DashboardResult): DashboardView {
       lastSyncAt: d.sync.lastSyncAt === null ? null : d.sync.lastSyncAt.toISOString(),
       attention: d.sync.attention,
     },
-    retirement: null,
+    retirement: d.retirement,
     investments: d.investments === null ? null : toDashboardInvestmentsView(d.investments),
   };
 }

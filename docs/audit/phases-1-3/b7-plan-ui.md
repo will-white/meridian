@@ -87,7 +87,7 @@ Tests:
 
 ## b7-plan-ui-06 (low): no retirement card on the dashboard
 
-Status: deferred to Phase 4.
+Status: deferred to Phase 4. The card's data is built (Phase 4 step 26): `DashboardView.retirement` is `RetirementCard.nullable()`, filled by `packages/db`'s `retirementCard` (the newest finished run of the default scenario, with its staleness; null until a profile exists), tested in `packages/db/src/services/retirementCard.test.ts` (inputs-and-data case 31). The card component is Phase 4 step 30's.
 
 The spec's card shows "retirement success rate from the latest saved run", and saved runs are the Phase 4 planner's. The Phase 4 design owns this card: `docs/design/phase-4/strategies-outputs-web.md` §5.8 defines `RetirementCard`, placed after the investments card, with every state including `retirement` null ("Plan your retirement" with a link to the profile for the owner, nothing for a viewer), and `inputs-and-data.md` §4.9 fills `DashboardView.retirement`. A placeholder now would link to a page that does not exist yet and would be replaced by that work. The grid design's `retirement: null // reserved for Phase 4` is the current contract. Recorded under "Deferred" in `docs/phase-2-plan.md`.
 

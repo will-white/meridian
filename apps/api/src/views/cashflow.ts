@@ -155,7 +155,7 @@ export function toDashboardView(d: DashboardResult): DashboardView {
       lastSyncAt: d.sync.lastSyncAt === null ? null : d.sync.lastSyncAt.toISOString(),
       attention: d.sync.attention.map((c) => ({ connectionId: c.connectionId, name: c.name, status: c.status, syncPaused: c.syncPaused })),
     },
-    retirement: null,
+    retirement: d.retirement,
     investments: d.investments === null ? null : toDashboardInvestmentsView(d.investments),
   };
 }
