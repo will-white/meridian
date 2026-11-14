@@ -43,7 +43,9 @@ import { markAsTransfers, pairTransfersInDb, unpairTransfer } from "./transfers.
  * linked by `ledger_transaction_id`) so hand-entered 401(k) deferrals reach savings goals.
  * A bank row a cash transfer is linked to becomes a transfer in the ledger at that moment
  * (`markAsTransfers`, audit decision A5), whatever its description said: goals and the flow
- * loader read the ledger. Only ledger rows this side wrote (a derived transfer row, or the
+ * loader read the ledger. An automatic link leaves a row a rule said is not a transfer, or one
+ * the household categorized by hand, as it is (as pairing does); its investment row is then the
+ * flow. A link set by hand marks the row whatever it was. Only ledger rows this side wrote (a derived transfer row, or the
  * income feed's synthetic row) follow an investment row's edits and deletion; a bank row the
  * linker matched is the owner's: its date and amount are never changed and it is never deleted
  * (`ownedLedgerTwin`). Every writer rebuilds the lots of the accounts it touched inside its
@@ -310,7 +312,9 @@ export const LEDGER_LINK_DAYS = 3;
 /**
  * The ledger rows a cash transfer was just linked to are transfers too (audit decision A5):
  * of `links`, those whose investment row is a cash transfer get `is_transfer` and lose an
- * unlocked category. Income and fee rows leave their bank row as it is.
+ * unlocked category, unless a rule said the row is not a transfer or the household categorized
+ * it by hand (an automatic mark, as pairing: audit b3 second round). Income and fee rows leave
+ * their bank row as it is.
  */
 async function markLinkedCashTransfers(tx: DbOrTx, links: ReadonlyArray<{ txnId: string; ledgerId: string }>): Promise<void> {
   const ledgerIds: string[] = [];
@@ -333,7 +337,8 @@ async function markLinkedCashTransfers(tx: DbOrTx, links: ReadonlyArray<{ txnId:
  * `ledger_transaction_id` and returns how many rows were linked. A bank row a cash transfer
  * is linked to is marked a transfer (`markLinkedCashTransfers`), so a deposit whose
  * description the ingest classifier did not recognise, and every withdrawal, is still a flow
- * and still counts toward the account's goal.
+ * and still counts toward the account's goal. A row a rule said is not a transfer, or one the
+ * household categorized by hand, keeps the household's choice; the investment row is its flow.
  */
 export async function linkToLedger(tx: DbOrTx, rows: readonly LinkCandidate[]): Promise<number> {
   let linked = 0;
@@ -797,7 +802,8 @@ const SOURCE_OWNED = ["type", "transferDirection", "date", "securityId", "quanti
  * dropped; a ledger row this side wrote (a derived transfer row or the feed's synthetic
  * income row) follows the date and amount, or goes when the row leaves its kind or the link
  * moves elsewhere, while a merely linked bank row keeps its date and amount; a bank row a cash
- * transfer is newly linked to is marked a transfer; lots are rebuilt; audited.
+ * transfer is newly linked to is marked a transfer (a link set by hand whatever a rule or a hand
+ * category said, one the linker made only as pairing may); lots are rebuilt; audited.
  */
 export async function updateInvestmentTxn(db: Db, id: string, patch: UpdateInvestmentTxnInput, ctx: AuditContext & { today: IsoDate }): Promise<{ item: InvestmentTxnRecord; rebuildWarnings: EngineWarning[] }> {
   return db.transaction(async (tx) => {
@@ -905,8 +911,11 @@ export async function updateInvestmentTxn(db: Db, id: string, patch: UpdateInves
     // A cash transfer newly linked to a bank row (the link was set by hand, or the row became a
     // cash transfer while linked) makes that row a transfer, as the linker does; an edit that
     // leaves the link and the kind alone never overrules a later "not a transfer" on the bank row.
+    // A link set by hand names the bank row: the household's word, as a hand mark is, clears a
+    // rule's "not a transfer" and keeps a hand category. Under a link the linker made, a row that
+    // became a cash transfer leaves both alone, as the linker does (audit b3 second round).
     if (ledgerTransactionId !== null && isCashTransfer(merged) && (ledgerTransactionId !== row.ledgerTransactionId || !isCashTransfer(current))) {
-      await markAsTransfers(tx, [ledgerTransactionId]);
+      await markAsTransfers(tx, [ledgerTransactionId], { byHand: ledgerTransactionId !== row.ledgerTransactionId });
     }
 
     // A paired transfer is one move on one date. A cash pair stays equal and opposite: an amount
@@ -1269,7 +1278,8 @@ export async function upsertInvestmentTxns(tx: DbOrTx, input: UpsertInvestmentTx
         result.warnings.push({ rowIndex: d.trade.rowIndex, code: "ledger_row_removed", message: "The row is no longer a cash transfer or income; the ledger row written for it was removed" });
       }
     }
-    // A row that became a cash transfer while linked to a bank row: that row is a transfer now.
+    // A row that became a cash transfer while linked to a bank row: that row is a transfer now
+    // (an automatic mark: a rule's "not a transfer" and a hand category stay).
     if (row.ledgerTransactionId && patch.ledgerTransactionId !== null && !isCashTransfer(row) && isCashTransfer({ type: newType, securityId: newSecurity })) {
       await markAsTransfers(tx, [row.ledgerTransactionId]);
     }
@@ -1423,7 +1433,13 @@ export async function importTrades(db: Db, input: ImportTradesInput): Promise<Im
       );
       ledgerCreated = stats.created;
       if (stats.insertedIds.length > 0) {
-        await tx.update(transaction).set({ isTransfer: true, categoryId: null, updatedAt: new Date() }).where(inArray(transaction.id, stats.insertedIds));
+        // The rules ran on the new rows: one a rule said is not a transfer stays so (Phase 1
+        // decision 106, audit b3 second round), or the next rules run would undo the mark; its
+        // investment row is the flow (Phase 3 audit decision A5(2)).
+        await tx
+          .update(transaction)
+          .set({ isTransfer: true, categoryId: null, updatedAt: new Date() })
+          .where(and(inArray(transaction.id, stats.insertedIds), eq(transaction.notTransfer, false)));
       }
       const ledgerRows = await tx
         .select({ id: transaction.id, externalId: transaction.externalId })
@@ -1455,7 +1471,7 @@ export async function importTrades(db: Db, input: ImportTradesInput): Promise<Im
         await tx.update(investmentTxn).set({ ledgerTransactionId: ledgerId, updatedAt: new Date() }).where(eq(investmentTxn.id, item.txnId));
         if (viaAlias.includes(ledgerId)) linkedViaAlias.push(ledgerId);
       }
-      // A bank row a cash transfer is linked to is a transfer (Phase 3 audit decision A5).
+      // A bank row a cash transfer is linked to is a transfer (Phase 3 audit decision A5), unless the household decided otherwise.
       if (linkedViaAlias.length > 0) await markAsTransfers(tx, linkedViaAlias);
       const dates = toCreate.map((c) => c.date).sort();
       transfersPaired += await pairTransfersInDb(tx, { since: dates[0]!, until: dates[dates.length - 1]! });
