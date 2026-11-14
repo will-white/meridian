@@ -3,7 +3,7 @@
  * Phase 1: SimpleFIN claim and sync jobs (every SYNC_INTERVAL_HOURS), rules re-runs.
  * Later: price fetch, recurring detection, retirement simulations.
  */
-import { createDb } from "@meridian/db";
+import { createDb, verifySecretsKey } from "@meridian/db";
 import { loadConfig } from "./env.js";
 import type { JobContext } from "./jobs/context.js";
 import { startRunner } from "./runner.js";
@@ -22,6 +22,16 @@ const ctx: JobContext = {
   now: () => new Date(),
   log: console,
 };
+
+// Audit a7-backup-deploy-secrets-06: a SECRETS_KEY that opens none of the stored secrets stops the worker with the reason.
+try {
+  const warning = await verifySecretsKey(db, config.secretsKey);
+  if (warning) console.warn(`[worker] ${warning}`);
+} catch (err) {
+  console.error(`[worker] not starting: ${err instanceof Error ? err.message : String(err)}`);
+  await client.end({ timeout: 5 });
+  process.exit(1);
+}
 
 console.log(
   `[worker] ${config.workerId} starting; sync every ${config.syncIntervalHours}h, polling every ${config.pollIntervalMs}ms; SimpleFIN hosts: ${(config.simplefinAllowedHosts ?? []).join(", ")}`,

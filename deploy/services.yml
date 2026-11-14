@@ -1,0 +1,213 @@
+# The Meridian stack, included by docker-compose.yml (which reads ../.env for the values here).
+#
+# LAN only: nothing publishes a port except Caddy, and remote access goes through Tailscale,
+# never port forwarding.
+#
+# Each container gets only the settings it reads (a bare `- NAME` passes NAME from .env, and
+# leaves it unset when .env does not set it): the database password reaches db, web, worker and
+# backup; SECRETS_KEY only web and worker; SESSION_SECRET only web; TIINGO_API_KEY only the
+# worker; BACKUP_PASSPHRASE only backup; the proxy gets SITE_ADDRESS alone.
+#
+# Networks: db and web sit on `internal`, which has no route out. The worker (SimpleFIN and the
+# price provider) and backup (the off-site copy, BACKUP_COPY_CMD) are also on `egress`; the proxy
+# is also on `edge`, the network its published ports need. Which hosts the worker may call is
+# enforced by the worker itself (SIMPLEFIN_ALLOWED_HOSTS, the price provider's host), not here.
+#
+# Images: the *_IMAGE values in .env choose the base images (default the floating tags below);
+# pin them to a digest there to make a rebuild reproducible (README, "Updating").
+
+services:
+  db:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - POSTGRES_DB
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - MERIDIAN_DB_HOST=db
+      - MERIDIAN_MIGRATIONS_DIR=/app/packages/db/drizzle
+      # Listen on the container's interfaces so the proxy can reach it (outside Docker the API
+      # binds loopback). The port is never published: only the internal network reaches it.
+      - API_HOST=0.0.0.0
+      - API_PORT=3000
+      # Whose X-Forwarded-For / X-Forwarded-Host the API believes: peers on a private network,
+      # which here means Caddy (it replaces whatever a client sent). The sign-in rate limits
+      # count the client address Caddy reports. If you publish this port or put the container
+      # on another network, name your proxy's address or range here instead.
+      - TRUST_PROXY=uniquelocal
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - POSTGRES_DB
+      - SESSION_SECRET
+      - SESSION_TTL_DAYS
+      - SESSION_IDLE_DAYS
+      - SECRETS_KEY
+      - SECRETS_KEY_FILE
+      # Only for `admin.js rotate-secrets-key` (README, "The encryption key").
+      - SECRETS_KEY_OLD
+      - SECRETS_KEY_OLD_FILE
+      # The API shows the price feed's state; it never reads the key.
+      - PRICE_PROVIDER
+      - PRICE_FETCH_HOUR
+      - PRICE_CATCHUP_HOUR
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - internal
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
+    restart: unless-stopped
+    # The worker is the only app container that talks to the outside world: SimpleFIN and, with
+    # PRICE_PROVIDER=tiingo and TIINGO_API_KEY (or TIINGO_API_KEY_FILE) set in ../.env, Tiingo.
+    environment:
+      - NODE_ENV=production
+      - MERIDIAN_DB_HOST=db
+      - MERIDIAN_MIGRATIONS_DIR=/app/packages/db/drizzle
+      # Touched by the job runner after every pass over the queue; read by the healthcheck.
+      - WORKER_HEARTBEAT_FILE=/tmp/meridian-worker-heartbeat
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - POSTGRES_DB
+      - SECRETS_KEY
+      - SECRETS_KEY_FILE
+      - SYNC_INTERVAL_HOURS
+      - WORKER_POLL_MS
+      - DETECT_HOUR_UTC
+      - SIMPLEFIN_INITIAL_WINDOW_DAYS
+      - SIMPLEFIN_OVERLAP_DAYS
+      - SIMPLEFIN_ALLOWED_HOSTS
+      - SIMPLEFIN_MAX_RESPONSE_MB
+      - SIMPLEFIN_TIMEOUT_MS
+      - PRICE_PROVIDER
+      - TIINGO_API_KEY
+      - TIINGO_API_KEY_FILE
+      - PRICE_FETCH_HOUR
+      - PRICE_CATCHUP_HOUR
+      - PRICE_MAX_REQUESTS_PER_RUN
+      - PRICE_REQUEST_SPACING_MS
+      - PRICE_RUN_MAX_MS
+      - PRICE_OVERLAP_DAYS
+      - PRICE_HISTORY_MAX_YEARS
+      - PRICE_TIMEOUT_MS
+    depends_on:
+      db:
+        condition: service_healthy
+      web:
+        condition: service_healthy # web runs migrations on boot
+    networks:
+      - internal
+      - egress
+    healthcheck:
+      # Unhealthy when the runner has not finished a pass over the queue for 35 minutes (the
+      # longest job, a price run, is cut off at 20; a job running 30 minutes counts as stuck).
+      test: ["CMD", "node", "-e", "const s=require('fs').statSync(process.env.WORKER_HEARTBEAT_FILE);process.exit(Date.now()-s.mtimeMs<35*60000?0:1)"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 2m
+
+  proxy:
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    restart: unless-stopped
+    environment:
+      - SITE_ADDRESS
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - internal
+      - edge
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      # Caddy's admin endpoint, which listens on the container's loopback only.
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  backup:
+    build:
+      context: .
+      dockerfile: backup.Dockerfile
+      args:
+        POSTGRES_IMAGE: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    restart: unless-stopped
+    # backup.sh starts as root only to hand /backups to the postgres user, then drops to it.
+    environment:
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - POSTGRES_DB
+      - BACKUP_PASSPHRASE
+      - BACKUP_HOUR
+      - BACKUP_COPY_CMD
+      - BACKUP_DAILY_KEEP
+      - BACKUP_MONTHLY_KEEP
+      - BACKUP_HEALTH_MAX_AGE_HOURS
+    volumes:
+      - ./backups:/backups
+      # rclone.conf, ssh keys and known_hosts for the off-site copy (git-ignored).
+      - ./backup-config:/backup-config
+    networks:
+      - internal
+      - egress
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # Fails when the last backup failed, when no verified backup was made for 26 hours, or
+      # when the off-site copy is failing (backup.sh --health says which).
+      test: ["CMD", "/bin/sh", "/backup.sh", "--health"]
+      interval: 5m
+      timeout: 30s
+      retries: 1
+      start_period: 1m
+
+networks:
+  internal:
+    internal: true
+  egress: {}
+  edge: {}
+
+volumes:
+  pg_data:
+  caddy_data:
+  caddy_config:
