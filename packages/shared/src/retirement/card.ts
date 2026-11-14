@@ -3,9 +3,9 @@ import { CentsString, IsoDateString } from "../wire.js";
 
 /**
  * The dashboard's retirement card (`DashboardView.retirement`, inputs-and-data §4.9): the newest
- * finished run of the default scenario. `DashboardView` in ../api.ts takes `RetirementCard.nullable()`
- * (null: no profile yet) when Stage B fills it. This file imports nothing from ../api.ts, so that
- * import makes no cycle.
+ * finished run of the default scenario, filled by packages/db's `retirementCard`. `DashboardView`
+ * in ../api.ts takes `RetirementCard.nullable()` (null: no profile yet). This file imports nothing
+ * from ../api.ts, so that import makes no cycle.
  *
  * `state`: `running` while the default scenario has an active run; `failed` when its newest run
  * failed and none is done; `ready` with a run; `no_run` otherwise. `stale` is null when it was
