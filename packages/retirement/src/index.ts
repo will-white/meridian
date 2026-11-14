@@ -72,6 +72,23 @@ export { TRADE_FLOWS_ONLY, TRADE_FULL, createTradeResult, depositAtWeights, plan
 export type { TradeMode, TradeResult } from "./trades.js";
 export { monthIndex, monthsInPeriod, periodMonths, periodStart, planClock, yearOfMonth, yearShare } from "./clock.js";
 export type { PlanClock } from "./clock.js";
+export { TREATMENT, limitIssues, prepare, validateInput } from "./prepare.js";
+export type { InputIssue, PreparedRun, TreatmentIndex } from "./prepare.js";
+export {
+  CONTRIB,
+  INCOME,
+  IY,
+  IY_REC,
+  LIMIT,
+  compileContributions,
+  compileConversions,
+  compileIncomes,
+  contributionsYearInto,
+  conversionsYearInto,
+  incomeYearInto,
+  limitGroupOf,
+} from "./flows.js";
+export type { ContributionKind, ContributionTables, ConversionTables, IncomeClass, IncomeTables, LimitGroup } from "./flows.js";
 export {
   RULE,
   RULE_EVENTS,
