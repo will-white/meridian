@@ -93,6 +93,30 @@ export function planTrades(
   apply: boolean,
   out: TradeResult,
 ): void {
+  FLOW[0] = netOut;
+  planTradesFrom(bal, basis, off, target, targetOff, FLOW, 0, mode, taxable, apply, out);
+}
+
+const FLOW = new Float64Array(1);
+
+/**
+ * `planTrades` with the flow read from `flows[k]`: the year loop's form. A double passed to a call
+ * TurboFan does not inline is boxed, and this function is too large to be inlined into its callers.
+ */
+export function planTradesFrom(
+  bal: Float64Array,
+  basis: Float64Array,
+  off: number,
+  target: Float64Array,
+  targetOff: number,
+  flows: Float64Array,
+  k: number,
+  mode: TradeMode,
+  taxable: boolean,
+  apply: boolean,
+  out: TradeResult,
+): void {
+  const netOut = flows[k]!;
   if (!Number.isFinite(netOut)) throw new EngineInvariantError("trade_invalid", `a trade needs a finite flow, got ${netOut}`);
   const sell = out.sell;
   const buy = out.buy;

@@ -15,12 +15,14 @@ import { type MarketPath, createMarketPath } from "./models/index.js";
 import type { PreparedRun } from "./prepare.js";
 import { type SpendDecision, type SpendingOutcome, STRATEGY_STATE_LENGTH, createSpendDecision, createSpendingOutcome } from "./strategies/index.js";
 import { type Assessment, type AssessFn, type EngineHooks, type TaxFunctions, type YearView, TAX_FUNCTIONS, createAssessment } from "./hooks.js";
-import { CL_REC, HW_REC, PROG_REC, PT_REC, RB_REC, RW_REC, SO_REC, SS_REC, TAX_IN, TAX_REC, TY_REC, WN_REC } from "./tax/layout.js";
+import { CL_REC, HW, HW_REC, PROG_REC, PT_REC, RB_REC, RW_REC, SO_REC, SS_REC, TAX_IN, TAX_REC, TY_REC, WN_REC } from "./tax/layout.js";
 import { IY_REC } from "./flows.js";
 import { CARRY_REC, PP_COLUMNS, PP_REC, createAssessFn } from "./assess.js";
 
 export { CARRY, CARRY_REC } from "./assess.js";
 import { type TradeResult, createTradeResult } from "./trades.js";
+import { periodMonths, periodStart } from "./clock.js";
+import { earlyFractionBefore59Half, earlyFractionBefore65, separatedAt55 } from "./tax/penalties.js";
 
 /** The mutable implementation of `YearView` the loop writes. */
 export type MutableYearView = { -readonly [K in keyof YearView]: YearView[K] };
@@ -73,6 +75,19 @@ export interface PathState {
   readonly early65: Float64Array;
   /** 1 when Form 5329's exception for separation at 55 or later applies to the person's employer plans this year. */
   readonly separated55: Uint8Array;
+  /**
+   * The same by person and plan year, `i × Y + t`, computed once per thread (they do not depend on
+   * the path): the two early fractions, the separation flag, the pre-tax penalty share for an
+   * account that is not (`× 2 + 0`) and is (`× 2 + 1`) an employer plan (the record's
+   * `preTaxPenaltyBase` of one dollar), and the HSA's share (`hsaWithdraw` of one non-qualified
+   * dollar). A double returned from a call TurboFan does not inline is boxed; the year loop reads
+   * these tables instead.
+   */
+  readonly earlyTable: Float64Array;
+  readonly early65Table: Float64Array;
+  readonly separated55Table: Uint8Array;
+  readonly preTaxShareTable: Float64Array;
+  readonly hsaShareTable: Float64Array;
   readonly rothFree: Float64Array;
   readonly hsaShare: Float64Array;
   readonly ssRate: Float64Array;
@@ -97,6 +112,8 @@ export interface PathState {
   readonly yields: Float64Array;
   /** Balances after the year's trades and the surplus deposit, before returns. */
   readonly afterTrades: Float64Array;
+  /** Each account's flow of the trade being planned (`netOut`, read by `planTradesFrom`). */
+  readonly netOut: Float64Array;
   /** Dollars the year's trades sold and bought per account (before the surplus deposit). */
   readonly sold: Float64Array;
   readonly bought: Float64Array;
@@ -159,6 +176,19 @@ export interface PathState {
   otherBaseline: number;
   /** Hook calls of `assess` this year. */
   calls: number;
+  /** Start balances (sum) and the stock share of the year's targets weighted by them (C40). */
+  portfolio: number;
+  stockShare: number;
+  ssTotal: number;
+  availableTotal: number;
+  withdrawn: number;
+  /** `YEAR_FLAG` bits of the year (loop.ts). */
+  yearFlags: number;
+  afterTotal: number;
+  endTotal: number;
+  /** Bill and cash interest taxed this year (earned last year) and earned this year (taxed next year). */
+  interestIn: number;
+  interestOut: number;
 
   // The hooks' records.
   readonly view: MutableYearView;
@@ -259,6 +289,11 @@ export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFu
     early: person(),
     early65: person(),
     separated55: new Uint8Array(2),
+    earlyTable: new Float64Array(P * Y),
+    early65Table: new Float64Array(P * Y),
+    separated55Table: new Uint8Array(P * Y),
+    preTaxShareTable: new Float64Array(P * Y * 2),
+    hsaShareTable: new Float64Array(P * Y),
     rothFree: new Float64Array(P),
     hsaShare: new Float64Array(P),
     ssRate: new Float64Array(P),
@@ -276,6 +311,7 @@ export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFu
     gain: perAccount(),
     yields: new Float64Array(A * TY_REC),
     afterTrades: new Float64Array(A * 3),
+    netOut: perAccount(),
     sold: perAccount(),
     bought: perAccount(),
     streamAmounts: new Float64Array(S),
@@ -323,6 +359,16 @@ export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFu
     taxBaseline: 0,
     otherBaseline: 0,
     calls: 0,
+    portfolio: 0,
+    stockShare: 0,
+    ssTotal: 0,
+    availableTotal: 0,
+    withdrawn: 0,
+    yearFlags: 0,
+    afterTotal: 0,
+    endTotal: 0,
+    interestIn: 0,
+    interestOut: 0,
     view,
     decision: createSpendDecision(),
     outcome: createSpendingOutcome(),
@@ -358,5 +404,24 @@ export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFu
   view.rothFree = ps.rothFree;
   view.hsaPenaltyShare = ps.hsaShare;
   ps.assess = createAssessFn(ps as PathState);
+  // The penalty fractions and shares by person and plan year (tax-rmd-ss §3.7.1, seams C33).
+  const hw = new Float64Array(HW_REC);
+  for (let i = 0; i < P; i++) {
+    for (let t = 0; t < Y; t++) {
+      const k = i * Y + t;
+      const start = periodStart(run.clock, t);
+      const months = periodMonths(run.clock, t);
+      const early = earlyFractionBefore59Half(run.birthIndex[i]!, start, months);
+      const early65 = earlyFractionBefore65(run.birthIndex[i]!, start, months);
+      const separated = separatedAt55(run.birthYear[i]!, run.retirementYear[i]!, run.startYear + t);
+      ps.earlyTable[k] = early;
+      ps.early65Table[k] = early65;
+      ps.separated55Table[k] = separated ? 1 : 0;
+      ps.preTaxShareTable[k * 2] = tax.preTaxPenaltyBase(1, early, false, separated);
+      ps.preTaxShareTable[k * 2 + 1] = tax.preTaxPenaltyBase(1, early, true, separated);
+      tax.hsaWithdraw(1, 0, early65, hw);
+      ps.hsaShareTable[k] = hw[HW.PENALTY_BASE]!;
+    }
+  }
   return ps as PathState;
 }

@@ -46,7 +46,7 @@ import { BONDS, STOCKS } from "./models/index.js";
 import { TREATMENT } from "./prepare.js";
 import type { PathState } from "./state.js";
 import { HW, HW_REC, RB_REC, RW, RW_REC, SO, TAX_IN, TI, TO, TY, TY_REC, accountDragOffset, taxOffset } from "./tax/layout.js";
-import { planTrades } from "./trades.js";
+import { planTradesFrom } from "./trades.js";
 
 /** Slots of `PathState.carry`: tax state carried from one plan year to the next (engine-and-returns §3.9). */
 export const CARRY = {
@@ -175,9 +175,6 @@ export function assessInto(ps: PathState, w: Float64Array, includeRmd: boolean, 
   let qualified = 0;
   let interest = 0;
   let exempt = 0;
-  const bal = ps.bal;
-  const basis = ps.basis;
-  const trade = ps.trade;
   const yields = ps.yields;
   for (let a = 0; a < A; a++) {
     const x = w[a]!;
@@ -185,28 +182,19 @@ export function assessInto(ps: PathState, w: Float64Array, includeRmd: boolean, 
     withdrawn += x;
     const tr = treatment[a]!;
     if (tr === TAXABLE) {
-      const off = a * 3;
-      const netOut = x + r + ps.convOut[a]! - ps.deposit[a]! - ps.convIn[a]!;
-      planTrades(bal, basis, off, run.weights, (t * A + a) * 3, netOut, run.tradeMode, true, false, trade);
-      const stockBasis = postBasis(bal, basis, off + STOCKS, trade.sell[STOCKS]!, trade.buy[STOCKS]!);
-      const bondBasis = postBasis(bal, basis, off + BONDS, trade.sell[BONDS]!, trade.buy[BONDS]!);
+      ps.netOut[a] = x + r + ps.convOut[a]! - ps.deposit[a]! - ps.convIn[a]!;
+      previewTaxable(ps, a);
       const yo = a * TY_REC;
-      // taxableYieldsInto writes TY slots from index 0; the per-account record is copied below.
-      tax.taxableYieldsInto(run.accountDrag, accountDragOffset(t, a, A), ps.billRef, f, trade.post[STOCKS]!, trade.post[BONDS]!, stockBasis, bondBasis, ps.tyScratch);
-      for (let k = 0; k < TY_REC; k++) yields[yo + k] = ps.tyScratch[k]!;
-      ps.gain[a] = trade.realizedGain;
-      gains += trade.realizedGain + ps.tyScratch[TY.GAIN_DISTRIBUTIONS]!;
-      dividends += ps.tyScratch[TY.DIVIDENDS]!;
-      qualified += ps.tyScratch[TY.QUALIFIED_DIVIDENDS]!;
-      interest += ps.tyScratch[TY.INTEREST]!;
-      exempt += ps.tyScratch[TY.TAX_EXEMPT_INTEREST]!;
+      gains += ps.gain[a]! + yields[yo + TY.GAIN_DISTRIBUTIONS]!;
+      dividends += yields[yo + TY.DIVIDENDS]!;
+      qualified += yields[yo + TY.QUALIFIED_DIVIDENDS]!;
+      interest += yields[yo + TY.INTEREST]!;
+      exempt += yields[yo + TY.TAX_EXEMPT_INTEREST]!;
     } else if (tr === PRE_TAX) {
       const o = owner[a]! * PP_REC;
       pp[o + PP.TRAD_DIST] = pp[o + PP.TRAD_DIST]! + x + r;
-      if (x > 0) {
-        const i = owner[a]!;
-        pp[o + PP.PEN10_BASE] = pp[o + PP.PEN10_BASE]! + tax.preTaxPenaltyBase(x, ps.early[i]!, run.employerPlan[a] === 1, ps.separated55[i] === 1);
-      }
+      // preTaxPenaltyBase(x, …) = x × the year's share (the record's function at one dollar, state.ts).
+      if (x > 0) pp[o + PP.PEN10_BASE] = pp[o + PP.PEN10_BASE]! + x * ps.preTaxShare[a]!;
     } else if (tr === ROTH) {
       rothW[owner[a]!] = rothW[owner[a]!]! + x;
     } else if (tr === HSA) {
@@ -279,12 +267,38 @@ export function assessInto(ps: PathState, w: Float64Array, includeRmd: boolean, 
     : ps.rmdTotal + withdrawn - ps.need - (total - ps.taxBaseline) - (other - ps.otherBaseline);
 }
 
-/** Basis of a holding after a previewed trade (the arithmetic `planTrades` applies). */
-function postBasis(bal: Float64Array, basis: Float64Array, k: number, sell: number, buy: number): number {
-  const b = bal[k]!;
-  let x = basis[k]!;
-  if (b > 0 && sell > 0) x = sell >= b ? 0 : x - (sell * x) / b;
-  return x + buy;
+/**
+ * A taxable account's previewed trade for the flow `ps.netOut[a]` (`planTradesFrom`, apply =
+ * false): the gain it realizes into `ps.gain[a]` and, on the post-trade balances and basis, the
+ * period's yields into `ps.yields` (`TY` at `a × TY_REC`). Its own function, so that the tax
+ * area's `taxableYieldsInto` is inlined here and its double arguments are not boxed.
+ */
+function previewTaxable(ps: PathState, a: number): void {
+  const run = ps.run;
+  const A = run.accountCount;
+  const t = ps.t;
+  const bal = ps.bal;
+  const basis = ps.basis;
+  const trade = ps.trade;
+  const off = a * 3;
+  planTradesFrom(bal, basis, off, run.weights, (t * A + a) * 3, ps.netOut, a, run.tradeMode, true, false, trade);
+  // The basis after the previewed trade (planTrades' arithmetic).
+  const bS = bal[off + STOCKS]!;
+  const sS = trade.sell[STOCKS]!;
+  let stockBasis = basis[off + STOCKS]!;
+  if (bS > 0 && sS > 0) stockBasis = sS >= bS ? 0 : stockBasis - (sS * stockBasis) / bS;
+  stockBasis += trade.buy[STOCKS]!;
+  const bB = bal[off + BONDS]!;
+  const sB = trade.sell[BONDS]!;
+  let bondBasis = basis[off + BONDS]!;
+  if (bB > 0 && sB > 0) bondBasis = sB >= bB ? 0 : bondBasis - (sB * bondBasis) / bB;
+  bondBasis += trade.buy[BONDS]!;
+  // taxableYieldsInto writes TY slots from index 0; copied to the account's record.
+  const ty = ps.tyScratch;
+  ps.tax.taxableYieldsInto(run.accountDrag, accountDragOffset(t, a, A), ps.billRef, ps.f, trade.post[STOCKS]!, trade.post[BONDS]!, stockBasis, bondBasis, ty);
+  const yo = a * TY_REC;
+  for (let k = 0; k < TY_REC; k++) ps.yields[yo + k] = ty[k]!;
+  ps.gain[a] = trade.realizedGain;
 }
 
 /**

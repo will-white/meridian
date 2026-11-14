@@ -24,10 +24,10 @@ import { YEAR_FLAG } from "./loop.js";
 import { prepare } from "./prepare.js";
 import { PATH_FLAG, createPathState } from "./state.js";
 import { simulatePath } from "./loop.js";
-import { TI, TO, TY } from "./tax/layout.js";
+import { RB, TI, TO, TY, WN } from "./tax/layout.js";
 import { account, buildSimInput, cashAccount, incomeStream } from "./testing/simInput.js";
 import { TREATMENT } from "./prepare.js";
-import { bracketTaxInto, fixedSocialSecurity, flatTaxInto, noTaxInto, rmdByDivisor, stubHooks, stubTaxFunctions } from "./testing/stubs.js";
+import { bracketTaxInto, fixedContributionLimitsInto, fixedSocialSecurity, flatTaxInto, noTaxInto, rmdByDivisor, stubHooks, stubTaxFunctions } from "./testing/stubs.js";
 
 // Build step 16: the year loop on stub tax functions written to the real slot layouts
 // (engine-and-returns §3.7 to §3.11 and §7 T19 to T22, T24 to T28, T31 to T34; seams §2.3 to §2.6).
@@ -698,6 +698,58 @@ describe("T34 the whole year W1 (engine-and-returns §3.10)", () => {
       expect(Math.abs(sources - uses)).toBeLessThan(1e-6);
       close(sp(detail, 0, SP.FUNDED), 100000);
     }
+  });
+});
+
+describe("C26 contribution caps (on stub limits; the real limits are step 17's)", () => {
+  // Born 1975 (52 in 2027), salary 100,000, accumulation (spending from 2035). Contributions indexed
+  // to prices: 401(k) employee 30,000 and employer 40,000; Roth IRA employee 8,000; HSA employee
+  // 5,000 and employer 2,000. Test limits, not law: deferral 20,000 + catch-up 5,000 from 50,
+  // annual additions 50,000, IRA 5,000, HSA 6,000 (12 months before 65). By hand:
+  // - 401(k): employee min(30,000, 25,000) = 25,000 (5,000 excess); the employer's room is
+  //   50,000 − min(25,000, 20,000) = 30,000 (catch-up does not count), so 30,000 (10,000 dropped);
+  // - Roth IRA: min(8,000, 5,000, wages 100,000) = 5,000 (3,000 excess), added to the Roth basis;
+  // - HSA: employer min(2,000, 6,000) = 2,000, employee min(5,000, 6,000 − 2,000) = 4,000 (1,000 excess);
+  // - the employee excess, 9,000, is saved after tax in the cash account (the surplus account);
+  //   wages for tax 100,000 − 25,000 − 4,000 = 71,000 (the excess does not reduce them); stub tax
+  //   20% = 14,200; cut by the limits 9,000 + 10,000 = 19,000 (WN.CONTRIBUTION_CAPPED).
+  const input = buildSimInput({
+    people: [{ birthYear: 1975, retirementMonth: "2035-01", longevity: { mode: "fixed", age: 52 } }],
+    accounts: [
+      account("401k", "pre_tax", "0", { type: "401k" }),
+      account("rira", "roth", "0", { type: "roth" }),
+      account("hsa", "hsa", "0"),
+      cashAccount("cash", "0"),
+    ],
+    incomes: [incomeStream("salary", "salary", "10000000", "2027-01", { personId: "p1", endMonth: "2035-01" })],
+    contributions: [
+      { accountId: "401k", employeeAnnualCents: "3000000", employerAnnualCents: "4000000", scaleWith: "inflation", endMonth: "2035-01" },
+      { accountId: "rira", employeeAnnualCents: "800000", employerAnnualCents: "0", scaleWith: "inflation", endMonth: "2035-01" },
+      { accountId: "hsa", employeeAnnualCents: "500000", employerAnnualCents: "200000", scaleWith: "inflation", endMonth: "2035-01" },
+    ],
+    spending: { startMonth: "2035-01" },
+    tax: ZERO_YIELDS,
+  });
+  const limits = fixedContributionLimitsInto({ deferral: 20000, catchUp: 5000, additions: 50000, ira: 5000, hsa: 6000 });
+  const { ps, detail } = runPath(input, { tax: { ...STUB_TAX, contributionLimitsInto: limits } });
+
+  it("C26 the deposits, the excess saved after tax, the wages for tax and the warning amount", () => {
+    closeAll([0, 1, 2, 3].map((a) => ac(detail, 0, a, AC.DEPOSIT)), [55000, 5000, 6000, 9000]);
+    close(yr(detail, 0, YR.EMPLOYEE), 43000);
+    close(yr(detail, 0, YR.EMPLOYER), 32000);
+    close(yr(detail, 0, YR.CONTRIBUTION_EXCESS), 9000);
+    close(ti(detail, 0, TI.WAGES), 71000);
+    close(yr(detail, 0, YR.TAX), 14200);
+    close(ps.wn[WN.CONTRIBUTION_CAPPED]!, 19000);
+    close(ps.roth[RB.BASIS_FREE]!, 5000);
+    expect(ps.roth[RB.FIRST_YEAR]).toBe(2027);
+  });
+
+  it("C26 with no limit nothing is cut", () => {
+    const free = runPath(input, { tax: STUB_TAX });
+    closeAll([0, 1, 2, 3].map((a) => ac(free.detail, 0, a, AC.DEPOSIT)), [70000, 8000, 7000, 0]);
+    close(ti(free.detail, 0, TI.WAGES), 65000);
+    expect(free.ps.wn[WN.CONTRIBUTION_CAPPED]).toBe(0);
   });
 });
 
