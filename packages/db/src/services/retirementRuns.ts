@@ -24,7 +24,7 @@ import {
   type SimRunView,
 } from "@meridian/shared";
 import type { DbOrTx } from "../index.js";
-import { simRun, simRunPath, simRunSeries } from "../schema/index.js";
+import { job, simRun, simRunPath, simRunSeries } from "../schema/index.js";
 import { PlanError, writeAudit, type AuditContext } from "./audit.js";
 import { enqueueJob } from "./jobs.js";
 import { decodeCursor, encodeCursor } from "./queryText.js";
@@ -393,6 +393,27 @@ export async function failSimRun(db: DbOrTx, runId: string, code: string, messag
 /** Cancel an active run (the job saw the cancellation); prunes. Returns whether the run was still active. */
 export async function cancelSimRun(db: DbOrTx, runId: string, options: { keep?: number } = {}): Promise<boolean> {
   return finishRun(db, runId, { status: "cancelled" }, options.keep);
+}
+
+/** The message of a run whose job failed while it was still active (`failOrphanedSimRuns`). */
+export const ORPHANED_RUN_MESSAGE = "The worker stopped during the last attempt at this run (it was restarted, or ran out of memory).";
+
+/**
+ * Runs that no job will finish: still `queued` or `running` while their job has failed. The
+ * runner's stale sweep fails a job whose worker died on its last attempt without running it
+ * again (audit a4-sync-parse-07), so the job's own crash guard (§6.3 step 1) never sees that
+ * attempt; this fails such a run `worker_crashed` instead of leaving it running, which would also
+ * hand it to every later request with the same input. Returns the ids failed.
+ */
+export async function failOrphanedSimRuns(db: DbOrTx, options: { keep?: number } = {}): Promise<string[]> {
+  const rows = await db
+    .select({ id: simRun.id })
+    .from(simRun)
+    .innerJoin(job, eq(job.id, simRun.jobId))
+    .where(and(inArray(simRun.status, ACTIVE), eq(job.status, "failed")));
+  const failed: string[] = [];
+  for (const { id } of rows) if (await failSimRun(db, id, "worker_crashed", ORPHANED_RUN_MESSAGE, options)) failed.push(id);
+  return failed;
 }
 
 /**

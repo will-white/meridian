@@ -1,5 +1,7 @@
-import { readFileSync } from "node:fs";
-import { hostname } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
+import { availableParallelism, hostname } from "node:os";
+import { fileURLToPath } from "node:url";
+import { defaultThreads, MAX_THREADS } from "@meridian/retirement/node";
 import { parsePriceProviderId, placeholderSecretProblem, secretsKeyProblem, type PriceProviderId } from "@meridian/shared";
 import { DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_SIMPLEFIN_HOSTS } from "./simplefin/client.js";
 
@@ -136,6 +138,103 @@ export interface PriceConfig {
   timeoutMs: number;
 }
 
+// ---- Retirement simulations (docs/design/phase-4/inputs-and-data.md §3.10 and §6.3; seams C7, C10) ----
+
+export const RETIREMENT_DEFAULTS = {
+  /** `RETIREMENT_RUN_MAX_MS`: a run is stopped after 15 minutes, below the runner's 30-minute stale sweep. */
+  runMaxMs: 900_000,
+  /** `RETIREMENT_KEEP_RUNS`: finished unpinned runs kept per scenario (decision 28). */
+  keepRuns: 20,
+} as const;
+
+/** The longest run `RETIREMENT_RUN_MAX_MS` accepts: the runner's stale sweep requeues a job running 30 minutes. */
+export const RETIREMENT_RUN_MAX_MS_LIMIT = 1_800_000;
+/** The most finished runs per scenario `RETIREMENT_KEEP_RUNS` accepts. */
+export const RETIREMENT_KEEP_RUNS_LIMIT = 1000;
+
+/**
+ * The thread entry the bundle ships beside `main.js` (`dist/simThread.js`, the worker's second
+ * bundle). Run from source (`tsx watch`, Vitest) this names `src/simThread.js`, which does not
+ * exist, so simulations run inline there (seams C10).
+ */
+export const SIM_THREAD_ENTRY = new URL("./simThread.js", import.meta.url);
+
+/** The retirement settings a run reads, every field resolved (see `retirementConfigOf`). */
+export interface RetirementConfig {
+  /** Simulation threads; 0 runs inline on the job's own thread, yielding between chunks. */
+  threads: number;
+  /** The bundled thread entry; null when the simulations run inline. */
+  threadEntry: URL | null;
+  runMaxMs: number;
+  keepRuns: number;
+}
+
+/**
+ * `RETIREMENT_THREADS` (§3.10): unset, empty or `auto` → the engine's `defaultThreads`
+ * (`min(8, max(1, parallelism − 1))`); a whole number 1 to 64 as given; `inline` → 0. Anything
+ * else falls back to `auto`, with a warning for the boot log.
+ */
+export function readRetirementThreads(env: NodeJS.ProcessEnv = process.env, parallelism: number = availableParallelism()): { threads: number; warning: string | null } {
+  const raw = env["RETIREMENT_THREADS"]?.trim().toLowerCase() ?? "";
+  const auto = defaultThreads(parallelism);
+  if (raw === "" || raw === "auto") return { threads: auto, warning: null };
+  if (raw === "inline") return { threads: 0, warning: null };
+  if (/^\d+$/.test(raw)) {
+    const n = Number(raw);
+    if (n >= 1 && n <= MAX_THREADS) return { threads: n, warning: null };
+  }
+  return { threads: auto, warning: `RETIREMENT_THREADS="${env["RETIREMENT_THREADS"] ?? ""}" is not auto, inline or a whole number 1 to ${MAX_THREADS}; using auto (${auto})` };
+}
+
+/** A whole number within [min, max] (unset or empty: the fallback), else the fallback with a warning naming the variable. */
+function boundedInt(name: string, value: string | undefined, min: number, max: number, fallback: number, warnings: string[]): number {
+  const raw = value?.trim() ?? "";
+  if (raw === "") return fallback;
+  const n = Number(raw);
+  if (/^\d+$/.test(raw) && n >= min && n <= max) return n;
+  warnings.push(`${name}="${value ?? ""}" is not a whole number ${min} to ${max}; using ${fallback}`);
+  return fallback;
+}
+
+/**
+ * The retirement part of `loadConfig` (§6.3): the thread count, the thread entry, the run's time
+ * limit and the retention. Threads need the bundled entry: without the file (run from source) the
+ * simulations run inline, and `notes` says so for the boot log, beside any unreadable setting.
+ */
+export function loadRetirementConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  o: { parallelism?: number; threadEntry?: URL } = {},
+): { config: RetirementConfig; notes: string[] } {
+  const notes: string[] = [];
+  const threads = readRetirementThreads(env, o.parallelism);
+  if (threads.warning) notes.push(threads.warning);
+  const entry = o.threadEntry ?? SIM_THREAD_ENTRY;
+  const entryExists = entry.protocol === "file:" && existsSync(fileURLToPath(entry));
+  if (threads.threads > 0 && !entryExists) notes.push(`the simulation thread entry ${entry.href} does not exist (run from source); simulations run inline`);
+  const runMaxMs = boundedInt("RETIREMENT_RUN_MAX_MS", env["RETIREMENT_RUN_MAX_MS"], 1000, RETIREMENT_RUN_MAX_MS_LIMIT, RETIREMENT_DEFAULTS.runMaxMs, notes);
+  const keepRuns = boundedInt("RETIREMENT_KEEP_RUNS", env["RETIREMENT_KEEP_RUNS"], 1, RETIREMENT_KEEP_RUNS_LIMIT, RETIREMENT_DEFAULTS.keepRuns, notes);
+  const inline = threads.threads === 0 || !entryExists;
+  return { config: { threads: inline ? 0 : threads.threads, threadEntry: inline ? null : entry, runMaxMs, keepRuns }, notes };
+}
+
+/** The resolved retirement settings of a config: a hand-built config without them runs inline with the defaults. */
+export function retirementConfigOf(config: Pick<WorkerConfig, "retirement">): RetirementConfig {
+  const r = config.retirement;
+  const threadEntry = r?.threadEntry ?? null;
+  return {
+    threads: threadEntry === null ? 0 : (r?.threads ?? 0),
+    threadEntry,
+    runMaxMs: r?.runMaxMs ?? RETIREMENT_DEFAULTS.runMaxMs,
+    keepRuns: r?.keepRuns ?? RETIREMENT_DEFAULTS.keepRuns,
+  };
+}
+
+/** The boot log's line on the simulations: which mode runs them, and their limits. */
+export function describeRetirementConfig(r: RetirementConfig): string {
+  const mode = r.threads === 0 || r.threadEntry === null ? "run inline on the job's thread" : `run on ${r.threads} thread${r.threads === 1 ? "" : "s"} from ${r.threadEntry.href}`;
+  return `retirement simulations ${mode}, stop after ${r.runMaxMs} ms, keep ${r.keepRuns} finished runs per scenario`;
+}
+
 export interface WorkerConfig {
   databaseUrl: string;
   secretsKey: string;
@@ -167,6 +266,14 @@ export interface WorkerConfig {
   prices?: Partial<PriceConfig>;
   /** `WORKER_HEARTBEAT_FILE`: touched after every pass over the queue, for the container's healthcheck (unset: none). */
   heartbeatFile?: string;
+  /**
+   * Phase 4 simulations (`RETIREMENT_THREADS`, `RETIREMENT_RUN_MAX_MS`, `RETIREMENT_KEEP_RUNS`).
+   * loadConfig always sets it; a hand-built config without it runs inline with the defaults (see
+   * `retirementConfigOf`).
+   */
+  retirement?: Partial<RetirementConfig>;
+  /** Settings loadConfig could not use as given, for the boot log. */
+  bootNotes?: string[];
 }
 
 export const DEFAULT_DETECT_HOUR_UTC = 8;
@@ -211,6 +318,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     const problem = productionDatabaseProblem(databaseUrl);
     if (problem) throw new Error(problem);
   }
+  const retirement = loadRetirementConfig(env);
   return {
     databaseUrl,
     secretsKey: readSecretsKey(env),
@@ -225,5 +333,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     detectHourUtc: intInRange(env["DETECT_HOUR_UTC"], 0, 23, DEFAULT_DETECT_HOUR_UTC),
     prices: loadPriceConfig(env),
     ...(env["WORKER_HEARTBEAT_FILE"]?.trim() ? { heartbeatFile: env["WORKER_HEARTBEAT_FILE"].trim() } : {}),
+    retirement: retirement.config,
+    bootNotes: retirement.notes,
   };
 }

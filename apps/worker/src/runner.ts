@@ -1,6 +1,7 @@
 import { writeFileSync } from "node:fs";
-import { claimNextJob, completeJob, driverError, errorMessageOf, failJob, requeueStaleJobs } from "@meridian/db";
+import { claimNextJob, completeJob, driverError, errorMessageOf, failJob, failOrphanedSimRuns, requeueStaleJobs } from "@meridian/db";
 import { errorMessageText } from "@meridian/shared";
+import { retirementConfigOf } from "./env.js";
 import { dispatchJob } from "./jobs/index.js";
 import type { JobContext } from "./jobs/context.js";
 
@@ -51,6 +52,19 @@ export async function drainQueue(ctx: JobContext, beat?: () => void): Promise<nu
   }
 }
 
+/**
+ * Jobs a stopped worker left running (requeued after a backoff, or failed when their attempts are
+ * spent), then the retirement runs whose job failed that way while they were still active (failed
+ * `worker_crashed`, since no job will finish them).
+ */
+export async function sweepStaleJobs(ctx: Pick<JobContext, "db" | "config" | "log">): Promise<{ requeued: number; failed: number; orphanedRuns: number }> {
+  const stale = await requeueStaleJobs(ctx.db, 30);
+  if (stale.requeued + stale.failed > 0) ctx.log.warn(`[runner] a worker stopped during ${stale.requeued + stale.failed} job(s): ${stale.requeued} requeued after a backoff, ${stale.failed} failed (attempts spent)`);
+  const orphaned = await failOrphanedSimRuns(ctx.db, { keep: retirementConfigOf(ctx.config).keepRuns });
+  if (orphaned.length > 0) ctx.log.warn(`[runner] ${orphaned.length} retirement run(s) failed: their job failed while they were active (${orphaned.join(", ")})`);
+  return { ...stale, orphanedRuns: orphaned.length };
+}
+
 /** Poll the queue forever. Stops when the returned function is called. `heartbeat` runs after each pass that reached the database. */
 export function startRunner(ctx: JobContext, heartbeat: (() => void) | undefined = heartbeatWriter(ctx.config.heartbeatFile)): () => void {
   let stopped = false;
@@ -60,8 +74,7 @@ export function startRunner(ctx: JobContext, heartbeat: (() => void) | undefined
     try {
       if (Date.now() - lastStaleSweep > 60_000) {
         lastStaleSweep = Date.now();
-        const stale = await requeueStaleJobs(ctx.db, 30);
-        if (stale.requeued + stale.failed > 0) ctx.log.warn(`[runner] a worker stopped during ${stale.requeued + stale.failed} job(s): ${stale.requeued} requeued after a backoff, ${stale.failed} failed (attempts spent)`);
+        await sweepStaleJobs(ctx);
       }
       await drainQueue(ctx, heartbeat);
       heartbeat?.();

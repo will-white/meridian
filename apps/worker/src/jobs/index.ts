@@ -8,6 +8,7 @@ import { runPricesFetchJob } from "./pricesFetch.js";
 import { runRecurringDetectJob } from "./recurringDetect.js";
 import { runReprocessHoldingsJob } from "./reprocessHoldings.js";
 import { runReprocessTransactionsJob } from "./reprocessTransactions.js";
+import { runRetirementSimulateJob } from "./retirementSimulate.js";
 import { runSyncJob } from "./sync.js";
 
 export async function dispatchJob(ctx: JobContext, job: JobRow): Promise<unknown> {
@@ -33,9 +34,20 @@ export async function dispatchJob(ctx: JobContext, job: JobRow): Promise<unknown
       return runInvestmentsValuationJob(ctx, job);
     case "investments.income_feed":
       return runInvestmentIncomeFeedJob(ctx, job);
+    case "retirement.simulate":
+      return runRetirementSimulateJob(ctx, job);
     default:
       throw new Error(`unknown job type ${String(job.type)}`);
   }
 }
 
-export { runClaimJob, runSyncJob, runPricesFetchJob, runInvestmentsValuationJob, runInvestmentIncomeFeedJob, runReprocessHoldingsJob, runReprocessTransactionsJob };
+export {
+  runClaimJob,
+  runSyncJob,
+  runPricesFetchJob,
+  runInvestmentsValuationJob,
+  runInvestmentIncomeFeedJob,
+  runReprocessHoldingsJob,
+  runReprocessTransactionsJob,
+  runRetirementSimulateJob,
+};
