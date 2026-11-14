@@ -17,6 +17,7 @@ import {
   TaxTreatment,
   TransactionSource,
 } from "./enums.js";
+import { RetirementCard } from "./retirement/card.js";
 import { RuleActions, RuleConditions } from "./rules.js";
 import { CentsInput, CentsString, IsoDateInput, IsoDateString, MAX_LIST_ITEMS, MAX_SPLIT_TERM, MonthInput, MonthString, NonNegCentsInput, NonNegCentsString } from "./wire.js";
 
@@ -1246,7 +1247,8 @@ export const DashboardView = z.object({
     /** Connections that need a person; `syncPaused`: scheduled syncs stopped after a 403 or 402 (audit b7-plan-ui-12). */
     attention: z.array(z.object({ connectionId: z.string().uuid(), name: z.string(), status: ConnectionStatus, syncPaused: z.boolean() })),
   }),
-  retirement: z.null(),
+  /** Phase 4 (inputs-and-data §4.9): the default scenario's newest finished run; null until a retirement profile exists. */
+  retirement: RetirementCard.nullable(),
   /** Phase 3 (views design §4, seams C47): null without open investment accounts. */
   investments: z
     .object({

@@ -68,11 +68,19 @@ export interface RuleTargetRow {
   notTransfer?: boolean;
   /** The row's transfer pair; looked up when left out and a rule says the row is not a transfer. */
   transferPairId?: string | null;
+  /** The household decided by hand whether the row is a transfer (`transfer_locked`); looked up when left out and a rule has a transfer action for it. */
+  transferLocked?: boolean;
 }
 
 export interface ApplyRulesOptions {
-  /** Override a category the user locked by hand. Default false. */
+  /** Override a category, or a transfer decision, the user made by hand. Default false. */
   force?: boolean;
+  /**
+   * The household's whole rule set, when `rules` is it: a row whose `not_transfer` no rule of it
+   * sets any more loses the flag (audit a10-conformance-ledger-03, second round). When `rules` is
+   * only some of them (a rule just saved), the whole set is loaded for such a row.
+   */
+  allRules?: readonly RuleLike[];
   payees?: PayeeCache;
   /** Collects the transfer partners released because a rule said their row is not a transfer, with their dates (for a pairing pass). */
   released?: Array<{ id: string; date: IsoDate }>;
@@ -87,16 +95,23 @@ export interface ApplyRulesOptions {
  * it undoes the pair: the row loses its pair id and its partner is released (pair id and
  * `is_transfer` cleared, the rules run on it again), so no pair id is left on one row and the
  * partner may pair with another leg. "Mark as transfer" clears `not_transfer`.
+ *
+ * Second round: a row whose transfer state the household decided by hand (`transfer_locked`:
+ * marked, marked not, paired or linked by hand) keeps it; the rules' transfer actions pass it by
+ * unless `force` is set. And `not_transfer` lasts only as long as a rule sets it: a row it is set
+ * on that no rule of the household's whole set rules out any more (the rule was deleted, switched
+ * off or changed) loses it, so automatic pairing may take the row again.
  */
 export async function applyRulesToRow(tx: DbOrTx, rules: readonly RuleLike[], row: RuleTargetRow, options: ApplyRulesOptions = {}): Promise<boolean> {
-  const outcome = evaluateRules(rules, {
+  const target = {
     payee: row.payeeName,
     payeeAliases: row.payeeAliases ?? [],
     description: row.rawDescription,
     amountCents: row.amountCents,
     accountId: row.accountId,
     date: row.date,
-  });
+  };
+  const outcome = evaluateRules(rules, target);
   const payees = options.payees ?? new PayeeCache(tx);
   const patch: Partial<typeof transaction.$inferInsert> = {};
   let defaultCategoryId = row.payeeDefaultCategoryId;
@@ -111,12 +126,23 @@ export async function applyRulesToRow(tx: DbOrTx, rules: readonly RuleLike[], ro
     const next = outcome.categoryId !== undefined ? outcome.categoryId : row.categoryId ?? defaultCategoryId ?? null;
     if (next !== row.categoryId) patch.categoryId = next;
   }
-  if (outcome.transfer !== undefined) {
-    if (outcome.transfer !== row.isTransfer) patch.isTransfer = outcome.transfer;
-    const ruledOut = outcome.transfer === false;
+  const transferLocked =
+    outcome.transfer === undefined
+      ? false
+      : (row.transferLocked ?? (await tx.select({ locked: transaction.transferLocked }).from(transaction).where(eq(transaction.id, row.id)))[0]?.locked ?? false);
+  // The household's own transfer decision holds over the rules' (second round).
+  const transferAction = transferLocked && options.force !== true ? undefined : outcome.transfer;
+  if (transferAction !== undefined) {
+    if (transferAction !== row.isTransfer) patch.isTransfer = transferAction;
+    const ruledOut = transferAction === false;
     if (row.notTransfer !== ruledOut) patch.notTransfer = ruledOut;
+    if (transferLocked) patch.transferLocked = false;
+  } else if (outcome.transfer === undefined && row.notTransfer === true) {
+    // No rule given here decides the row: when none of the household's rules rules it out any more, the flag goes with the rule.
+    const all = options.allRules ?? (await loadRules(tx));
+    if (evaluateRules(all, target).transfer !== false) patch.notTransfer = false;
   }
-  if (outcome.transfer === false) {
+  if (transferAction === false) {
     const pairId =
       row.transferPairId !== undefined ? row.transferPairId : ((await tx.select({ pairId: transaction.transferPairId }).from(transaction).where(eq(transaction.id, row.id)))[0]?.pairId ?? null);
     if (pairId !== null) {
@@ -171,7 +197,8 @@ export interface RunRulesOptions {
 
 /** Re-run rules on demand over existing transactions. */
 export async function runRules(db: Db, options: RunRulesOptions): Promise<{ examined: number; changed: number }> {
-  const rules = options.rules ?? (await loadRules(db));
+  const allRules = await loadRules(db);
+  const rules = options.rules ?? allRules;
   const batchSize = options.batchSize ?? 500;
   let examined = 0;
   let changed = 0;
@@ -202,6 +229,7 @@ export async function runRules(db: Db, options: RunRulesOptions): Promise<{ exam
         isTransfer: transaction.isTransfer,
         notTransfer: transaction.notTransfer,
         transferPairId: transaction.transferPairId,
+        transferLocked: transaction.transferLocked,
       })
       .from(transaction)
       .leftJoin(payee, eq(payee.id, transaction.payeeId))
@@ -215,7 +243,7 @@ export async function runRules(db: Db, options: RunRulesOptions): Promise<{ exam
       const payees = new PayeeCache(tx);
       for (const row of rows) {
         examined++;
-        if (await applyRulesToRow(tx, rules, row, { payees, released })) changed++;
+        if (await applyRulesToRow(tx, rules, row, { payees, released, allRules })) changed++;
       }
     });
     lastId = rows[rows.length - 1]!.id;
@@ -225,5 +253,48 @@ export async function runRules(db: Db, options: RunRulesOptions): Promise<{ exam
     const dates = released.map((r) => r.date).sort();
     await db.transaction((tx) => pairTransfersInDb(tx, { since: dates[0]!, until: dates[dates.length - 1]! }));
   }
+  // Rows whose "not a transfer" went with its rule (a10-conformance-ledger-03, second round) may pair now.
+  await clearStaleNotTransfer(db, allRules);
   return { examined, changed };
+}
+
+/**
+ * Audit a10-conformance-ledger-03, second round: `not_transfer` lasts as long as a rule sets
+ * it. Every row it is set on is checked against the household's rules as they are now (`rules`,
+ * loaded when left out); where none rules the row out any more (the rule was deleted, switched off
+ * or changed) the flag goes, and a pairing pass over those rows' days lets them pair. The rules
+ * routes run this after a rule is deleted, changed or moved; a rule run ends with it. Nothing else
+ * of the row changes: the other rules apply when the household runs them.
+ */
+export async function clearStaleNotTransfer(db: Db, rules?: readonly RuleLike[]): Promise<{ cleared: number; transfersPaired: number }> {
+  return db.transaction(async (tx) => {
+    await lockLedger(tx);
+    const all = rules ?? (await loadRules(tx));
+    const flagged = await tx
+      .select({
+        id: transaction.id,
+        accountId: transaction.accountId,
+        date: transaction.date,
+        amountCents: transaction.amountCents,
+        rawDescription: transaction.rawDescription,
+        payeeName: sql<string>`coalesce(${payee.name}, '')`,
+        payeeAliases: sql<string[]>`coalesce(${payee.aliases}, '[]'::jsonb)`,
+      })
+      .from(transaction)
+      .leftJoin(payee, eq(payee.id, transaction.payeeId))
+      .where(eq(transaction.notTransfer, true));
+    const stale = flagged.filter(
+      (r) => evaluateRules(all, { payee: r.payeeName, payeeAliases: r.payeeAliases, description: r.rawDescription, amountCents: r.amountCents, accountId: r.accountId, date: r.date }).transfer !== false,
+    );
+    if (stale.length === 0) return { cleared: 0, transfersPaired: 0 };
+    for (let i = 0; i < stale.length; i += 500) {
+      await tx
+        .update(transaction)
+        .set({ notTransfer: false, updatedAt: new Date() })
+        .where(inArray(transaction.id, stale.slice(i, i + 500).map((r) => r.id)));
+    }
+    const dates = stale.map((r) => r.date).sort();
+    const transfersPaired = await pairTransfersInDb(tx, { since: dates[0]!, until: dates[dates.length - 1]! });
+    return { cleared: stale.length, transfersPaired };
+  });
 }

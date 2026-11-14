@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { csvExternalId, csvIdScheme, csvIdText, mapCsvRows, parseLooseMoney } from "./csv.js";
+import { csvExternalId, csvIdColumnKey, csvIdScheme, csvIdText, mapCsvRows, parseLooseMoney } from "./csv.js";
 
 const sha = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 const MAPPING = { hasHeader: true, date: { column: "Date", format: "YYYY-MM-DD" as const }, description: { column: "Description" }, amount: { mode: "single" as const, column: "Amount" } };
@@ -72,5 +72,36 @@ describe("a10-conformance-ledger-08: an amount with a decimal comma is refused, 
       { rowIndex: 1, message: 'Unreadable amount "12,50": a comma before the cents is not read; export the file with a decimal point' },
       { rowIndex: 2, message: 'Unreadable amount "-1.234,56": a comma before the cents is not read; export the file with a decimal point' },
     ]);
+  });
+});
+
+describe("a10-conformance-ledger-02, second round: a bank id names its id column", () => {
+  const header = ["Date", "Description", "Amount", "Reference", "Transaction ID"];
+  const lines = [
+    ["2026-10-03", "TACO BELL 1234 CO", "-12.40", "REF-1", "9001"],
+    ["2026-10-04", "SHELL OIL 57444 FORT COLLINS CO", "-41.07", "REF-2", "9002"],
+  ];
+
+  it("is csvid2:<column as a mapping matches it>:<the file's id>, so two id columns of one file are two schemes", async () => {
+    const byReference = await mapCsvRows([header, ...lines], { ...MAPPING, externalId: { column: "Reference" } });
+    const byTransactionId = await mapCsvRows([header, ...lines], { ...MAPPING, externalId: { column: "transaction id" } });
+    const byPosition = await mapCsvRows([header, ...lines], { ...MAPPING, externalId: { column: 4 } });
+    expect(byReference.rows.map((r) => r.externalId)).toEqual(["csvid2:reference:REF-1", "csvid2:reference:REF-2"]);
+    expect(byTransactionId.rows.map((r) => r.externalId)).toEqual(["csvid2:transaction id:9001", "csvid2:transaction id:9002"]);
+    // The column by its position is the same column by its name.
+    expect(byPosition.rows.map((r) => r.externalId)).toEqual(byTransactionId.rows.map((r) => r.externalId));
+    expect(csvIdScheme("csvid2:reference:REF-1")).toBe("csvid2:reference");
+    expect(csvIdScheme("csvid2:transaction id:9001")).toBe("csvid2:transaction id");
+    expect(csvIdScheme("csvid2:reference:A:B")).toBe("csvid2:reference");
+  });
+
+  it("names a column without a header by its position, and escapes a colon in a header", async () => {
+    const noHeader = await mapCsvRows(lines, { ...MAPPING, hasHeader: false, date: { column: 0, format: "YYYY-MM-DD" }, description: { column: 1 }, amount: { mode: "single", column: 2 }, externalId: { column: 3 } });
+    expect(noHeader.rows.map((r) => r.externalId)).toEqual(["csvid2:#3:REF-1", "csvid2:#3:REF-2"]);
+    const colon = await mapCsvRows([["Date", "Description", "Amount", "Ref: 100%"], ["2026-10-03", "TACO BELL", "-12.40", "R:1"]], { ...MAPPING, externalId: { column: "Ref: 100%" } });
+    expect(colon.rows[0]!.externalId).toBe("csvid2:ref%3A 100%25:R:1");
+    expect(csvIdScheme(colon.rows[0]!.externalId)).toBe("csvid2:ref%3A 100%25");
+    expect(csvIdColumnKey(undefined, 2)).toBe("#2");
+    expect(csvIdColumnKey(["Date", ""], 1)).toBe("#1");
   });
 });

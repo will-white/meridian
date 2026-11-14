@@ -2,7 +2,7 @@ import { asc, eq, gte, inArray, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { category, loadRules, rule, runRules, writeAudit, type DbOrTx } from "@meridian/db";
+import { category, clearStaleNotTransfer, loadRules, rule, runRules, writeAudit, type DbOrTx } from "@meridian/db";
 import {
   CreateRuleBody,
   OkResponse,
@@ -114,6 +114,8 @@ export async function ruleRoutes(app: FastifyInstance): Promise<void> {
       await writeAudit(tx, { ...ctx, entity: "rule", entityId: existing.id, action: "update", before: ruleAuditJson(existing), after: ruleAuditJson(updated!) });
       return updated!;
     });
+    // A rule switched off or changed no longer rules out the rows it ruled out (audit a10-conformance-ledger-03, second round).
+    if (request.body.enabled !== undefined || request.body.conditions !== undefined || request.body.actions !== undefined) await clearStaleNotTransfer(app.db);
     const parsed = (await loadRules(app.db, { stored: true })).find((x) => x.id === row.id)!;
     return toRuleView(row, parsed);
   });
@@ -126,6 +128,8 @@ export async function ruleRoutes(app: FastifyInstance): Promise<void> {
       await tx.delete(rule).where(eq(rule.id, existing.id));
       await writeAudit(tx, { ...ctx, entity: "rule", entityId: existing.id, action: "delete", before: ruleAuditJson(existing), after: null });
     });
+    // The rows only this rule ruled out as transfers may pair again (audit a10-conformance-ledger-03, second round).
+    await clearStaleNotTransfer(app.db);
     return { ok: true as const };
   });
 
@@ -147,6 +151,8 @@ export async function ruleRoutes(app: FastifyInstance): Promise<void> {
         await writeAudit(tx, { ...ctx, entity: "rule", entityId: id, action: "update", before: ruleAuditJson(before), after: ruleAuditJson(after!) });
       }
     });
+    // A later rule may now override a "not a transfer" (a rule's stop, or its own transfer action): a10-conformance-ledger-03, second round.
+    await clearStaleNotTransfer(app.db);
     return listViews();
   });
 

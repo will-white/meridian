@@ -2,6 +2,7 @@ import postgres from "postgres";
 import { randomBytes } from "node:crypto";
 import { createDb, type Db, type DbClient } from "../index.js";
 import { runMigrations } from "../migrate.js";
+import { setLedgerLockOrderCheck } from "../services/ledgerLock.js";
 
 export interface TestDb {
   db: Db;
@@ -36,6 +37,8 @@ function withDatabase(url: string, name: string): string {
  */
 export async function createTestDb(): Promise<TestDb> {
   if (!TEST_DATABASE_URL) throw new Error("TEST_DATABASE_URL is not set");
+  // Audit a10-conformance-ledger-01, second round: every path a suite runs takes the ledger lock before it writes.
+  setLedgerLockOrderCheck(true);
   const databaseName = testDatabaseName();
   const admin = postgres(TEST_DATABASE_URL, { max: 1, onnotice: () => {} });
   await admin.unsafe(`create database "${databaseName}"`);

@@ -371,6 +371,8 @@ async function foldInto(
     // A split of the posted amount comes with it (a split row's own category is empty and locked).
     if (from.categoryLocked && from.categoryId === null && from.amountCents === amountCents) await tx.update(split).set({ transactionId: into.id }).where(eq(split.transactionId, from.id));
   }
+  // The household's own transfer decision on `from` comes with it where the merged row agrees with it (a10-conformance-ledger-03, second round).
+  if (!into.transferLocked && from.transferLocked && merged.isTransfer === from.isTransfer && from.transferPairId === null) merged.transferLocked = true;
   if (into.notes === null && from.notes !== null) merged.notes = from.notes;
   if (!into.payeeLocked && from.payeeLocked) {
     merged.payeeId = from.payeeId;
@@ -394,6 +396,7 @@ async function foldInto(
     .update(transaction)
     .set({
       isTransfer: merged.isTransfer,
+      transferLocked: merged.transferLocked,
       categoryId: merged.categoryId,
       categoryLocked: merged.categoryLocked,
       notes: merged.notes,
@@ -493,6 +496,9 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
       if (options.replay && !(row.pending && !item.pending)) continue;
       const patch: Partial<typeof transaction.$inferInsert> = {};
       if (row.date !== item.date && !item.undated) patch.date = item.date;
+      // The last day an undated hold was listed (second round): its posted form is looked for over the days it was seen. Not a change of the bank's fields.
+      const seenThrough = item.undated && item.pending && row.pending ? (row.pendingSeenThrough !== null && row.pendingSeenThrough > item.date ? row.pendingSeenThrough : item.date) : null;
+      if ((row.pendingSeenThrough ?? null) !== seenThrough) await tx.update(transaction).set({ pendingSeenThrough: seenThrough }).where(eq(transaction.id, row.id));
       if (row.amountCents !== item.amountCents) patch.amountCents = item.amountCents;
       if (row.rawDescription !== item.description) patch.rawDescription = item.description;
       if ((row.memo ?? null) !== (item.memo ?? null)) patch.memo = item.memo ?? null;
@@ -533,7 +539,15 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
     if (localPending.length > 0) {
       const freshPosted = fresh.filter((f) => !f.pending).map(asIncoming);
       const unlisted = localPending.filter((p) => p.externalId === null || !byId.has(p.externalId));
-      for (const [ext, id] of matchPendingToPosted(unlisted.map(asCandidate), freshPosted)) replacements.set(ext, { local: unlisted.find((p) => p.id === id)!, listed: false });
+      // An undated hold is dated by the day it was first seen (decision 108); its posted form, dated by the purchase or by the
+      // posting day, is near some day it was seen (a10-conformance-ledger-05, second round): the days from its date to the last.
+      const seenThrough = new Map(unlisted.flatMap((p) => (p.pendingSeenThrough !== null ? [[p.id, p.pendingSeenThrough] as const] : [])));
+      const daysSeen = (row: Candidate, item: Item): number => {
+        const through = seenThrough.get(row.id);
+        if (through === undefined || item.date < row.date) return Math.abs(dayDiff(row.date, item.date));
+        return item.date > through ? Math.abs(dayDiff(through, item.date)) : 0;
+      };
+      for (const [ext, id] of matchPendingToPosted(unlisted.map(asCandidate), freshPosted, { dayDistance: daysSeen })) replacements.set(ext, { local: unlisted.find((p) => p.id === id)!, listed: false });
       // A pending item the feed still lists next to its posted form (a5-ingest-transfers-11): equal amount, the same merchant, and
       // (second round) the same moment of purchase: a posted fare of Monday next to Tuesday's still pending is another purchase.
       const momentOf = (externalId: string | null) => (externalId === null ? undefined : byId.get(externalId)?.transactedAt);
@@ -582,8 +596,10 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
           await dropSplitsAfterAmountChange(tx, local.id);
           if (local.transferPairId) {
             noteReleased(await releaseTransferPartners(tx, [local.id], options.rules));
-            await tx.update(transaction).set({ transferPairId: null, isTransfer: false }).where(eq(transaction.id, local.id));
-            local = { ...local, transferPairId: null, isTransfer: false };
+            // A row the household marked or paired by hand stays a transfer, without the pair (a10-conformance-ledger-03, second round).
+            const isTransfer = local.transferLocked ? local.isTransfer : false;
+            await tx.update(transaction).set({ transferPairId: null, isTransfer }).where(eq(transaction.id, local.id));
+            local = { ...local, transferPairId: null, isTransfer };
             if (!stats.earliestReleased || item.date < stats.earliestReleased) stats.earliestReleased = item.date;
           }
         }
@@ -601,6 +617,7 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
           pending: false,
           postedAt: item.postedAt ?? null,
           source: options.source,
+          pendingSeenThrough: null,
           updatedAt: new Date(),
         };
         if (options.importLogId) patch.importLogId = options.importLogId;
@@ -642,6 +659,7 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
               isTransfer: local.isTransfer,
               notTransfer: local.notTransfer,
               transferPairId: local.transferPairId,
+              transferLocked: local.transferLocked,
             },
             { payees, released: releasedByRule },
           );
@@ -717,6 +735,8 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
           isTransfer: contribution !== null ? true : (outcome.transfer ?? false),
           // A rule's "not a transfer" holds over the pairing pass (a10-conformance-ledger-03).
           notTransfer: outcome.transfer === false,
+          // An undated hold: dated by the day it was first seen, and seen through that day so far (a10-conformance-ledger-05, second round).
+          pendingSeenThrough: item.undated && item.pending ? item.date : null,
         })
         .onConflictDoNothing()
         .returning({ id: transaction.id });

@@ -122,7 +122,8 @@ describe.skipIf(!TEST_DATABASE_URL)("Phase 1 conformance (audit a10-conformance-
     it("the same file committed with its id column, then without it, is one set of rows (and the reverse)", async () => {
       const acct = await newAccount("Savings");
       const withIds = await mapped(lines, WITH_ID);
-      expect(withIds.map((r) => r.externalId)).toEqual(["csvid:REF-1", "csvid:REF-2"]);
+      // The id names its column since the second round.
+      expect(withIds.map((r) => r.externalId)).toEqual(["csvid2:reference:REF-1", "csvid2:reference:REF-2"]);
       expect(await importCsvRows(t.db, { accountId: acct, rows: withIds })).toMatchObject({ created: 2 });
       const withoutIds = await mapped(lines);
       expect(withoutIds.every((r) => r.externalId.startsWith("csv2:"))).toBe(true);

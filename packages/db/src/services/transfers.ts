@@ -42,7 +42,8 @@ const dismissalKey = (a: string, b: string) => (a < b ? `${a}:${b}` : `${b}:${a}
  * with each other again (`transfer_dismissal`), and a row the household categorized by hand
  * (`category_locked`, a split included) is not a candidate unless it is marked as a transfer:
  * automation never overrides a hand categorization (plan, data model). Neither is a row a rule
- * said is not a transfer (`not_transfer`, audit a10-conformance-ledger-03).
+ * said is not a transfer (`not_transfer`, audit a10-conformance-ledger-03), nor (second round) one
+ * the household said by hand is not a transfer (`transfer_locked` without `is_transfer`).
  */
 export async function pairTransfersInDb(tx: DbOrTx, options: PairTransfersInDbOptions = {}): Promise<number> {
   const maxDays = options.maxDays ?? 3;
@@ -57,6 +58,8 @@ export async function pairTransfersInDb(tx: DbOrTx, options: PairTransfersInDbOp
         or(eq(transaction.categoryLocked, false), eq(transaction.isTransfer, true)),
         // A rule said the row is not a transfer (a10-conformance-ledger-03): the rule's choice holds, as a hand categorization does.
         eq(transaction.notTransfer, false),
+        // The household said so by hand (second round): its word holds too; it pairs the row by hand when it wants.
+        or(eq(transaction.transferLocked, false), eq(transaction.isTransfer, true)),
         options.since ? gte(transaction.date, addDays(options.since, -maxDays)) : undefined,
         options.until ? lte(transaction.date, addDays(options.until, maxDays)) : undefined,
         notInvestmentIncomeRow(tx),
@@ -86,7 +89,9 @@ export interface MarkAsTransfersOptions {
    * The household linked the row by hand (`PATCH /api/investments/transactions/:id` with
    * `ledgerTransactionId`): its word, as a hand mark or a hand pairing is, wins over a rule's
    * "not a transfer" (`not_transfer` is cleared) and over a hand categorization (the category
-   * stays on the row). Default false: the mark is automation's.
+   * stays on the row), and the rules leave the row's transfer state alone from then on
+   * (`transfer_locked`, audit a10-conformance-ledger-03, second round). Default false: the mark is
+   * automation's, and takes no row the household said by hand is not a transfer.
    */
   byHand?: boolean;
 }
@@ -106,13 +111,13 @@ export interface MarkAsTransfersOptions {
 export async function markAsTransfers(tx: DbOrTx, transactionIds: readonly string[], options: MarkAsTransfersOptions = {}): Promise<number> {
   const ids = [...new Set(transactionIds)];
   const markable = options.byHand
-    ? or(eq(transaction.isTransfer, false), eq(transaction.notTransfer, true))
-    : and(eq(transaction.isTransfer, false), eq(transaction.notTransfer, false), eq(transaction.categoryLocked, false));
+    ? or(eq(transaction.isTransfer, false), eq(transaction.notTransfer, true), eq(transaction.transferLocked, false))
+    : and(eq(transaction.isTransfer, false), eq(transaction.notTransfer, false), eq(transaction.categoryLocked, false), eq(transaction.transferLocked, false));
   let changed = 0;
   for (let i = 0; i < ids.length; i += 500) {
     const rows = await tx
       .update(transaction)
-      .set({ isTransfer: true, notTransfer: false, updatedAt: new Date() })
+      .set({ isTransfer: true, notTransfer: false, ...(options.byHand ? { transferLocked: true } : {}), updatedAt: new Date() })
       .where(and(inArray(transaction.id, ids.slice(i, i + 500)), markable))
       .returning({ id: transaction.id });
     if (rows.length === 0) continue;
@@ -153,7 +158,10 @@ export async function unpairTransfer(tx: DbOrTx, transactionId: string): Promise
  * (audit a5-ingest-transfers-05). The partner loses its pair and `is_transfer`; when `rules`
  * are given they run on it again, so a rule that marks it a transfer or gives it a category
  * still does, and the next pairing pass may pair it with the leg that replaces the removed one.
- * Returns the released rows with their dates (for the pairing pass's window).
+ * A partner the household marked or paired by hand (`transfer_locked`, audit
+ * a10-conformance-ledger-03, second round) loses only the pair: it stays a transfer, as the
+ * household said, and may pair again. Returns the released rows with their dates (for the pairing
+ * pass's window).
  */
 export async function releaseTransferPartners(tx: DbOrTx, removedIds: readonly string[], rules?: readonly RuleLike[]): Promise<Array<{ id: string; date: IsoDate }>> {
   return releasePairs(tx, removedIds, rules, false);
@@ -198,18 +206,21 @@ async function releasePairs(tx: DbOrTx, ids: readonly string[], rules: readonly 
         categoryLocked: transaction.categoryLocked,
         payeeLocked: transaction.payeeLocked,
         notTransfer: transaction.notTransfer,
+        transferLocked: transaction.transferLocked,
       })
       .from(transaction)
       .leftJoin(payee, eq(payee.id, transaction.payeeId))
       .where(inArray(transaction.transferPairId, [...pairIds]))
   ).filter((p) => withSelf || !given.has(p.id));
   if (legs.length === 0) return [];
-  await tx
-    .update(transaction)
-    .set({ transferPairId: null, isTransfer: false, updatedAt: new Date() })
-    .where(inArray(transaction.id, legs.map((p) => p.id)));
+  const now = new Date();
+  // A leg the household marked or paired by hand stays a transfer (second round); the others are automation's and lose the mark.
+  const auto = legs.filter((p) => !p.transferLocked).map((p) => p.id);
+  const byHand = legs.filter((p) => p.transferLocked).map((p) => p.id);
+  if (auto.length > 0) await tx.update(transaction).set({ transferPairId: null, isTransfer: false, updatedAt: now }).where(inArray(transaction.id, auto));
+  if (byHand.length > 0) await tx.update(transaction).set({ transferPairId: null, updatedAt: now }).where(inArray(transaction.id, byHand));
   if (rules && rules.length > 0) {
-    for (const p of legs) await applyRulesToRow(tx, rules, { ...p, isTransfer: false, transferPairId: null });
+    for (const p of legs) await applyRulesToRow(tx, rules, { ...p, isTransfer: p.transferLocked, transferPairId: null });
   }
   return legs.map((p) => ({ id: p.id, date: p.date }));
 }
@@ -283,8 +294,8 @@ export async function pairTransactionsByHand(tx: DbOrTx, firstId: string, second
   if (a.transferPairId !== null || b.transferPairId !== null) throw new PlanError(409, "already_paired", "One of the two is paired already; undo that transfer first");
   const pairId = randomUUID();
   const now = new Date();
-  // The household's pairing wins over a rule's "not a transfer" (a10-conformance-ledger-03).
-  await tx.update(transaction).set({ transferPairId: pairId, isTransfer: true, notTransfer: false, updatedAt: now }).where(inArray(transaction.id, [a.id, b.id]));
+  // The household's pairing wins over a rule's "not a transfer" (a10-conformance-ledger-03), and the rules leave it alone from now on (second round).
+  await tx.update(transaction).set({ transferPairId: pairId, isTransfer: true, notTransfer: false, transferLocked: true, updatedAt: now }).where(inArray(transaction.id, [a.id, b.id]));
   await tx
     .update(transaction)
     .set({ categoryId: null })
