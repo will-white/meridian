@@ -415,7 +415,8 @@ export const PayeeQuery = z.object({
 export const PayeeList = z.object({ items: z.array(PayeeView), total: z.number().int(), nextCursor: z.string().nullable() });
 export type PayeeList = z.infer<typeof PayeeList>;
 export const UpdatePayeeBody = z.object({
-  name: z.string().min(1).max(200).optional(),
+  /** Trimmed before the length check, so a blank name is refused (audit a6-text-rules-accounts, second round). */
+  name: z.string().trim().min(1).max(200).optional(),
   defaultCategoryId: z.string().uuid().nullable().optional(),
   /** Merge another payee into this one: its transactions move here and its name becomes an alias. */
   mergeFromId: z.string().uuid().optional(),
@@ -535,6 +536,12 @@ export const RuleView = z.object({
   conditions: RuleConditions,
   actions: RuleActions,
   createdAt: z.string(),
+  /**
+   * Why the rule does not run as written (`storedRuleProblems`): a stored pattern RE2 cannot run,
+   * which never matches, or an amount range that cannot match. Empty for a rule that runs as
+   * written (audit a6-text-rules-accounts, second round).
+   */
+  problems: z.array(z.string()),
 });
 export type RuleView = z.infer<typeof RuleView>;
 export const ApplyScope = z.enum(["none", "uncategorized", "all"]);

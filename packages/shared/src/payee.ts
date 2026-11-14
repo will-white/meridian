@@ -12,6 +12,12 @@ const PREFIXES: RegExp[] = [
   /^(POS|PIN|SIG)\s+(PURCHASE|DEBIT|CREDIT|TRANSACTION|REFUND)\b/i,
   /^(DEBIT|CREDIT)\s+CARD\s+(PURCHASE|DEBIT|CREDIT|REFUND)\b/i,
   /^(CHECK\s?CARD|CKCD|VISA|MASTERCARD|DBT|CRD)\b/i,
+  // A bank's own purchase wording in front of the merchant (audit a6-text-rules-accounts-12, second
+  // round): "VISA DDA PUR 123456 SAFEWAY", "PURCHASE AUTHORIZED ON 10/02 SAFEWAY", "CARD PURCHASE WITH PIN".
+  /^DDA(\s+(PUR|PURCH|PURCHASE|POS|DEBIT|CREDIT|WD|WITHDRAWAL|DEP|DEPOSIT)(\s+AP)?)?\b/i,
+  /^AUTHORIZED\s+ON\b/i,
+  /^(CARD\s+)?PURCHASE\s+WITH\s+PIN\b/i,
+  /^CARD\s+PURCHASE\b/i,
   /^(ACH|ELECTRONIC|ONLINE|WEB|TEL|RECURRING|PREAUTHORIZED|EFT)\s+(DEBIT|CREDIT|PAYMENT|PMT|WITHDRAWAL|DEPOSIT)\b/i,
   /^ACH\b/i,
   /^DIRECT\s+(DEP(OSIT)?|DEBIT|PAY(MENT)?)\b/i,
@@ -51,6 +57,8 @@ const NOISE_TOKENS = new Set([
   "PENDING",
   "CARD",
   "CRD",
+  "DDA",
+  "PUR",
   "USA",
   "US",
 ]);
@@ -119,17 +127,19 @@ function cityWidth(words: readonly string[]): number {
 }
 
 /**
- * Drop a trailing "CITY ST". When a store number or code stands before the city, the city is
- * exactly the words between it and the state (none, one, two or three); otherwise the last
- * word, widened by the lists of city prefixes and suffixes. A merchant word is never dropped
- * when nothing would be left of the name.
+ * Drop a trailing "CITY ST". When a store number or code stands after the merchant, before the
+ * city, the city is exactly the words between it and the state (none, one, two or three).
+ * Otherwise, and also when the code stands in front of the merchant ("CHECKCARD 1105 SAFEWAY
+ * DENVER CO": a card's date, a card number or a transaction id, with no name word before it),
+ * the city is the last word, widened by the lists of city prefixes and suffixes (audit
+ * a6-text-rules-accounts-12, second round). A merchant word is never dropped when nothing would
+ * be left of the name.
  */
 function stripCityState(seq: string[]): string[] {
   while (seq.length > 0 && seq[seq.length - 1] === MARK) seq.pop();
   const last = seq[seq.length - 1];
   if (last === undefined || !US_STATES.has(last.toUpperCase()) || last !== last.toUpperCase()) return seq;
   const stateAt = seq.length - 1;
-  const nameWordsBefore = (index: number) => seq.slice(0, index).some((t) => t !== MARK);
   // Walk back from the state over at most three words, to a mark.
   let i = stateAt - 1;
   let k = 0;
@@ -137,12 +147,10 @@ function stripCityState(seq: string[]): string[] {
     i--;
     k++;
   }
-  if (i >= 0 && seq[i] === MARK && k <= 3) {
-    // The city is the k words after the mark; keep them when the name would be left empty.
-    return nameWordsBefore(i) ? [...seq.slice(0, i + 1)] : seq.slice(0, stateAt);
-  }
-  const words = seq.slice(0, stateAt);
-  if (words.filter((t) => t !== MARK).length < 2) return words;
+  const nameWordBefore = seq.slice(0, Math.max(i, 0)).some((t) => t !== MARK);
+  if (i >= 0 && seq[i] === MARK && k <= 3 && nameWordBefore) return seq.slice(0, i + 1);
+  const words = seq.slice(0, stateAt).filter((t) => t !== MARK);
+  if (words.length < 2) return words;
   const width = Math.min(cityWidth(words), words.length - 1);
   return words.slice(0, words.length - width);
 }

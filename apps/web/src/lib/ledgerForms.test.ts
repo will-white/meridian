@@ -256,6 +256,7 @@ describe("a8-ledger-ui-09: the rule 'always do this' would duplicate is found as
     conditions: { payee: { op: "equals", value: "cafe rio" } },
     actions: { setCategoryId: U(301) },
     createdAt: "2026-11-01T00:00:00Z",
+    problems: [],
     ...over,
   });
   const target = { payeeName: "Café Rio", categoryId: U(301) };

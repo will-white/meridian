@@ -11,3 +11,6 @@
   .rule-label { min-width: 100%; }
   .rule-editor .row input:not([type="checkbox"]):not([type="number"]), .rule-editor .row select { max-width: 100%; min-width: 0; flex: 1 1 10rem; }
 }
+/* A stored rule that does not run as written (a pattern RE2 refuses): the reason, under its conditions (audit a6-text-rules-accounts, second round). */
+.rule-problem { display: block; margin-top: 0.25rem; max-width: 36rem; color: var(--warn); overflow-wrap: anywhere; }
+.rule-name .badge { white-space: nowrap; }

@@ -107,18 +107,23 @@ function compilePattern(pattern: string, caseSensitive: boolean): RE2JS | null {
   return re;
 }
 
-/** Why a pattern cannot be saved, or null. */
-export function regexProblem(pattern: string): string | null {
-  if (pattern.length > RULE_REGEX_MAX_LENGTH) return `A pattern may be at most ${RULE_REGEX_MAX_LENGTH} characters`;
+/** Why RE2 refuses a pattern, in its own words without the prefix, or null when it compiles. */
+function re2Refusal(pattern: string): string | null {
   try {
     RE2JS.compile(pattern);
     return null;
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err);
     // "error parsing regexp: invalid or unsupported Perl syntax: `(?=`" → the part after the prefix.
-    const detail = raw.replace(/^error parsing regexp:\s*/i, "").slice(0, 120);
-    return `Not a pattern this app can run (${detail}). Look-ahead, look-behind and back-references are not supported`;
+    return raw.replace(/^error parsing regexp:\s*/i, "").slice(0, 120);
   }
+}
+
+/** Why a pattern cannot be saved, or null. */
+export function regexProblem(pattern: string): string | null {
+  if (pattern.length > RULE_REGEX_MAX_LENGTH) return `A pattern may be at most ${RULE_REGEX_MAX_LENGTH} characters`;
+  const refusal = re2Refusal(pattern);
+  return refusal === null ? null : `Not a pattern this app can run (${refusal}). Look-ahead, look-behind and back-references are not supported`;
 }
 
 export interface RuleInputProblem {
@@ -149,6 +154,33 @@ export function ruleInputProblem(conditions: RuleConditions, _actions?: RuleActi
     }
   }
   return null;
+}
+
+/**
+ * Why a stored rule does not run as written, for the Rules page (audit a6-text-rules-accounts,
+ * second round): a pattern RE2 refuses (one saved before patterns ran on RE2, with look-around
+ * or a back-reference), which never matches, and an amount range saved before the checks of
+ * `ruleInputProblem` that cannot match or limits nothing. Empty for a rule that runs as written;
+ * a pattern longer than the cap still runs, so it is not listed (an edit must shorten it).
+ */
+export function storedRuleProblems(conditions: RuleConditions): string[] {
+  const out: string[] = [];
+  for (const [field, m] of [
+    ["payee", conditions.payee],
+    ["description", conditions.description],
+  ] as const) {
+    if (m?.op !== "regex") continue;
+    const refusal = re2Refusal(m.value);
+    if (refusal !== null) out.push(`The ${field} pattern cannot run here (${refusal}), so this rule never matches. Edit it: look-ahead, look-behind and back-references are not supported.`);
+  }
+  const amount = conditions.amount;
+  if (amount) {
+    if (amount.minCents === undefined && amount.maxCents === undefined) out.push("The amount condition has no minimum or maximum, so it limits nothing. Edit it.");
+    else if (amount.minCents !== undefined && amount.maxCents !== undefined && BigInt(amount.minCents) > BigInt(amount.maxCents)) {
+      out.push("The amount range's minimum is above its maximum, so this rule never matches. Edit it (amounts are signed: spending is negative).");
+    }
+  }
+  return out;
 }
 
 /** Case-insensitive comparison form: NFKC, Latin accents folded, lower case. */

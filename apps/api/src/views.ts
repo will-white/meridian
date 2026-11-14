@@ -1,5 +1,5 @@
 import type { AccountInvestmentView, AccountView, CategoryView, ConnectionView, ImportLogView, JobView, RuleView, TransactionView } from "@meridian/shared";
-import { CsvMapping, isInvestmentAccountType, PositionsCsvMapping, TradesCsvMapping } from "@meridian/shared";
+import { CsvMapping, isInvestmentAccountType, PositionsCsvMapping, storedRuleProblems, TradesCsvMapping } from "@meridian/shared";
 import type { account, category, connection, importLog, job, rule } from "@meridian/db";
 import type { AccountFidelityRecord, ConnectionError, LoadedRule, TransactionListRow } from "@meridian/db";
 import { toLastReconciliationView } from "./views/valuation.js";
@@ -157,6 +157,7 @@ export function toRuleView(r: (LoadedRule & { createdAt: Date }) | typeof rule.$
     conditions: p.conditions,
     actions: p.actions,
     createdAt: (r as { createdAt: Date }).createdAt.toISOString(),
+    problems: storedRuleProblems(p.conditions),
   };
 }
 

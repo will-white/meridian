@@ -142,6 +142,7 @@ const rule = (over: Partial<RuleView> = {}): RuleView => ({
   conditions: { payee: { op: "equals", value: "Blue Bottle Coffee" } },
   actions: { setCategoryId: U(301) },
   createdAt: "2026-11-01T00:00:00Z",
+  problems: [],
   ...over,
 });
 

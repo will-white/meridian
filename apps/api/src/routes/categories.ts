@@ -164,6 +164,8 @@ export async function categoryRoutes(app: FastifyInstance): Promise<void> {
       const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
       if (request.body.name !== undefined && request.body.name.trim() !== target.name) {
         const name = request.body.name.trim();
+        // The contract trims before its length check; this guards any caller that skips it.
+        if (!name) throw badRequest("A payee needs a name", "validation");
         // Audit a6-text-rules-accounts-10: a name another payee has (or has merged in) is that payee; say so instead of a 500.
         const [taken] = await tx
           .select({ id: payee.id, name: payee.name })
