@@ -1,7 +1,7 @@
-import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { MappedRow } from "@meridian/shared";
 import type { Db, DbOrTx } from "../index.js";
-import { importLog, transaction, transactionAlias } from "../schema/index.js";
+import { account, connection, importLog, transaction, transactionAlias } from "../schema/index.js";
 import { PlanError, writeAudit, type AuditContext } from "./audit.js";
 import { findSameTransactions, ingestTransactions, type IncomingTransaction } from "./ingest.js";
 import { lockLedger } from "./ledgerLock.js";
@@ -98,10 +98,16 @@ export async function undoCsvImport(db: Db, importLogId: string, audit: AuditCon
     if (log.kind !== "csv") throw new PlanError(400, "not_bank_csv", "Only a bank CSV import can be undone here");
     if (typeof log.stats?.["undoneAt"] === "number") throw new PlanError(409, "already_undone", "This import was undone already");
     const rows = await tx
-      .select({ id: transaction.id, date: transaction.date })
+      .select({ id: transaction.id, date: transaction.date, accountId: transaction.accountId })
       .from(transaction)
       .where(and(eq(transaction.importLogId, importLogId), eq(transaction.source, "csv")));
     const ids = rows.map((r) => r.id);
+    // The log keeps the account it went into, so the Import page's history still names it once its rows are gone (second round).
+    if (!namedAccount(log.rawPayload)) {
+      const accountId =
+        rows[0]?.accountId ?? (await tx.select({ accountId: transactionAlias.accountId }).from(transactionAlias).where(eq(transactionAlias.importLogId, importLogId)).limit(1))[0]?.accountId;
+      if (accountId) await tx.update(importLog).set({ rawPayload: sql`coalesce(${importLog.rawPayload}, '{}'::jsonb) || jsonb_build_object('accountId', ${accountId}::text)` }).where(eq(importLog.id, importLogId));
+    }
     const released = await releaseTransferPartners(tx, ids, await loadRules(tx));
     for (let i = 0; i < ids.length; i += 500) await tx.delete(transaction).where(inArray(transaction.id, ids.slice(i, i + 500)));
     const forgotten = await tx
@@ -119,5 +125,95 @@ export async function undoCsvImport(db: Db, importLogId: string, audit: AuditCon
       await pairTransfersInDb(tx, { since: dates[0]!, until: dates[dates.length - 1]! });
     }
     return { removed: ids.length, forgotten: forgotten.length };
+  });
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The account a bank CSV import's stored payload names (commits record it since the second round of the audit). */
+function namedAccount(rawPayload: unknown): string | null {
+  if (typeof rawPayload !== "object" || rawPayload === null) return null;
+  const id = (rawPayload as Record<string, unknown>)["accountId"];
+  return typeof id === "string" && UUID.test(id) ? id : null;
+}
+
+export interface CsvImportHistoryRow {
+  id: string;
+  startedAt: Date;
+  status: string;
+  accountId: string | null;
+  accountName: string | null;
+  profileName: string | null;
+  rowsRead: number;
+  created: number;
+  duplicates: number;
+  /** Rows the import created that are still CSV rows: what an undo removes. */
+  rowsHeld: number;
+  undoneAt: Date | null;
+}
+
+/**
+ * Audit a5-ingest-transfers, second round: the latest bank CSV imports, newest first, for the
+ * Import page's history, so an import can be undone (`undoCsvImport`) after the page that made
+ * it is gone: the account it went into (the one its log names, else the account of a row it
+ * created or of an id it recorded, for imports made before commits named it), its saved
+ * mapping, what it did, the rows it still holds and when it was undone. A handful of queries
+ * over the listed imports, whatever the size of the ledger's history.
+ */
+export async function listCsvImports(db: DbOrTx, limit = 25): Promise<CsvImportHistoryRow[]> {
+  const logs = await db
+    .select({ id: importLog.id, startedAt: importLog.startedAt, status: importLog.status, stats: importLog.stats, connectionId: importLog.connectionId })
+    .from(importLog)
+    .where(eq(importLog.kind, "csv"))
+    .orderBy(desc(importLog.startedAt), desc(importLog.id))
+    .limit(limit);
+  if (logs.length === 0) return [];
+  const ids = logs.map((l) => l.id);
+  const accountOf = new Map<string, string>();
+  for (const r of await db.select({ id: importLog.id, accountId: sql<string | null>`${importLog.rawPayload} ->> 'accountId'` }).from(importLog).where(inArray(importLog.id, ids))) {
+    const named = namedAccount({ accountId: r.accountId });
+    if (named) accountOf.set(r.id, named);
+  }
+  const unnamed = ids.filter((id) => !accountOf.has(id));
+  if (unnamed.length > 0) {
+    for (const r of await db.selectDistinctOn([transaction.importLogId], { id: transaction.importLogId, accountId: transaction.accountId }).from(transaction).where(inArray(transaction.importLogId, unnamed))) {
+      if (r.id) accountOf.set(r.id, r.accountId);
+    }
+    const still = unnamed.filter((id) => !accountOf.has(id));
+    if (still.length > 0) {
+      for (const r of await db.selectDistinctOn([transactionAlias.importLogId], { id: transactionAlias.importLogId, accountId: transactionAlias.accountId }).from(transactionAlias).where(inArray(transactionAlias.importLogId, still))) {
+        if (r.id) accountOf.set(r.id, r.accountId);
+      }
+    }
+  }
+  const held = new Map(
+    (
+      await db
+        .select({ id: transaction.importLogId, n: sql<number>`count(*)::int` })
+        .from(transaction)
+        .where(and(inArray(transaction.importLogId, ids), eq(transaction.source, "csv")))
+        .groupBy(transaction.importLogId)
+    ).map((r) => [r.id, r.n]),
+  );
+  const accountIds = [...new Set(accountOf.values())];
+  const accountNames = new Map(accountIds.length > 0 ? (await db.select({ id: account.id, name: account.name }).from(account).where(inArray(account.id, accountIds))).map((a) => [a.id, a.name]) : []);
+  const profileIds = [...new Set(logs.flatMap((l) => (l.connectionId ? [l.connectionId] : [])))];
+  const profileNames = new Map(profileIds.length > 0 ? (await db.select({ id: connection.id, name: connection.name }).from(connection).where(inArray(connection.id, profileIds))).map((c) => [c.id, c.name]) : []);
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  return logs.map((l) => {
+    const accountId = accountOf.get(l.id) ?? null;
+    return {
+      id: l.id,
+      startedAt: l.startedAt,
+      status: l.status,
+      accountId,
+      accountName: accountId ? (accountNames.get(accountId) ?? null) : null,
+      profileName: l.connectionId ? (profileNames.get(l.connectionId) ?? null) : null,
+      rowsRead: num(l.stats?.["rowsRead"]),
+      created: num(l.stats?.["created"]),
+      duplicates: num(l.stats?.["duplicates"]),
+      rowsHeld: held.get(l.id) ?? 0,
+      undoneAt: typeof l.stats?.["undoneAt"] === "number" ? new Date(l.stats["undoneAt"]) : null,
+    };
   });
 }

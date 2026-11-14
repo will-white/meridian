@@ -140,6 +140,7 @@ export function toIncomingTransaction(t: SimplefinAccountSet["accounts"][number]
   const memo = sanitizeText(t.memo, 500);
   if (memo) out.memo = memo;
   if (t.posted > 0) out.postedAt = new Date(t.posted * 1000);
+  if (t.transacted_at && t.transacted_at > 0) out.transactedAt = t.transacted_at;
   return out;
 }
 

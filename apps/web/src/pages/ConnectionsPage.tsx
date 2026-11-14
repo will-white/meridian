@@ -205,7 +205,7 @@ export function ConnectionsPage() {
                     className="secondary"
                     onClick={() => reprocessTransactions.mutate(c.id)}
                     disabled={reprocessTransactions.isPending || !!c.activeJob || c.status === "disabled"}
-                    title="Re-read the transactions in every stored sync payload, also those older than the Bridge's three months (after an update); rows the ledger has are left as they are and nothing is added twice. No bank call is made"
+                    title="Re-read the transactions in every stored sync payload, also those older than the Bridge's three months and those of a sync that failed (after an update); rows the ledger has are left as they are and nothing is added twice. No bank call is made"
                   >
                     Re-read transactions
                   </button>

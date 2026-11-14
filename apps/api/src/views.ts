@@ -56,7 +56,7 @@ function toAccountInvestmentView(f: AccountFidelityRecord | undefined): AccountI
 
 /** `investment` is the account's `accountFidelities` record (investment types only; every other type reads null). */
 export function toAccountView(
-  r: typeof account.$inferSelect & { connectionName: string | null; transactionCount: number },
+  r: typeof account.$inferSelect & { connectionName: string | null; transactionCount: number; inFeed?: boolean | null },
   investment?: AccountFidelityRecord,
 ): AccountView {
   return {
@@ -83,6 +83,7 @@ export function toAccountView(
     cashInference: r.cashInference,
     investmentIncomeFeed: r.investmentIncomeFeed,
     investment: isInvestmentAccountType(r.type) ? toAccountInvestmentView(investment) : null,
+    inFeed: r.inFeed ?? null,
   };
 }
 

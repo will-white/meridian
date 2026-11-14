@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { dayDiff } from "./dates.js";
 import { descriptionSimilarity, matchPendingToPosted } from "./pending.js";
 
 describe("descriptionSimilarity", () => {
@@ -129,5 +130,23 @@ describe("matchPendingToPosted (audit a5-ingest-transfers)", () => {
     );
     expect(map.get("a")).toBe("sixty");
     expect(map.get("b")).toBe("fifty");
+  });
+});
+
+describe("matchPendingToPosted (audit a5-ingest-transfers, second round)", () => {
+  it("a5-ingest-transfers-01: the caller's day distance decides the window, so a bank file that dates a hold by its posting day finds it", () => {
+    // The feed dates the rental by the day it was made (10-01); it posted on 10-20, the day the bank's file gives it.
+    const rows = [{ id: "feed", amountCents: -41200n, date: "2026-10-01", postedDate: "2026-10-20", description: "HERTZ RENT-A-CAR DENVER" }];
+    const items = [{ externalId: "csv", amountCents: -41200n, date: "2026-10-20", description: "HERTZ RENT-A-CAR DENVER" }];
+    expect(matchPendingToPosted(rows, items, { changedAmounts: false }).size).toBe(0);
+    const byPosting = (r: (typeof rows)[number], i: (typeof items)[number]) => Math.min(Math.abs(dayDiff(r.date, i.date)), Math.abs(dayDiff(r.postedDate, i.date)));
+    expect(matchPendingToPosted(rows, items, { changedAmounts: false, dayDistance: byPosting }).get("csv")).toBe("feed");
+    // The changed-amount pass uses it too: a tip settled 19 days after the day the row is dated (hand-checked: 2 * 6000 within 5000..7500 * 2).
+    const tipped = [{ externalId: "csv", amountCents: -6000n, date: "2026-10-20", description: "TAPHOUSE DENVER" }];
+    const tipRows = [{ id: "feed", amountCents: -5000n, date: "2026-10-01", postedDate: "2026-10-20", description: "TST* TAPHOUSE DENVER" }];
+    expect(matchPendingToPosted(tipRows, tipped).size).toBe(0);
+    expect(matchPendingToPosted(tipRows, tipped, { dayDistance: byPosting }).get("csv")).toBe("feed");
+    // A distance beyond maxDays still keeps the pair apart.
+    expect(matchPendingToPosted(rows, items, { changedAmounts: false, dayDistance: () => 6 }).size).toBe(0);
   });
 });
