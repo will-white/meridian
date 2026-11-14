@@ -47,7 +47,27 @@ import { loadTaxData, type TaxData } from "./taxData.js";
  * Allocates nothing.
  */
 export function contributionLimitsInto(p: Float64Array, o: number, age: number, f: number, family: boolean, hsaMonths: number, out: Float64Array): void {
-  const g = f > 0 && f < 1 ? f : 1;
+  FRACTION[0] = f > 0 && f < 1 ? f : 1;
+  limitsInto(p, o, age, FRACTION, family, hsaMonths, out);
+}
+
+/**
+ * `contributionLimitsInto` with the year fraction given as the period's months (1 to 12; 12 is a
+ * full year): the form the year loop calls through `TAX_FUNCTIONS.contributionLimitsInto`, which
+ * passes no double (V8 boxes one passed to a call it does not inline); `periodMonths / 12` is the
+ * loop's f, so the operations and the values are the same.
+ */
+export function contributionLimitsFrom(p: Float64Array, o: number, age: number, periodMonths: number, family: boolean, hsaMonths: number, out: Float64Array): void {
+  FRACTION[0] = periodMonths > 0 && periodMonths < 12 ? periodMonths / 12 : 1;
+  limitsInto(p, o, age, FRACTION, family, hsaMonths, out);
+}
+
+/** Scratch: the year fraction `g` of the call in progress. */
+const FRACTION = new Float64Array(1);
+
+/** The computation of both forms, with the year fraction in `fraction[0]` (in (0, 1], already normalized). */
+function limitsInto(p: Float64Array, o: number, age: number, fraction: Float64Array, family: boolean, hsaMonths: number, out: Float64Array): void {
+  const g = fraction[0]!;
   const catchUp = age >= 60 && age <= 63 ? p[o + PR.CATCHUP6063]! : age >= 50 ? p[o + PR.CATCHUP50]! : 0;
   out[CL.EMPLOYEE_DEFERRAL] = (p[o + PR.DEFERRAL]! + catchUp) * g;
   out[CL.ANNUAL_ADDITIONS] = p[o + PR.ANNUAL_ADD]! * g;

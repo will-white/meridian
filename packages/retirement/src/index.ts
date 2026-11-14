@@ -9,9 +9,9 @@
 
 export { ENGINE_VERSION, DATA_VERSION, DATA_CHECKSUM } from "./version.js";
 export { centsToDollars, dollarsToCents, dollarsToCentsBigInt, priceLevelString, ratioToBp, ratioToPpm } from "./units.js";
-export { detExp, detLog, detPow, powInt } from "./detmath.js";
+export { detExp, detExpInPlace, detLog, detPow, powInt } from "./detmath.js";
 export { selfTest } from "./selftest.js";
-export { PURPOSE, counterWord, invNorm, seedKey, threefry2x32, uniformAt, uniformFromWords } from "./rng.js";
+export { PURPOSE, counterWord, invNorm, invNormInPlace, seedKey, threefry2x32, uniformAt, uniformFromWords, uniformsAt } from "./rng.js";
 export type { Purpose, RngKey } from "./rng.js";
 export { CHOLESKY_MIN_PIVOT, cholesky, covarianceFrom } from "./models/cholesky.js";
 export { lognormalFromArithmetic, lognormalFromGeometric } from "./models/lognormal.js";
@@ -68,7 +68,7 @@ export {
 export type { CompiledMortality, LifeTable, LifeTableId, LifeTables, MortalityPerson, MortalityPlan } from "./mortality.js";
 export type { EngineWarning } from "./warning.js";
 export { CASH_TOL } from "./constants.js";
-export { TRADE_FLOWS_ONLY, TRADE_FULL, createTradeResult, depositAtWeights, planTrades, planTradesFrom, tradeModeOf } from "./trades.js";
+export { TRADE_FLOWS_ONLY, TRADE_FULL, createTradeResult, depositAtWeights, depositAtWeightsFrom, planTrades, planTradesFrom, tradeModeOf } from "./trades.js";
 export type { TradeMode, TradeResult } from "./trades.js";
 export { monthIndex, monthsInPeriod, periodMonths, periodStart, planClock, yearOfMonth, yearShare } from "./clock.js";
 export type { PlanClock } from "./clock.js";
@@ -97,21 +97,25 @@ export {
   STRATEGY_STATE_LENGTH,
   createPlannedYear,
   createSpendDecision,
+  createSettleInput,
   createSpendingOutcome,
   decideSpending,
   everyLivingRetired,
   fillNeeds,
+  fillNeedsFor,
   plannedYear,
   plannedYearOf,
   prepareStrategies,
   ruleEvents,
   settleSpending,
+  settleSpendingFor,
 } from "./strategies/index.js";
 export type {
   FloorCeilingParams,
   GuardrailParams,
   PlannedInput,
   PlannedYear,
+  SettleInput,
   SpendDecision,
   SpendingOutcome,
   SpendingView,
@@ -172,9 +176,10 @@ export {
 } from "./tax/index.js";
 export type { TaxData, TaxDataErrorCode, ContributionLimitKind, NotModelledEntry, NotModelledId } from "./tax/index.js";
 export {
-  TD, TD_REC, AD, AD_REC, TY, TY_REC, PT, PT_REC, CL, CL_REC, INTEREST_NONE, INTEREST_PRIOR_BILL_PLUS_SPREAD, INTEREST_BILL_RETURN, accountDragOffset,
-  contributionLimitsInto, employeeDeferralLimit, annualAdditionsLimit, iraLimit, hsaLimit, hsaMonthsBefore65, employeePayrollTax, employeePayrollTaxInto,
-  TAX_DRAG_CLASSES, BLEND_STOCK, BLEND_BOND, compileTaxDrag, assetClassMapRows, blendTaxDrag, compileAccountTaxDrag, taxableYieldsInto,
+  TD, TD_REC, AD, AD_REC, TY, TY_REC, TYI, TYI_REC, PT, PT_REC, CL, CL_REC, INTEREST_NONE, INTEREST_PRIOR_BILL_PLUS_SPREAD, INTEREST_BILL_RETURN, accountDragOffset,
+  contributionLimitsInto, contributionLimitsFrom, employeeDeferralLimit, annualAdditionsLimit, iraLimit, hsaLimit, hsaMonthsBefore65, employeePayrollTax,
+  employeePayrollTaxInto, employeePayrollTaxFrom,
+  TAX_DRAG_CLASSES, BLEND_STOCK, BLEND_BOND, compileTaxDrag, assetClassMapRows, blendTaxDrag, compileAccountTaxDrag, taxableYieldsInto, taxableYieldsFrom,
   WN, WN_REC, PATH_WARNING_CODES, PATH_WARNING_SLOTS, resetPathWarnings, noteWarning, createWarningTotals, addPathWarnings, mergeWarningTotals, warningMessages,
   TAX_FUNCTIONS,
 } from "./tax/index.js";
@@ -187,12 +192,13 @@ export type { CompiledTaxLaw, CompileTaxLawOptions, FillOptions, FederalTaxInput
 export {
   RB, RB_REC, RW, RW_REC, HW, HW_REC, MONTHS_59_HALF, MONTHS_65, birthMonthIndex,
   earlyFraction, earlyFractionBefore59Half, earlyFractionBefore65, isEmployerPlan, separatedAt55, preTaxPenaltyShare, preTaxPenaltyBase,
-  hsaPenaltyShare, hsaWithdraw,
-  seedRoth, rothRollYear, addRothContribution, addRothConversion, rothFiveYearMet, rothWithdraw, rothFreeAmount, mergeRothAtDeath,
-  compileRmdTables, defaultRmdTables, rmdStartAge, firstRmdYear, rmdDivisor, requiredMinimumDistribution,
+  preTaxPenaltyBaseInto, hsaPenaltyShare, hsaWithdraw, hsaWithdrawFrom,
+  seedRoth, seedRothFrom, rothRollYear, addRothContribution, addRothContributionFrom, addRothConversion, addRothConversionFrom, rothFiveYearMet,
+  rothWithdraw, rothWithdrawFrom, rothFreeAmount, rothFreeAmountInto, mergeRothAtDeath,
+  compileRmdTables, defaultRmdTables, rmdStartAge, firstRmdYear, rmdDivisor, requiredMinimumDistribution, requiredMinimumDistributionInto,
   SS, SS_REC, SO, SO_REC,
   fraMonths, survivorFraMonths, compileSsRules, defaultSsRules, floorDime, floorDollar, roundCola, retirementFactor, spousalFactor, survivorFactor,
-  compileSsPlan, ssPersonInputs, resetSsState, monthlyPayment, socialSecurityYear, socialSecurityYearMonthLoop, socialSecurityParts,
+  compileSsPlan, ssPersonInputs, resetSsState, monthlyPayment, socialSecurityYear, socialSecurityYearFrom, socialSecurityYearMonthLoop, socialSecurityParts,
   socialSecurityPreview, socialSecurityPreviewView, SS_RULES, ssRuleVerification,
 } from "./tax/index.js";
 export type { RmdTables } from "./tax/index.js";

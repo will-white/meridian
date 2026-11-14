@@ -62,41 +62,57 @@ export const SOLVE_DOUBLES = ["lo", "hlo", "hi", "hhi", "x", "hx"] as const sati
  * and leaves the result in `s.x`. `net(s)` evaluates at `s.x`, writes `s.hx` and counts `s.calls`.
  */
 export function solve<S extends SolveState>(s: S, net: (s: S) => void): void {
+  // Every candidate is computed before the choice between them, so a choice holds only values
+  // already computed: an operation first reached in a branch the warm-up never took (the midpoint,
+  // an Illinois halving) deoptimizes the solver and its callers, which then run unoptimized and
+  // allocate until they are compiled again. The same values are chosen.
   let lo = s.lo;
   let hlo = s.hlo;
   let hi = s.hi;
   let hhi = s.hhi;
-  let x = lo - hlo;
-  if (x >= hi) x = lo + ((hi - lo) * -hlo) / (hhi - hlo);
-  if (!(x > lo && x < hi)) x = (lo + hi) / 2;
+  const shortfall = lo - hlo;
+  const falsePosition = lo + ((hi - lo) * -hlo) / (hhi - hlo);
+  let x = shortfall >= hi ? falsePosition : shortfall;
+  const midpoint = (lo + hi) / 2;
+  const inside = x > lo && x < hi;
+  x = inside ? x : midpoint;
   let side = 0;
+  let closed = false;
   s.converged = 1;
   while (s.calls < s.limit) {
     s.x = x;
     net(s);
     const hx = s.hx;
-    if (hx >= -CASH_TOL && hx <= CASH_TOL) {
+    const withinLow = hx >= -CASH_TOL;
+    const withinHigh = hx <= CASH_TOL;
+    if (withinLow && withinHigh) {
       s.x = x;
       return;
     }
+    const halfHhi = hhi / 2;
+    const halfHlo = hlo / 2;
     if (hx < 0) {
       lo = x;
       hlo = hx;
-      if (side === -1) hhi /= 2;
+      hhi = side === -1 ? halfHhi : hhi;
       side = -1;
     } else {
       hi = x;
       hhi = hx;
-      if (side === 1) hlo /= 2;
+      hlo = side === 1 ? halfHlo : hlo;
       side = 1;
     }
-    if (hi - lo <= CASH_TOL / 2) {
-      s.x = hi;
-      return;
+    const width = hi - lo;
+    if (width <= CASH_TOL / 2) {
+      closed = true;
+      break;
     }
-    x = lo + ((hi - lo) * -hlo) / (hhi - hlo);
-    if (!(x > lo && x < hi)) x = (lo + hi) / 2;
+    const next = lo + (width * -hlo) / (hhi - hlo);
+    const mid = (lo + hi) / 2;
+    const nextInside = next > lo && next < hi;
+    x = nextInside ? next : mid;
   }
-  s.converged = 0;
+  // The bracket closed under TOL / 2 (converged), or out of calls (not converged): the high end.
+  s.converged = closed ? 1 : 0;
   s.x = hi;
 }

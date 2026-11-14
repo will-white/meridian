@@ -85,6 +85,13 @@
       "when": 1794637416191,
       "tag": "0011_last_sign_in",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1794639308008,
+      "tag": "0012_frozen_charges",
+      "breakpoints": true
     }
   ]
 }

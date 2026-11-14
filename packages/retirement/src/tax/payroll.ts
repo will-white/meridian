@@ -25,7 +25,33 @@ import { PR, PT, PT_REC, type FilingStatusIndex } from "./layout.js";
  * A negative wage counts as 0. Allocates nothing.
  */
 export function employeePayrollTaxInto(p: Float64Array, o: number, wages0: number, wages1: number, status: FilingStatusIndex, f: number, out: Float64Array): void {
-  const g = f > 0 && f < 1 ? f : 1;
+  WAGES[0] = wages0;
+  WAGES[1] = wages1;
+  FRACTION[0] = f > 0 && f < 1 ? f : 1;
+  payrollTax(p, o, WAGES, 0, status, FRACTION, out);
+}
+
+/**
+ * `employeePayrollTaxInto` with the wages read from `wages[wagesOff]` and `wages[wagesOff + 1]` and
+ * the year fraction given as the period's months (1 to 12; 12 is a full year): the form the year
+ * loop calls through `TAX_FUNCTIONS.employeePayrollTaxInto`. A double passed to a call V8 does not
+ * inline is boxed (two heap numbers a working year); this form takes none, and `periodMonths / 12`
+ * is the loop's f, so the operations and the values are the same.
+ */
+export function employeePayrollTaxFrom(p: Float64Array, o: number, wages: Float64Array, wagesOff: number, status: FilingStatusIndex, periodMonths: number, out: Float64Array): void {
+  FRACTION[0] = periodMonths > 0 && periodMonths < 12 ? periodMonths / 12 : 1;
+  payrollTax(p, o, wages, wagesOff, status, FRACTION, out);
+}
+
+/** Scratch: the wages of the scalar form and the year fraction `g` of the call in progress. */
+const WAGES = new Float64Array(2);
+const FRACTION = new Float64Array(1);
+
+/** The computation of both forms, with the year fraction in `fraction[0]` (in (0, 1], already normalized). */
+function payrollTax(p: Float64Array, o: number, wages: Float64Array, wagesOff: number, status: FilingStatusIndex, fraction: Float64Array, out: Float64Array): void {
+  const g = fraction[0]!;
+  const wages0 = wages[wagesOff]!;
+  const wages1 = wages[wagesOff + 1]!;
   const w0 = (wages0 > 0 ? wages0 : 0) / g;
   const w1 = (wages1 > 0 ? wages1 : 0) / g;
   const base = p[o + PR.WAGE_BASE]!;

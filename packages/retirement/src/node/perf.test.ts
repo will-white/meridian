@@ -16,13 +16,12 @@ import { runSimulation } from "./index.js";
 //
 // With PERF=1: the budget rows of §3.15, measured by `bench/run.ts` in its own process (an
 // assertion on timings or garbage collections inside Vitest would measure Vitest's transforms and
-// allocations). The budget is the design's; nothing here is adjusted to the code. As measured at
-// build step 21 the time, call and evaluation rows hold and the garbage-collection row does not:
-// the year loop with its hooks allocates about 120 bytes per path-year, the tax area's
-// `fillPathTables` about 42 and the parametric model's `fillPath` another 158 (boxed doubles
-// returned by calls V8 does not inline), so 2,000 paths after warm-up see a few minor collections
-// (measured: parametric 2 to 4, bootstrap 0 or 1; docs/phase-4-plan.md, "Step 21"). That row stays
-// red until the allocations are removed.
+// allocations). The budget is the design's; nothing here is adjusted to the code. At build step 21
+// the time, call and evaluation rows held and the garbage-collection row did not (the year loop
+// with its hooks, `fillPathTables` and the parametric `fillPath` allocated about 320 bytes per
+// path-year: 2 to 4 minor collections over the 2,000 paths). After the allocation hunt recorded in
+// docs/phase-4-plan.md ("Zero GC") the paths after the warm-up allocate about 0.1 MB in all and
+// every row holds.
 
 const PERF = process.env.PERF === "1";
 const PACKAGE_DIR = fileURLToPath(new URL("../../", import.meta.url));
@@ -81,7 +80,7 @@ describe.skipIf(!PERF)("T47 with PERF=1: the budget rows of §3.15 (bench/run.ts
       expect(workload[model]!.counts.taxEvaluationsPerPathYear).toBeLessThanOrEqual(6);
     });
 
-    it(`T47 ${model}: no garbage collection over 2,000 paths after a 300-path warm-up (not met at step 21)`, () => {
+    it(`T47 ${model}: no garbage collection over 2,000 paths after a 300-path warm-up`, () => {
       expect(workload[model]!.gc.paths).toBe(2000);
       expect(workload[model]!.gc.gcCount).toBe(0);
     });

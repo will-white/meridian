@@ -49,7 +49,7 @@ import { ASSESS_MAX_CALLS, type AssessFn, type Assessment } from "./hooks.js";
 import { BONDS, STOCKS } from "./models/index.js";
 import { TREATMENT } from "./prepare.js";
 import type { PathState } from "./state.js";
-import { HW, HW_REC, RB_REC, RW, RW_REC, SO, TAX_IN, TI, TO, TY, TY_REC, accountDragOffset, taxOffset } from "./tax/layout.js";
+import { HW, HW_REC, RB_REC, RW, RW_REC, SO, TAX_IN, TI, TO, TY, TYI, TY_REC, accountDragOffset, taxOffset } from "./tax/layout.js";
 import { planTradesFrom } from "./trades.js";
 
 /** Slots of `PathState.carry`: tax state carried from one plan year to the next (engine-and-returns §3.9). */
@@ -219,7 +219,7 @@ export function assessInto(ps: PathState, w: Float64Array, includeRmd: boolean, 
     }
     const so = i * RB_REC;
     for (let k = 0; k < RB_REC; k++) scratch[k] = ps.roth[so + k]!;
-    tax.rothWithdraw(scratch, 0, amount, ps.early[i]!, year, ps.rwScratch);
+    tax.rothWithdraw(scratch, 0, rothW, ps.early, i, year, ps.rwScratch);
     for (let k = 0; k < RW_REC; k++) rw[ro + k] = ps.rwScratch[k]!;
     pp[i * PP_REC + PP.ROTH_TAXABLE] = pp[i * PP_REC + PP.ROTH_TAXABLE]! + ps.rwScratch[RW.TAXABLE]!;
     pp[i * PP_REC + PP.PEN10_BASE] = pp[i * PP_REC + PP.PEN10_BASE]! + ps.rwScratch[RW.PENALTY_BASE]!;
@@ -236,7 +236,8 @@ export function assessInto(ps: PathState, w: Float64Array, includeRmd: boolean, 
       hw[ho + HW.PENALTY_BASE] = 0;
       continue;
     }
-    tax.hsaWithdraw(amount, (ps.qualifiedMedical * amount) / hsaTotal, ps.early65[i]!, ps.hwScratch);
+    ps.hsaQualified[i] = (ps.qualifiedMedical * amount) / hsaTotal;
+    tax.hsaWithdraw(hsaW, ps.hsaQualified, ps.early65, i, ps.hwScratch);
     hw[ho + HW.TAXABLE] = ps.hwScratch[HW.TAXABLE]!;
     hw[ho + HW.PENALTY_BASE] = ps.hwScratch[HW.PENALTY_BASE]!;
     pp[i * PP_REC + PP.HSA_TAXABLE] = pp[i * PP_REC + PP.HSA_TAXABLE]! + ps.hwScratch[HW.TAXABLE]!;
@@ -275,8 +276,8 @@ export function assessInto(ps: PathState, w: Float64Array, includeRmd: boolean, 
 /**
  * A taxable account's previewed trade for the flow `ps.netOut[a]` (`planTradesFrom`, apply =
  * false): the gain it realizes into `ps.gain[a]` and, on the post-trade balances and basis, the
- * period's yields into `ps.yields` (`TY` at `a × TY_REC`). Its own function, so that the tax
- * area's `taxableYieldsInto` is inlined here and its double arguments are not boxed.
+ * period's yields into `ps.yields` (`TY` at `a × TY_REC`). The yields' inputs go through the `TYI`
+ * record `ps.tyIn`, so no double crosses the call into the tax area.
  */
 function previewTaxable(ps: PathState, a: number): void {
   const run = ps.run;
@@ -298,9 +299,16 @@ function previewTaxable(ps: PathState, a: number): void {
   let bondBasis = basis[off + BONDS]!;
   if (bB > 0 && sB > 0) bondBasis = sB >= bB ? 0 : bondBasis - (sB * bondBasis) / bB;
   bondBasis += trade.buy[BONDS]!;
-  // taxableYieldsInto writes TY slots from index 0; copied to the account's record.
+  // taxableYieldsInto reads its inputs from the TYI record and writes TY slots from index 0; copied to the account's record.
+  const x = ps.tyIn;
+  x[TYI.BILL_REF] = ps.billRef;
+  x[TYI.YEAR_FRACTION] = ps.f;
+  x[TYI.STOCK] = trade.post[STOCKS]!;
+  x[TYI.BOND] = trade.post[BONDS]!;
+  x[TYI.STOCK_BASIS] = stockBasis;
+  x[TYI.BOND_BASIS] = bondBasis;
   const ty = ps.tyScratch;
-  ps.tax.taxableYieldsInto(run.accountDrag, accountDragOffset(t, a, A), ps.billRef, ps.f, trade.post[STOCKS]!, trade.post[BONDS]!, stockBasis, bondBasis, ty);
+  ps.tax.taxableYieldsInto(run.accountDrag, accountDragOffset(t, a, A), x, 0, ty);
   const yo = a * TY_REC;
   for (let k = 0; k < TY_REC; k++) ps.yields[yo + k] = ty[k]!;
   ps.gain[a] = trade.realizedGain;

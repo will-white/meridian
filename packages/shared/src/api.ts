@@ -474,7 +474,11 @@ export const TransactionQuery = z.object({
   goalId: z.string().uuid().optional(),
   /** Phase 2: charges linked to one recurring item. */
   recurringId: z.string().uuid().optional(),
-  /** Only rows the spending plan reads (on-budget accounts, plus the investment income feed): the drill-down behind a plan cell. */
+  /**
+   * Only rows the spending plan reads, as the cell behind a drill-down counts them: on-budget
+   * accounts plus the investment income feed, a split row by the line in the requested
+   * category, and a goal's transfer legs in its linked account whatever that account's budget flag.
+   */
   planScope: QueryBoolean.optional(),
 });
 export type TransactionQuery = z.infer<typeof TransactionQuery>;
@@ -845,7 +849,8 @@ export const PlanAveragesResponse = z.object({
 });
 export type PlanAveragesResponse = z.infer<typeof PlanAveragesResponse>;
 export const CloseMonthBody = z.object({ through: MonthInput.optional() });
-export const CloseMonthResponse = z.object({ inserted: z.number().int(), through: MonthString });
+/** `inserted`: cells frozen by this run; `extended`: frozen cells that gained a charge dated in their month that reached the ledger after their freeze. */
+export const CloseMonthResponse = z.object({ inserted: z.number().int(), extended: z.number().int(), through: MonthString });
 
 // ---- Goals ----
 export const GoalView = GoalSummaryView.extend({

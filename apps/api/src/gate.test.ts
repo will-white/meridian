@@ -432,10 +432,10 @@ describe.skipIf(!TEST_DATABASE_URL)("Phase 2 gate: October 2026 budgeted end to 
   });
 
   it("close-month freezes October's auto values so a later price change leaves history alone", async () => {
-    const first = await send<{ inserted: number; through: MonthKey }>("POST", "/api/plan/close-month", {});
+    const first = await send<{ inserted: number; extended: number; through: MonthKey }>("POST", "/api/plan/close-month", {});
     // One row per month from Jul to Oct for Paycheck, Rent, Interest and the goal (16), plus Utilities from its first linked charge (Sep, Oct).
-    expect(first).toEqual({ inserted: 18, through: "2026-10" });
-    expect(await send("POST", "/api/plan/close-month", {})).toEqual({ inserted: 0, through: "2026-10" });
+    expect(first).toEqual({ inserted: 18, extended: 0, through: "2026-10" });
+    expect(await send("POST", "/api/plan/close-month", {})).toEqual({ inserted: 0, extended: 0, through: "2026-10" });
 
     const patched = await send<RecurringView>("PATCH", `/api/recurring/${recurringIds["Paycheck"]}`, { expectedCents: "260000" });
     expect(patched.amountLocked).toBe(true);

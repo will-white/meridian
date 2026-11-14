@@ -206,8 +206,8 @@ describe.skipIf(!TEST_DATABASE_URL)("recurring.detect, plan.close_month and the 
     expect(frozen.every((r) => r.month <= "2026-09")).toBe(true);
 
     // Idempotent, and a requested month never reaches the current one.
-    expect(await runCloseMonthJob(ctx, fakeJob("plan.close_month", { reason: "nightly" }))).toEqual({ today: "2026-10-13", through: "2026-09", inserted: 0 });
-    expect(await runCloseMonthJob(ctx, fakeJob("plan.close_month", { through: "2027-03" }))).toEqual({ today: "2026-10-13", through: "2026-09", inserted: 0 });
+    expect(await runCloseMonthJob(ctx, fakeJob("plan.close_month", { reason: "nightly" }))).toEqual({ today: "2026-10-13", through: "2026-09", inserted: 0, extended: 0 });
+    expect(await runCloseMonthJob(ctx, fakeJob("plan.close_month", { through: "2027-03" }))).toEqual({ today: "2026-10-13", through: "2026-09", inserted: 0, extended: 0 });
     expect((await runCloseMonthJob(ctx, fakeJob("plan.close_month", { through: "2026-08" }))).through).toBe("2026-08");
   });
 
