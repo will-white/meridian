@@ -110,6 +110,13 @@ describe("YearRow and YearTable (seams C37, C43, C45)", () => {
     for (const level of ["14348907.000000000", "1234567890123.000000000", `${"9".repeat(309)}.000000000`]) expect(ok(PriceLevel, level), level).toBe(true);
     expect(ok(PriceLevel, `${"9".repeat(310)}.000000000`)).toBe(false);
     expect(deflateCents(28697814n, "14348907.000000000")).toBe(2n);
+    // engine-01: the first drawdown year's optional preStart block (signed cents, strict), deflated at cpiStart.
+    expect(ok(YearRow, { ...exampleYearRow(), preStart: { takeHome: "4611500", tax: "610000" } })).toBe(true);
+    expect(ok(YearRow, { ...exampleYearRow(), preStart: { takeHome: "4611500" } })).toBe(false);
+    expect(ok(YearRow, { ...exampleYearRow(), preStart: { takeHome: "4611500", tax: "610000", wages: "1" } })).toBe(false);
+    const deflated = deflateYearRow({ ...exampleYearRow(), cpiStart: "1.025000000", preStart: { takeHome: "1025000", tax: "102500" } });
+    expect(deflated.preStart).toEqual({ takeHome: "1000000", tax: "100000" });
+    expect("preStart" in deflateYearRow(exampleYearRow())).toBe(false);
     expect(ok(YearRow, { ...exampleYearRow(), cpiEnd: 1.025 })).toBe(false);
     expect(ok(YearRow, { ...exampleYearRow(), cpiEnd: "1.025" })).toBe(false);
   });

@@ -267,6 +267,10 @@ export function toYearTable(detail: PathDetail, run: PreparedRun): YearTable {
         totalReal: str(cents(yr(t, YR.END_TOTAL_REAL))),
       },
       failed: (flags & YEAR_FLAG.FAILED) !== 0,
+      // The first drawdown year's months before spending.startMonth (engine-01): present only then.
+      ...(drawdown && (yr(t, YR.PRE_START_CASH) !== 0 || yr(t, YR.TAX_BASELINE) !== 0)
+        ? { preStart: { takeHome: str(cents(yr(t, YR.PRE_START_CASH))), tax: str(cents(yr(t, YR.TAX_BASELINE))) } }
+        : {}),
     });
   }
 

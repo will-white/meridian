@@ -207,6 +207,15 @@ export const YearRow = z
       .strict(),
     /** This year has a shortfall against the floor. */
     failed: z.boolean(),
+    /**
+     * The first drawdown year only, when spending starts after the year's first month: its months
+     * before `spending.startMonth` are accumulation months (plan decision 7, seams C52; the Stage A
+     * review's engine-01). `takeHome` is their income and benefits less their employee
+     * contributions and payroll tax, `tax` the federal tax on that income alone; neither enters the
+     * year's cash: income + withdrawals = (tax − preStart.tax) + payroll + employee contributions +
+     * funded + surplus + preStart.takeHome.
+     */
+    preStart: z.object({ takeHome: Cents, tax: Cents }).strict().optional(),
   })
   .strict();
 export type YearRow = z.infer<typeof YearRow>;
@@ -498,6 +507,7 @@ export function deflateYearRow(row: YearRow, options: DeflateYearRowOptions = {}
     growth: growth.toString(),
     ending,
     failed: row.failed,
+    ...(row.preStart === undefined ? {} : { preStart: { takeHome: flow(row.preStart.takeHome), tax: flow(row.preStart.tax) } }),
   };
 }
 

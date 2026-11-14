@@ -14,8 +14,9 @@ import { sha256Hex } from "./sha256.js";
 
 /**
  * 1.0.0 at build step 21; 1.0.1 with the Stage A review fixes that change numbers (the married
- * couple's shared HSA limit, the boundary rounding of the bracket rates). Bump it with any change
- * that can alter a number the engine produces.
+ * couple's shared HSA limit, the split of the first drawdown year at spending.startMonth, the
+ * boundary rounding of the bracket rates). Bump it with any change that can alter a number the
+ * engine produces.
  */
 export const ENGINE_VERSION = "1.0.1";
 

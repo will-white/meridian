@@ -15,7 +15,7 @@ import { type MarketPath, createMarketPath } from "./models/index.js";
 import type { PreparedRun } from "./prepare.js";
 import { type SpendDecision, type SpendingOutcome, STRATEGY_STATE_LENGTH, createSpendDecision, createSpendingOutcome } from "./strategies/index.js";
 import { type Assessment, type AssessFn, type EngineHooks, type TaxFunctions, type YearView, TAX_FUNCTIONS, createAssessment } from "./hooks.js";
-import { CL_REC, HW, HW_REC, PROG_REC, PT_REC, RB_REC, RW_REC, SO_REC, SS_REC, TAX_IN, TAX_REC, TY_REC, WN_REC } from "./tax/layout.js";
+import { CL_REC, HW, HW_REC, PROG_REC, PT_REC, RB_REC, RW_REC, SO_REC, SS_REC, TAX_IN, TAX_OUT, TAX_REC, TY_REC, WN_REC } from "./tax/layout.js";
 import { IY_REC } from "./flows.js";
 import { CARRY_REC, PP_COLUMNS, PP_REC, createAssessFn } from "./assess.js";
 
@@ -143,6 +143,21 @@ export interface PathState {
   readonly hsaFamily: Float64Array;
   readonly hsaWanted: Float64Array;
   readonly payroll: Float64Array;
+  /**
+   * The first drawdown year's months before `spending.startMonth` (flows.ts `PreStart`; the Stage
+   * A review's engine-01): their stream amounts and income record, the Social Security state copied
+   * before the year's call and its record, their contributions, payroll and the tax input and
+   * output of their income alone.
+   */
+  readonly preAmounts: Float64Array;
+  readonly preIncome: Float64Array;
+  readonly preSs: Float64Array;
+  readonly preSo: Float64Array;
+  readonly preEmployee: Float64Array;
+  readonly preEmployer: Float64Array;
+  readonly prePayroll: Float64Array;
+  readonly preTaxIn: Float64Array;
+  readonly preTaxOut: Float64Array;
 
   // Per year, the tax input assembly (assess.ts).
   /** Per-person scratch (seams F1): `PP_REC` slots for person 0, person 1 and the household, summed into the `TI` slots. */
@@ -182,9 +197,21 @@ export interface PathState {
   convTotal: number;
   qualifiedMedical: number;
   nAged: number;
-  /** Accumulation years: the tax and other charges with no RMD and no withdrawal (wages pay them). */
+  /**
+   * Accumulation years: the tax and other charges with no RMD and no withdrawal (wages pay them).
+   * The first drawdown year with months before `spending.startMonth`: the tax on those months'
+   * income alone (they pay it, engine-01); 0 in other drawdown years.
+   */
   taxBaseline: number;
   otherBaseline: number;
+  /**
+   * The first drawdown year: the take-home of its months before `spending.startMonth` (their
+   * stream income and benefits less their employee contributions and payroll tax), which stays
+   * out of the year's net (engine-01); 0 otherwise.
+   */
+  preStartCash: number;
+  /** The first drawdown year: the federal tax on the income of its months before `spending.startMonth` alone; 0 otherwise. */
+  preStartTax: number;
   /** Hook calls of `assess` this year. */
   calls: number;
   /** Start balances (sum) and the stock share of the year's targets weighted by them (C40). */
@@ -343,6 +370,15 @@ export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFu
     hsaFamily: new Float64Array(2),
     hsaWanted: new Float64Array(2),
     payroll: new Float64Array(PT_REC),
+    preAmounts: new Float64Array(S),
+    preIncome: new Float64Array(IY_REC),
+    preSs: new Float64Array(SS_REC),
+    preSo: new Float64Array(SO_REC),
+    preEmployee: new Float64Array(C),
+    preEmployer: new Float64Array(C),
+    prePayroll: new Float64Array(PT_REC),
+    preTaxIn: new Float64Array(TAX_IN),
+    preTaxOut: new Float64Array(TAX_OUT),
     ppFixed: new Float64Array(PP_COLUMNS * PP_REC),
     pp: new Float64Array(PP_COLUMNS * PP_REC),
     taxIn: new Float64Array(TAX_IN),
@@ -376,6 +412,8 @@ export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFu
     nAged: 0,
     taxBaseline: 0,
     otherBaseline: 0,
+    preStartCash: 0,
+    preStartTax: 0,
     calls: 0,
     portfolio: 0,
     stockShare: 0,

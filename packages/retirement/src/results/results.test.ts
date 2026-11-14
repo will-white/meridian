@@ -376,6 +376,25 @@ describe("the inputs fixture: accumulation, transition and retirement rows (C15,
     expect(BigInt(row(2030).tax.payrollTaxCents) > 0n).toBe(true);
   });
 
+  it("engine-01: the first drawdown year (2035; Alex retires in June) carries its months before June as preStart, and its cash identity holds with it; no other row has one", () => {
+    const r = row(2035);
+    expect(r.phase).toBe("transition");
+    expect(r.preStart).toBeDefined();
+    const pre = r.preStart!;
+    expect(BigInt(pre.takeHome) > 0n).toBe(true);
+    expect(BigInt(pre.tax) > 0n).toBe(true);
+    // income + withdrawals = (tax − pre-start tax) + payroll + employee contributions + funded +
+    // surplus + pre-start take-home; each cell is rounded once, so within a few cents.
+    const sources = BigInt(r.income.total) + BigInt(r.withdrawals.total);
+    const uses =
+      BigInt(r.tax.totalFederalCents) - BigInt(pre.tax) + BigInt(r.tax.payrollTaxCents) + BigInt(r.contributions.employee) + BigInt(r.spending.funded) + BigInt(r.surplusSaved) + BigInt(pre.takeHome);
+    expect(sources - uses <= 5n && uses - sources <= 5n, `${sources} against ${uses}`).toBe(true);
+    for (const other of table.rows) if (other.year !== 2035) expect(other.preStart, `${other.year}`).toBeUndefined();
+    // In today's dollars too (deflateYearRow carries the block).
+    const real = deflateYearTable(table).rows.find((x) => x.year === 2035)!;
+    expect(real.preStart).toBeDefined();
+  });
+
   it("OUT-8 and OUT-10 on the fixture: the rows add up in both units (contributions included) and the documents parse", () => {
     assertAddsUp(table);
     const real = deflateYearTable(table);

@@ -33,14 +33,14 @@
 import { CASH_TOL } from "./constants.js";
 import { periodMonths, periodStart } from "./clock.js";
 import { EngineInvariantError } from "./errors.js";
-import { CONTRIB, IY, IY_REC, LIMIT, contributionsYearInto, conversionsYearInto, incomeYearInto } from "./flows.js";
+import { CONTRIB, IY, IY_REC, LIMIT, contributionsPreStartInto, contributionsYearInto, conversionsYearInto, incomePreStartInto, incomeYearInto } from "./flows.js";
 import { BILLS, BONDS, STOCKS } from "./models/index.js";
 import { type PreparedRun, TREATMENT } from "./prepare.js";
 import { CARRY, assessInto, prepareAssessYear } from "./assess.js";
 import { PATH_FLAG, type PathState } from "./state.js";
 import { fillNeeds, settleSpending } from "./strategies/index.js";
 import { hsaMonthsBefore65 } from "./tax/contributionLimits.js";
-import { CL, PT, PT_REC, RB_REC, RW, SO, SO_REC, TAX_IN, TAX_OUT, TO, TY, TY_REC, WN, progOffset } from "./tax/layout.js";
+import { CL, PT, PT_REC, RB_REC, RW, SO, SO_REC, TAX_IN, TAX_OUT, TI, TO, TY, TY_REC, WN, progOffset, taxOffset } from "./tax/layout.js";
 import { addRothContribution, addRothConversion, mergeRothAtDeath, rothRollYear, seedRoth } from "./tax/rothBasis.js";
 import { resetSsState } from "./tax/socialSecurity.js";
 import { noteWarning, resetPathWarnings } from "./tax/warnings.js";
@@ -91,10 +91,17 @@ export const YR = {
   END_TOTAL: 22,
   END_TOTAL_REAL: 23,
   STOCK_SHARE: 24,
-  /** The accumulation baseline's tax (0 in drawdown years). */
+  /** The baseline's tax: an accumulation year's (no RMD, no withdrawal), or in the first drawdown year that of its months before `spending.startMonth`; 0 in other drawdown years. */
   TAX_BASELINE: 25,
+  /**
+   * The first drawdown year: the take-home of its months before `spending.startMonth` (their
+   * stream income and benefits less their employee contributions and payroll tax), kept out of
+   * the year's net; 0 otherwise. The drawdown cash identity is income + RMD + withdrawals = funded
+   * + (tax − TAX_BASELINE) + other charges + employee + payroll + surplus + PRE_START_CASH.
+   */
+  PRE_START_CASH: 26,
 } as const;
-export const YR_REC = 26;
+export const YR_REC = 27;
 
 /** Bits of `YR.FLAGS`. */
 export const YEAR_FLAG = {
@@ -297,6 +304,7 @@ function runYear(ps: PathState, t: number, detail: PathDetail | null): void {
   beginYear(ps, t);
   yearIncome(ps, t);
   yearContributions(ps, t);
+  preStartYear(ps, t);
   yearSpending(ps, t);
   forcedFlows(ps, t);
   yearAvailable(ps, t);
@@ -374,6 +382,8 @@ function yearIncome(ps: PathState, t: number): void {
   incomeYearInto(run.incomes, t, ps.cpi, ps.alive, ps.streamAmounts, iy);
   ps.grossWages[0] = iy[IY.WAGES0]!;
   ps.grossWages[1] = iy[IY.WAGES1]!;
+  // The first drawdown year's months before startMonth are priced on the state as the year starts (preStartYear).
+  if (t === run.incomes.preStart.t) ps.preSs.set(ps.ss);
   const so = ps.so;
   ps.tax.socialSecurityYear(run.ssPlan, ps.ss, ps.year, ps.periodStart, ps.periodMonths, ps.progTable, progOffset(t), ps.deathYear[0]!, ps.deathYear[1]!, ps.grossWages[0]!, ps.grossWages[1]!, so);
   const ssTotal = so[SO.BENEFIT]! + so[SO.BENEFIT + 1]!;
@@ -393,6 +403,70 @@ function yearContributions(ps: PathState, t: number): void {
   if (run.includePayrollTax) ps.tax.employeePayrollTaxInto(ps.progTable, po, ps.grossWages[0]!, ps.grossWages[1]!, ps.status, ps.f, payroll);
   else for (let k = 0; k < PT_REC; k++) payroll[k] = 0;
   ps.payrollTotal = payroll[PT.TOTAL]!;
+}
+
+/**
+ * Step 2b (the Stage A review's engine-01): in the first drawdown year with months before
+ * `spending.startMonth`, those months are accumulation months (plan decision 7, seams C52): their
+ * stream income and Social Security (a period of their own on the state as the year started),
+ * their contributions (at the year's cap scales) and payroll tax on their wages give the take-home
+ * `preStartCash`, and the federal tax on their income alone (`preStartTax`, the year's baseline)
+ * is theirs. Both stay out of the year's net (assess.ts). 0 in every other year.
+ */
+function preStartYear(ps: PathState, t: number): void {
+  const run = ps.run;
+  const inc = run.incomes;
+  if (t !== inc.preStart.t) {
+    ps.preStartCash = 0;
+    ps.preStartTax = 0;
+    return;
+  }
+  const tax = ps.tax;
+  const iy = ps.preIncome;
+  incomePreStartInto(inc, ps.cpi, ps.alive, ps.preAmounts, iy);
+  const w0 = iy[IY.WAGES0]!;
+  const w1 = iy[IY.WAGES1]!;
+  const po = progOffset(t);
+  const so = ps.preSo;
+  tax.socialSecurityYear(run.ssPlan, ps.preSs, ps.year, ps.periodStart, inc.preStart.months, ps.progTable, po, ps.deathYear[0]!, ps.deathYear[1]!, w0, w1, so);
+  let ss = so[SO.BENEFIT]! + so[SO.BENEFIT + 1]!;
+  if (ss > ps.ssTotal) ss = ps.ssTotal;
+  // Contributions of those months, cut by the year's scales (capContributions): the employee cash use and the pre-tax deferrals by person.
+  const ct = run.contributions;
+  contributionsPreStartInto(ct, inc, ps.cpi, ps.alive, ps.preEmployee, ps.preEmployer);
+  let employee = 0;
+  let deferral0 = 0;
+  let deferral1 = 0;
+  for (let c = 0; c < ct.count; c++) {
+    const e = ps.preEmployee[c]!;
+    employee += e;
+    const o = ct.owner[c]!;
+    if (ct.kind[c] !== CONTRIB.PRE_TAX || o < 0) continue;
+    const g = ct.limit[c]!;
+    const kept = g === LIMIT.NONE ? e : e * ps.scaleEmployee[o * GROUPS + g]!;
+    if (o === 0) deferral0 += kept;
+    else deferral1 += kept;
+  }
+  let payroll = 0;
+  if (run.includePayrollTax) {
+    tax.employeePayrollTaxInto(ps.progTable, po, w0, w1, ps.status, ps.f, ps.prePayroll);
+    payroll = ps.prePayroll[PT.TOTAL]!;
+  }
+  ps.preStartCash = iy[IY.CASH]! + ss - employee - payroll;
+  // The tax on those months' income alone.
+  const x = ps.preTaxIn;
+  for (let k = 0; k < TAX_IN; k++) x[k] = 0;
+  const wages0 = w0 - deferral0;
+  const wages1 = w1 - deferral1;
+  x[TI.WAGES] = (wages0 > 0 ? wages0 : 0) + (wages1 > 0 ? wages1 : 0);
+  x[TI.PENSION] = iy[IY.PENSION]!;
+  x[TI.RENTAL] = iy[IY.RENTAL]!;
+  x[TI.OTHER_ORD] = iy[IY.OTHER_ORD]!;
+  x[TI.SS_GROSS] = ss;
+  x[TI.N_AGED] = ps.nAged;
+  x[TI.YEAR_FRACTION] = ps.f;
+  tax.federalTaxInto(ps.taxTable, taxOffset(t, ps.status), x, ps.preTaxOut);
+  ps.preStartTax = ps.preTaxOut[TO.TOTAL]!;
 }
 
 /** Step 3: the view, then the spending decision and the period's need. */
@@ -883,6 +957,7 @@ function recordFlows(ps: PathState, detail: PathDetail, t: number): void {
   yr[yo + YR.PORTFOLIO_START] = ps.portfolio;
   yr[yo + YR.STOCK_SHARE] = ps.stockShare;
   yr[yo + YR.TAX_BASELINE] = ps.taxBaseline;
+  yr[yo + YR.PRE_START_CASH] = ps.preStartCash;
   for (let i = 0; i < P; i++) {
     detail.alive[t * P + i] = ps.alive[i]!;
     detail.age[t * P + i] = ps.age[i]!;

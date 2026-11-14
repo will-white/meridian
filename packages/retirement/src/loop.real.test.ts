@@ -872,3 +872,154 @@ describe("the tax area's path warnings, fed by the loop", () => {
     close(ps.wn[WN.ROTH_BASIS_UNKNOWN]!, 20000);
   });
 });
+
+describe("engine-01: the first drawdown year's months before spending.startMonth are accumulation months", () => {
+  // Plan decision 7 (binding) and engine-and-returns decision 9: before the first retirement
+  // neither spending nor take-home pay is modelled; the wages pay their own tax, payroll and living
+  // costs (seams C52). With the month windows of C15, the months of the first drawdown year before
+  // spending.startMonth (the earliest retirement month) are such months: their stream income and
+  // Social Security, the employee contributions and payroll tax that fall in them, and the federal
+  // tax on that income alone (a baseline, as in an accumulation year) stay out of the year's net.
+  // Only the months from startMonth enter the drawdown cash identity:
+  //   net = cash income + RMD + w − employee − payroll − need − (tax − pre-start tax) − pre-start take-home,
+  // with pre-start take-home = pre-start income − pre-start employee contributions − pre-start payroll.
+  // The review's probe: retiring in December 2030, the year saved 81,957.50 of a year's wages with
+  // one month of spending charged.
+  //
+  // Fixed returns of 0% and no inflation, so 2030's law is 2027's (F = 1) without the senior
+  // deduction (current_law ends it after 2028). Single 2027: standard deduction 16,600 + 2,100 at
+  // 65; brackets 10% to 12,800, 12% to 52,025 (5,987 there), 22% to 109,125.
+  const single = (retire: string) =>
+    buildSimInput({
+      startYear: 2027,
+      people: [{ birthYear: 1965, retirementMonth: retire, longevity: { mode: "fixed", age: 90 } }],
+      accounts: [cashAccount("cash", "50000000")],
+      incomes: [incomeStream("sal", "salary", "12000000", "2027-01", { personId: "p1", endMonth: retire })],
+      spending: { baseAnnualCents: "6000000", essentialAnnualCents: "6000000", startMonth: retire },
+    });
+  const t30 = 3;
+
+  it("engine-01 a single earner retiring in December 2030: the 110,000 of January to November pays its own 14,627.50 of tax and 8,415 of payroll; December's 5,000 of spending is withdrawn and nothing is saved", () => {
+    // 2030: wages 110,000 (11 months, all before 2030-12); the person is 65: taxable 110,000 −
+    // 18,700 = 91,300; 5,987 + 22% × (91,300 − 52,025) = 5,987 + 8,640.50 = 14,627.50. Payroll
+    // 7.65% × 110,000 = 8,415. Pre-start take-home 110,000 − 0 − 8,415 = 101,585; the pre-start tax
+    // is the whole tax. net = 110,000 + w − 8,415 − 5,000 − 0 − 101,585 = w − 5,000.
+    const { detail } = runRealPath(single("2030-12"));
+    expect(yr(detail, t30, YR.PHASE)).toBe(1);
+    close(yr(detail, t30, YR.CASH_INCOME), 110000);
+    close(yr(detail, t30, YR.TAX), 14627.5);
+    close(yr(detail, t30, YR.TAX_BASELINE), 14627.5);
+    close(yr(detail, t30, YR.PAYROLL), 8415);
+    close(yr(detail, t30, YR.PRE_START_CASH), 101585);
+    close(sp(detail, t30, SP.NEED), 5000);
+    close(yr(detail, t30, YR.WITHDRAWAL_TOTAL), 5000);
+    close(sp(detail, t30, SP.SURPLUS), 0);
+    // 2029, an accumulation year: 120,000 of wages, tax 5,987 + 22% × (103,400 − 52,025) = 17,289.50, nothing saved.
+    expect(yr(detail, 2, YR.PHASE)).toBe(0);
+    close(yr(detail, 2, YR.TAX), 17289.5);
+    close(sp(detail, 2, SP.SURPLUS), 0);
+  });
+
+  it("engine-01 retiring in July 2030 withdraws the six months' 30,000 and saves nothing; retiring in January, the year is a whole drawdown year (60,000)", () => {
+    // July: wages 60,000 (January to June) before startMonth; taxable 41,300; 1,280 + 12% × 28,500 = 4,700.
+    const july = runRealPath(single("2030-07")).detail;
+    close(yr(july, t30, YR.TAX), 4700);
+    close(yr(july, t30, YR.TAX_BASELINE), 4700);
+    close(yr(july, t30, YR.PRE_START_CASH), 60000 - 4590);
+    close(yr(july, t30, YR.WITHDRAWAL_TOTAL), 30000);
+    close(sp(july, t30, SP.SURPLUS), 0);
+    const january = runRealPath(single("2030-01")).detail;
+    close(yr(january, t30, YR.PRE_START_CASH), 0);
+    close(yr(january, t30, YR.TAX_BASELINE), 0);
+    close(yr(january, t30, YR.WITHDRAWAL_TOTAL), 60000);
+    close(sp(january, t30, SP.SURPLUS), 0);
+  });
+
+  // A couple: A (born 1965) earns 120,000 until July 2030; B (born 1967) earns 60,000 until 2033.
+  // Spending 60,000 from 2030-07. Joint 2027 law: standard deduction 33,200 + 1,700 (A is 65 in
+  // 2030); 10% to 25,600 (2,560), 12% to 104,050.
+  const couple = (retire: string) =>
+    buildSimInput({
+      startYear: 2027,
+      people: [
+        { birthYear: 1965, retirementMonth: retire, longevity: { mode: "fixed", age: 90 } },
+        { birthYear: 1967, retirementMonth: "2033-01", longevity: { mode: "fixed", age: 90 } },
+      ],
+      accounts: [cashAccount("cash", "50000000")],
+      incomes: [
+        incomeStream("a", "salary", "12000000", "2027-01", { personId: "p1", endMonth: retire }),
+        incomeStream("b", "salary", "6000000", "2027-01", { personId: "p2", endMonth: "2033-01" }),
+      ],
+      spending: { baseAnnualCents: "6000000", essentialAnnualCents: "6000000", startMonth: retire },
+    });
+
+  it("engine-01 a working spouse: from July 2030 B's wages count against the year's spending, January to June stay out", () => {
+    // 2030: wages A 60,000 and B 60,000 (pre-start A 60,000 + B 30,000 = 90,000). Tax on 120,000:
+    // taxable 85,100, 2,560 + 12% × 59,500 = 9,700; on the pre-start 90,000: taxable 55,100,
+    // 2,560 + 12% × 29,500 = 6,100. Payroll 7.65% × 120,000 = 9,180, pre-start 6,885. Pre-start
+    // take-home 90,000 − 6,885 = 83,115. Need 30,000. net = 120,000 + w − 9,180 − 30,000 −
+    // (9,700 − 6,100) − 83,115 = w − 5,895: 5,895.00 is withdrawn (before the fix 71,120 was saved).
+    const { detail } = runRealPath(couple("2030-07"));
+    close(yr(detail, t30, YR.TAX), 9700);
+    close(yr(detail, t30, YR.TAX_BASELINE), 6100);
+    close(yr(detail, t30, YR.PAYROLL), 9180);
+    close(yr(detail, t30, YR.PRE_START_CASH), 83115);
+    close(yr(detail, t30, YR.WITHDRAWAL_TOTAL), 5895);
+    close(sp(detail, t30, SP.SURPLUS), 0);
+    // 2031, a whole drawdown year (unchanged by the rule): B's 60,000 − payroll 4,590 − tax 2,510
+    // (taxable 25,100) − 60,000 = −7,100: 7,100 is withdrawn.
+    close(yr(detail, 4, YR.TAX), 2510);
+    close(yr(detail, 4, YR.PRE_START_CASH), 0);
+    close(yr(detail, 4, YR.WITHDRAWAL_TOTAL), 7100);
+  });
+
+  it("engine-01 the year's withdrawal moves by about a month's take-home with the retirement month (continuity), never by most of a year's", () => {
+    // August: pre-start wages A 70,000 + B 35,000 = 105,000, taxable 70,100, tax 2,560 + 12% ×
+    // 44,500 = 7,900; the year's 130,000, taxable 95,100, tax 2,560 + 12% × 69,500 = 10,900;
+    // payroll 9,945, pre-start 8,032.50; need 25,000.
+    // net = 130,000 + w − 9,945 − 25,000 − (10,900 − 7,900) − (105,000 − 8,032.50) = w − 4,912.50.
+    const august = runRealPath(couple("2030-08")).detail;
+    close(yr(august, t30, YR.TAX_BASELINE), 7900);
+    close(yr(august, t30, YR.WITHDRAWAL_TOTAL), 4912.5);
+    // July against August: in August B's take-home, 5,000 − 382.50 payroll − 600 tax (12%) =
+    // 4,017.50, meets 5,000 of spending, so retiring a month earlier withdraws 982.50 more: about a
+    // month's take-home less a month's spending, not a year's.
+    const july = runRealPath(couple("2030-07")).detail;
+    close(yr(july, t30, YR.WITHDRAWAL_TOTAL) - yr(august, t30, YR.WITHDRAWAL_TOTAL), 982.5);
+    for (const retire of ["2030-02", "2030-04", "2030-06", "2030-09", "2030-11", "2030-12"]) {
+      const d = runRealPath(couple(retire)).detail;
+      expect(sp(d, t30, SP.SURPLUS), retire).toBeLessThan(1000);
+    }
+  });
+
+  it("engine-01 a benefit in pay before startMonth stays out with the months it is paid in, and the cash identity holds with the pre-start term", () => {
+    // Born January 1960 (FRA 67 in January 2027), receiving 2,000 a month at full retirement age
+    // since 2027-01, working at 50,000 until July 2030. The year's benefit is twelve equal months
+    // (no claim, no FRA and no 60th birthday inside 2030; no earnings test from FRA), so half of it
+    // falls before 2030-07.
+    const input = buildSimInput({
+      startYear: 2027,
+      people: [{ birthYear: 1960, retirementMonth: "2030-07", longevity: { mode: "fixed", age: 90 } }],
+      accounts: [cashAccount("cash", "50000000")],
+      incomes: [incomeStream("sal", "salary", "5000000", "2027-01", { personId: "p1", endMonth: "2030-07" })],
+      socialSecurity: { people: [receivingAtFra("p1", "200000", "2027-01")], spousal: true, survivor: true },
+      spending: { baseAnnualCents: "6000000", essentialAnnualCents: "6000000", startMonth: "2030-07" },
+    });
+    const { detail } = runRealPath(input);
+    const benefit = so(detail, t30, SO.BENEFIT);
+    expect(benefit).toBeGreaterThan(24000);
+    // Wages 25,000 before July; payroll 7.65% × 25,000 = 1,912.50 (all of the year's).
+    close(yr(detail, t30, YR.PAYROLL), 1912.5);
+    close(yr(detail, t30, YR.PRE_START_CASH), 25000 + benefit / 2 - 1912.5);
+    const sources = yr(detail, t30, YR.CASH_INCOME) + yr(detail, t30, YR.RMD_TOTAL) + yr(detail, t30, YR.WITHDRAWAL_TOTAL);
+    const uses =
+      sp(detail, t30, SP.FUNDED) +
+      yr(detail, t30, YR.TAX) -
+      yr(detail, t30, YR.TAX_BASELINE) +
+      yr(detail, t30, YR.EMPLOYEE) +
+      yr(detail, t30, YR.PAYROLL) +
+      sp(detail, t30, SP.SURPLUS) +
+      yr(detail, t30, YR.PRE_START_CASH);
+    expect(Math.abs(sources - uses)).toBeLessThanOrEqual(0.01);
+  });
+});

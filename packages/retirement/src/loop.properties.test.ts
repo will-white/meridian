@@ -314,6 +314,8 @@ interface Stats {
   households: number;
   pathYears: number;
   drawdownYears: number;
+  /** First drawdown years with months before spending.startMonth (engine-01). */
+  preStartYears: number;
   taxableFlowsOnlyYears: number;
   capped: number;
   failed: number;
@@ -322,7 +324,7 @@ interface Stats {
 }
 
 function createStats(): Stats {
-  return { households: 0, pathYears: 0, drawdownYears: 0, taxableFlowsOnlyYears: 0, capped: 0, failed: 0, deaths: 0, gross: 0 };
+  return { households: 0, pathYears: 0, drawdownYears: 0, preStartYears: 0, taxableFlowsOnlyYears: 0, capped: 0, failed: 0, deaths: 0, gross: 0 };
 }
 
 /**
@@ -364,11 +366,18 @@ function checkPaths(h: number, run: PreparedRun, ps: PathState, detail: PathDeta
           if (netOut > 1e-9 && a(acct, AC.BOUGHT) > 1e-9) throw new Error(`${where(t)}: flows_only bought on an outflow`);
         }
       }
-      // The cash identity of a drawdown year (strategies-outputs-web §3.8 with C27's payroll term and F2's other charges).
+      // The cash identity of a drawdown year (strategies-outputs-web §3.8 with C27's payroll term and
+      // F2's other charges). The first drawdown year's months before spending.startMonth pay their
+      // own tax and keep their take-home (engine-01): TAX_BASELINE and PRE_START_CASH, 0 otherwise.
+      if (y(YR.PHASE) === 1 && t !== run.drawdownStart && (y(YR.TAX_BASELINE) !== 0 || y(YR.PRE_START_CASH) !== 0)) {
+        throw new Error(`${where(t)}: a pre-start baseline outside the first drawdown year`);
+      }
+      if (y(YR.PHASE) === 1 && y(YR.PRE_START_CASH) !== 0) stats.preStartYears++;
       if (y(YR.PHASE) === 1 && (y(YR.FLAGS) & YEAR_FLAG.UNPAID_TAX) === 0) {
         stats.drawdownYears++;
         const sources = y(YR.CASH_INCOME) + y(YR.RMD_TOTAL) + y(YR.WITHDRAWAL_TOTAL);
-        const uses = s(SP.FUNDED) + y(YR.TAX) + y(YR.OTHER_CHARGES) + y(YR.EMPLOYEE) + y(YR.PAYROLL) + s(SP.SURPLUS);
+        const uses =
+          s(SP.FUNDED) + y(YR.TAX) - y(YR.TAX_BASELINE) + y(YR.OTHER_CHARGES) + y(YR.EMPLOYEE) + y(YR.PAYROLL) + s(SP.SURPLUS) + y(YR.PRE_START_CASH);
         if (Math.abs(sources - uses) > 0.01) throw new Error(`${where(t)}: sources ${sources} against uses ${uses}`);
         if (!Number.isNaN(s(SP.GROSS))) stats.gross++;
       }
@@ -407,6 +416,7 @@ describe("T45 invariants over 300 seeded random households (stub hooks)", () => 
     // The households exercise what the invariants are about.
     expect(stats.households).toBe(300);
     expect(stats.drawdownYears).toBeGreaterThan(5000);
+    expect(stats.preStartYears).toBeGreaterThan(20);
     expect(stats.taxableFlowsOnlyYears).toBeGreaterThan(500);
     expect(stats.capped).toBeGreaterThan(10);
     expect(stats.failed).toBeGreaterThan(10);
@@ -484,6 +494,7 @@ describe("T45 invariants over 300 seeded random households on the real tax funct
     }
     expect(stats.households).toBe(300);
     expect(stats.drawdownYears).toBeGreaterThan(5000);
+    expect(stats.preStartYears).toBeGreaterThan(20);
     expect(stats.failed).toBeGreaterThan(10);
     expect(stats.deaths).toBeGreaterThan(50);
     expect(real.benefitYears).toBeGreaterThan(5000);
@@ -519,6 +530,7 @@ describe("T45 invariants over 300 seeded random households on the production hoo
     }
     expect(stats.households).toBe(300);
     expect(stats.drawdownYears).toBeGreaterThan(5000);
+    expect(stats.preStartYears).toBeGreaterThan(20);
     expect(stats.failed).toBeGreaterThan(10);
     expect(stats.deaths).toBeGreaterThan(50);
     // Measured when the test was written: 13,606 path-years (11,601 in drawdown), 4,149 of them

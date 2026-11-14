@@ -263,8 +263,10 @@ function runHousehold(h: number, sweep: Sweep, monotoneWanted: number): void {
       sweep.drawdownYears++;
       if ((y(YR.FLAGS) & YEAR_FLAG.UNPAID_TAX) === 0) {
         sweep.identityRows++;
+        // With the first drawdown year's months before spending.startMonth (engine-01): their tax
+        // (TAX_BASELINE) and take-home (PRE_START_CASH) stay out of the year's cash.
         const sources = y(YR.CASH_INCOME) + y(YR.RMD_TOTAL) + taken;
-        const uses = y(YR.TAX) + y(YR.OTHER_CHARGES) + y(YR.EMPLOYEE) + y(YR.PAYROLL) + s(SP.FUNDED) + s(SP.SURPLUS);
+        const uses = y(YR.TAX) - y(YR.TAX_BASELINE) + y(YR.OTHER_CHARGES) + y(YR.EMPLOYEE) + y(YR.PAYROLL) + s(SP.FUNDED) + s(SP.SURPLUS) + y(YR.PRE_START_CASH);
         if (!(Math.abs(sources - uses) <= CASH_TOL)) sweep.identityFailures.push(`${where}: sources ${sources} against uses ${uses}`);
       }
     }

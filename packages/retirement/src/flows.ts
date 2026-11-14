@@ -34,7 +34,7 @@
  */
 
 import type { AccountType, PersonId, PlanBucket, PlanIncomeKind, SimInput } from "@meridian/shared";
-import { type PlanClock, monthIndex, monthsInPeriod, yearOfMonth } from "./clock.js";
+import { type PlanClock, monthIndex, monthsInPeriod, periodStart, yearOfMonth } from "./clock.js";
 import { EngineInputError } from "./errors.js";
 import { centsToDollars } from "./units.js";
 
@@ -43,6 +43,27 @@ const BP = 10000;
 const STREAM_GROWTH_BP = [-500, 1000] as const;
 /** A pension's fixed COLA in basis points (shared `Cola`). */
 const COLA_BP = [0, 1000] as const;
+
+/**
+ * The months of the first drawdown year before `spending.startMonth` (the Stage A review's
+ * engine-01): plan year `t`, the month number `until` (startMonth) and the months `months` of the
+ * period before it; `t = −1` when the drawdown starts with a period (startMonth at or before the
+ * period's first month, or outside the plan). These are accumulation months: their flows pay
+ * their own tax and living costs and stay out of the year's net (plan decision 7, seams C52).
+ */
+export interface PreStart {
+  readonly t: number;
+  readonly until: number;
+  readonly months: number;
+}
+
+/** The pre-start months of a frozen input (`PreStart`). */
+export function preStartOf(input: SimInput, clock: PlanClock): PreStart {
+  const until = monthIndex(input.spending.startMonth);
+  const t = yearOfMonth(until) - clock.startYear;
+  const months = t >= 0 && t < clock.years ? until - periodStart(clock, t) : 0;
+  return months > 0 ? { t, until, months } : { t: -1, until, months: 0 };
+}
 
 /** How an income stream counts: wages (earned), pensions and annuities, rental, other ordinary income. */
 export const INCOME = { WAGES: 0, PENSION: 1, RENTAL: 2, OTHER: 3 } as const;
@@ -81,6 +102,10 @@ export interface IncomeTables {
   readonly taxableShare: Float64Array;
   /** `count × years` at `s × years + t`: `annual × months / 12 × real growth`, dollars before the price-level terms. */
   readonly period: Float64Array;
+  /** The first drawdown year's months before `spending.startMonth` (`preStartOf`). */
+  readonly preStart: PreStart;
+  /** `count`: the `period` value of plan year `preStart.t` for the months before `preStart.until` only (0 when there are none). */
+  readonly prePeriod: Float64Array;
   /** Per person: the index of that person's `salary` stream, −1 when there is none. */
   readonly salaryOf: Int16Array;
 }
@@ -147,6 +172,9 @@ export interface ContributionTables {
   readonly salaryShare: Float64Array;
   /** Inflation-scaled entries, `count × years`: months of the period before `endMonth`, ÷ 12. */
   readonly inflationShare: Float64Array;
+  /** `salaryShare` and `inflationShare` of plan year `preStart.t` for its months before `spending.startMonth` (`count × personCount` and `count`). */
+  readonly preSalaryShare: Float64Array;
+  readonly preInflationShare: Float64Array;
 }
 
 /** Scheduled Roth conversions by person and plan year (C39). */
@@ -223,6 +251,8 @@ export function compileIncomes(input: SimInput, clock: PlanClock): IncomeTables 
   const survivorShare = new Float64Array(S);
   const taxableShare = new Float64Array(S);
   const period = new Float64Array(S * Y);
+  const preStart = preStartOf(input, clock);
+  const prePeriod = new Float64Array(S);
   const salaryOf = new Int16Array(P).fill(-1);
   const seen = new Set<string>();
 
@@ -277,10 +307,14 @@ export function compileIncomes(input: SimInput, clock: PlanClock): IncomeTables 
       if (t > t0) real *= growth;
       const months = monthsInPeriod(clock, t, from, to);
       if (months > 0) period[k * Y + t] = (annual * months * real) / 12;
+      if (t === preStart.t) {
+        const before = monthsInPeriod(clock, t, from, to < preStart.until ? to : preStart.until);
+        if (before > 0) prePeriod[k] = (annual * before * real) / 12;
+      }
     }
   });
 
-  return { count: S, years: Y, ids: streams.map((s) => s.id), kind, person, firstYear, cpiNow, cpiStart, survivorShare, taxableShare, period, salaryOf };
+  return { count: S, years: Y, ids: streams.map((s) => s.id), kind, person, firstYear, cpiNow, cpiStart, survivorShare, taxableShare, period, preStart, prePeriod, salaryOf };
 }
 
 /**
@@ -308,6 +342,9 @@ export function compileContributions(
   const byInflation = new Uint8Array(C);
   const salaryShare = new Float64Array(C * P * Y);
   const inflationShare = new Float64Array(C * Y);
+  const pre = incomes.preStart;
+  const preSalaryShare = new Float64Array(C * P);
+  const preInflationShare = new Float64Array(C);
 
   entries.forEach((e, c) => {
     const a = accountIndex.get(e.accountId);
@@ -324,6 +361,7 @@ export function compileContributions(
     if (e.scaleWith === "inflation") {
       byInflation[c] = 1;
       for (let t = 0; t < Y; t++) inflationShare[c * Y + t] = monthsInPeriod(clock, t, -Infinity, end) / 12;
+      if (pre.t >= 0) preInflationShare[c] = monthsInPeriod(clock, pre.t, -Infinity, end < pre.until ? end : pre.until) / 12;
       return;
     }
     const scaled = e.scaleWith === "household" ? input.household.people.map((_, i) => i) : [personIndexOf(input, e.scaleWith, `the contribution to ${e.accountId}`)];
@@ -344,14 +382,19 @@ export function compileContributions(
       let real = 1;
       for (let t = t0; t < Y; t++) {
         if (t > t0) real *= growth;
-        const months = monthsInPeriod(clock, t, from, to < end ? to : end);
+        const stop = to < end ? to : end;
+        const months = monthsInPeriod(clock, t, from, stop);
         if (months > 0) salaryShare[(c * P + p) * Y + t] = (annual * months * real) / 12 / basis;
+        if (t === pre.t) {
+          const before = monthsInPeriod(clock, t, from, stop < pre.until ? stop : pre.until);
+          if (before > 0) preSalaryShare[c * P + p] = (annual * before * real) / 12 / basis;
+        }
       }
     }
     if (!anySalary) throw new EngineInputError("contribution_invalid", `the contribution to ${e.accountId} scales with ${e.scaleWith}'s salary, and there is none`);
   });
 
-  return { count: C, years: Y, personCount: P, account, owner, kind, limit, employee0, employer0, byInflation, salaryShare, inflationShare };
+  return { count: C, years: Y, personCount: P, account, owner, kind, limit, employee0, employer0, byInflation, salaryShare, inflationShare, preSalaryShare, preInflationShare };
 }
 
 /**
@@ -391,14 +434,38 @@ export function compileConversions(input: SimInput, clock: PlanClock, rothTarget
  * exempt rest. Allocates nothing.
  */
 export function incomeYearInto(inc: IncomeTables, t: number, cpi: ArrayLike<number>, alive: ArrayLike<number>, amounts: Float64Array, out: Float64Array): void {
+  streamsInto(inc, inc.period, inc.years, t, t, cpi, alive, amounts, out);
+}
+
+/**
+ * The stream income of the first drawdown year's months before `spending.startMonth`
+ * (`inc.preStart`), as `incomeYearInto` gives the whole period: the same people alive, price
+ * level and survivor shares, over `inc.prePeriod`. Call it only when `inc.preStart.t ≥ 0`.
+ * Allocates nothing.
+ */
+export function incomePreStartInto(inc: IncomeTables, cpi: ArrayLike<number>, alive: ArrayLike<number>, amounts: Float64Array, out: Float64Array): void {
+  streamsInto(inc, inc.prePeriod, 1, 0, inc.preStart.t, cpi, alive, amounts, out);
+}
+
+/** The streams of plan year t from the table's entries `table[s × stride + column]`. */
+function streamsInto(
+  inc: IncomeTables,
+  table: Float64Array,
+  stride: number,
+  column: number,
+  t: number,
+  cpi: ArrayLike<number>,
+  alive: ArrayLike<number>,
+  amounts: Float64Array,
+  out: Float64Array,
+): void {
   for (let k = 0; k < IY_REC; k++) out[k] = 0;
-  const Y = inc.years;
   const P = alive.length;
   let anyAlive = false;
   for (let i = 0; i < P; i++) if (alive[i] === 1) anyAlive = true;
   for (let s = 0; s < inc.count; s++) {
     let x = 0;
-    const base = inc.period[s * Y + t]!;
+    const base = table[s * stride + column]!;
     if (base > 0) {
       const owner = inc.person[s]!;
       let share = 0;
@@ -452,7 +519,39 @@ export function contributionsYearInto(
   employee: Float64Array,
   employer: Float64Array,
 ): void {
-  const Y = ct.years;
+  contributionsInto(ct, inc, ct.salaryShare, ct.inflationShare, ct.years, t, t, cpi, alive, employee, employer);
+}
+
+/**
+ * The contributions of the first drawdown year's months before `spending.startMonth`
+ * (`inc.preStart`), before the caps, as `contributionsYearInto` gives the whole period. Call it
+ * only when `inc.preStart.t ≥ 0`. Allocates nothing.
+ */
+export function contributionsPreStartInto(
+  ct: ContributionTables,
+  inc: IncomeTables,
+  cpi: ArrayLike<number>,
+  alive: ArrayLike<number>,
+  employee: Float64Array,
+  employer: Float64Array,
+): void {
+  contributionsInto(ct, inc, ct.preSalaryShare, ct.preInflationShare, 1, 0, inc.preStart.t, cpi, alive, employee, employer);
+}
+
+/** The contributions of plan year t from the share tables' entries at `(c × P + p) × stride + column` and `c × stride + column`. */
+function contributionsInto(
+  ct: ContributionTables,
+  inc: IncomeTables,
+  salaryShare: Float64Array,
+  inflationShare: Float64Array,
+  stride: number,
+  column: number,
+  t: number,
+  cpi: ArrayLike<number>,
+  alive: ArrayLike<number>,
+  employee: Float64Array,
+  employer: Float64Array,
+): void {
   const P = ct.personCount;
   for (let c = 0; c < ct.count; c++) {
     let scale = 0;
@@ -460,10 +559,10 @@ export function contributionsYearInto(
       const o = ct.owner[c]!;
       let paying = o >= 0 ? alive[o] === 1 : false;
       if (o < 0) for (let i = 0; i < P; i++) if (alive[i] === 1) paying = true;
-      if (paying) scale = cpi[t]! * ct.inflationShare[c * Y + t]!;
+      if (paying) scale = cpi[t]! * inflationShare[c * stride + column]!;
     } else {
       for (let p = 0; p < P; p++) {
-        let x = ct.salaryShare[(c * P + p) * Y + t]!;
+        let x = salaryShare[(c * P + p) * stride + column]!;
         if (!(x > 0) || alive[p] !== 1) continue;
         // The salary's price-level terms, as in incomeYearInto.
         const s = inc.salaryOf[p]!;

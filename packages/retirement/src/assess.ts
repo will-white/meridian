@@ -29,7 +29,11 @@
  *    the period's: nothing is divided by f here (C23, inside `federalTaxInto` only).
  * 4. `net`, with `otherCharges` = 0 in v1 (F2):
  *    - drawdown: `cash income + Σ rmd + Σ w − employee contributions − payroll tax − need − tax − otherCharges`
- *      (C27: the payroll tax is a cash use beside the federal tax);
+ *      (C27: the payroll tax is a cash use beside the federal tax); in the first drawdown year with
+ *      months before `spending.startMonth`, those months are accumulation months (the Stage A
+ *      review's engine-01, plan decision 7): `− (tax − taxBaseline) − preStartCash`, where the
+ *      baseline is the tax on their income alone and `preStartCash` their take-home (loop.ts
+ *      `preStartYear`); both are 0 in every other drawdown year;
  *    - accumulation: `Σ rmd + Σ w − need − (tax − taxBaseline) − (otherCharges − otherBaseline)`,
  *      where the baseline is the same assessment with no RMD and no withdrawal (wages pay it, and
  *      with it the tax on dividends, conversions and the rebalancing of contributions).
@@ -135,7 +139,8 @@ export function prepareAssessYear(ps: PathState): void {
     }
   }
   if (ps.drawdown) {
-    ps.taxBaseline = 0;
+    // 0, or in the first drawdown year the tax its months before spending.startMonth pay themselves (engine-01).
+    ps.taxBaseline = ps.preStartTax;
     ps.otherBaseline = 0;
   } else {
     assessInto(ps, ps.zeroW, false, ps.baseline);
@@ -263,7 +268,7 @@ export function assessInto(ps: PathState, w: Float64Array, includeRmd: boolean, 
   out.tax = total;
   out.otherCharges = other;
   out.net = ps.drawdown
-    ? ps.cashIncome + ps.rmdTotal + withdrawn - ps.employeeTotal - ps.payrollTotal - ps.need - total - other
+    ? ps.cashIncome + ps.rmdTotal + withdrawn - ps.employeeTotal - ps.payrollTotal - ps.need - (total - ps.taxBaseline) - other - ps.preStartCash
     : ps.rmdTotal + withdrawn - ps.need - (total - ps.taxBaseline) - (other - ps.otherBaseline);
 }
 
