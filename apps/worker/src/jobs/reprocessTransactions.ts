@@ -20,6 +20,8 @@ export interface ReprocessTransactionsOutcome {
   accountsUnknown: number;
   created: number;
   updated: number;
+  /** Pending rows a payload showed posted under a new id, replaced in place (audit a8-ledger-ui-02, second round). */
+  replacedPending: number;
   duplicates: number;
   skipped: number;
   transfersPaired: number;
@@ -34,15 +36,18 @@ const PAGE = 50;
  * full syncs, oldest first, or the one named by `importLogId`; those of syncs that failed after
  * the response was stored too, when it reads as an account set: second round) through
  * `replayAccountSetTransactions`, so a transaction an older reader or ingest missed is read
- * again, however old. Replay mode inserts only posted items the ledger lacks; it never inserts
- * a pending item, removes a pending row or changes a row the ledger has, so a second run
- * changes nothing. Each replayed row gets `stats.transactionsReprocessedAt`; the run writes a
- * summary row of kind `simplefin.reprocess` with no raw payload.
+ * again, however old, and so are the days an account was closed when it is reopened (audit
+ * a8-ledger-ui-02). Replay mode inserts only posted items the ledger lacks; it never inserts a
+ * pending item, removes a pending row or changes a posted row the ledger has. A pending row
+ * whose purchase a payload shows posted is posted (same id) or replaced in place (new id), as
+ * the sync does (second round), so a second run changes nothing. Each replayed row gets
+ * `stats.transactionsReprocessedAt`; the run writes a summary row of kind `simplefin.reprocess`
+ * with no raw payload.
  */
 export async function runReprocessTransactionsJob(ctx: JobContext, job: JobRow): Promise<ReprocessTransactionsOutcome> {
   const connectionId = String(job.payload["connectionId"] ?? "");
   const onlyImportLogId = typeof job.payload["importLogId"] === "string" ? job.payload["importLogId"] : undefined;
-  const outcome: ReprocessTransactionsOutcome = { importLogId: null, payloads: 0, payloadsUnparseable: 0, payloadsFailedSync: 0, accountsUnknown: 0, created: 0, updated: 0, duplicates: 0, skipped: 0, transfersPaired: 0 };
+  const outcome: ReprocessTransactionsOutcome = { importLogId: null, payloads: 0, payloadsUnparseable: 0, payloadsFailedSync: 0, accountsUnknown: 0, created: 0, updated: 0, replacedPending: 0, duplicates: 0, skipped: 0, transfersPaired: 0 };
   const [conn] = await ctx.db.select({ id: connection.id }).from(connection).where(eq(connection.id, connectionId));
   if (!conn) {
     ctx.log.warn(`[simplefin.reprocess_transactions] connection ${connectionId} not found; nothing to replay`);
@@ -89,6 +94,7 @@ export async function runReprocessTransactionsJob(ctx: JobContext, job: JobRow):
         outcome.accountsUnknown += replayed.accountsUnknown;
         outcome.created += replayed.stats.created;
         outcome.updated += replayed.stats.updated;
+        outcome.replacedPending += replayed.stats.replacedPending;
         outcome.duplicates += replayed.stats.duplicates;
         outcome.skipped += replayed.stats.skipped;
         outcome.transfersPaired += replayed.transfersPaired;

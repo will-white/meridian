@@ -1,8 +1,8 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { describe, expect, it } from "vitest";
 import type { AccountView, AuditList, AuthStatus, CategoryView, ConnectionView, RuleView, TransactionView } from "@meridian/shared";
 import { ApiError } from "../lib/api.js";
@@ -12,6 +12,8 @@ import { ConnectionsPage } from "../pages/ConnectionsPage.js";
 import { PayeesPage } from "../pages/PayeesPage.js";
 import { RulesPage } from "../pages/RulesPage.js";
 import { TransactionsPage } from "../pages/TransactionsPage.js";
+import { AccountInvestmentsPage } from "../pages/investments/AccountInvestmentsPage.js";
+import { RealizedPage } from "../pages/investments/RealizedPage.js";
 import { RowActions } from "./transactions/RowActions.js";
 import { RulePrompt } from "./transactions/RulePrompt.js";
 
@@ -307,23 +309,61 @@ describe("a8-ledger-ui-07: Disable, Remove, a CSV profile's Delete and a rule's 
 });
 
 describe("a8-ledger-ui-09: 'always do this' is not offered for a rule that already exists", () => {
-  const target = { payeeName: "Blue Bottle Coffee", categoryId: U(301) };
+  const target = { transactionId: U(101), payeeName: "Blue Bottle Coffee", categoryId: U(301) };
   const prompt = (qc: QueryClient) => text(render(<RulePrompt target={target} categoryName="Coffee" onSaved={() => undefined} onDismiss={() => undefined} />, qc));
 
-  it("an enabled rule with that payee condition and that category: the prompt says so instead", () => {
+  it("the rules already categorize the transaction through that very rule: the prompt says so instead", () => {
     const qc = client();
-    qc.setQueryData(["rules"], [rule()]);
+    qc.setQueryData(["rules", "always", U(101), U(301)], { verdict: "exists", rule: { id: U(500), position: 1, name: "Blue Bottle Coffee → Coffee" }, reason: null });
     const t = prompt(qc);
     expect(t).toContain('Rule #1 "Blue Bottle Coffee → Coffee" already categorizes Blue Bottle Coffee as Coffee');
     expect(t).not.toContain("Always do this");
   });
+});
 
-  it("a disabled rule, another category, or a rule with more conditions still gets the offer", () => {
-    for (const other of [rule({ enabled: false }), rule({ actions: { setCategoryId: GROCERIES } }), rule({ conditions: { payee: { op: "equals", value: "Blue Bottle Coffee" }, amount: { minCents: "-1000" } } })]) {
+describe("a8-ledger-ui-09, second round: the prompt says what the rules engine does for the transaction, not what the rules look like", () => {
+  const target = { transactionId: U(101), payeeName: "Blue Bottle Coffee", categoryId: U(301) };
+  const key = ["rules", "always", U(101), U(301)];
+  const html = (qc: QueryClient) => render(<RulePrompt target={target} categoryName="Coffee" onSaved={() => undefined} onDismiss={() => undefined} />, qc);
+  // What the old prompt read: rule #1 has the payee and the category, and rule #4 (later, broader) overrides it with Dining.
+  const overridden = [rule(), rule({ id: U(501), position: 4, name: "Coffee shops → Dining", conditions: { payee: { op: "contains", value: "coffee" } }, actions: { setCategoryId: U(302) } })];
+
+  it("a later rule overrides the rule that exists (the engine gives Dining): 'always do this' is offered, and nothing claims the rule categorizes it", () => {
+    const qc = client();
+    qc.setQueryData(["rules"], overridden);
+    qc.setQueryData(key, { verdict: "offer", rule: null, reason: null });
+    const t = text(html(qc));
+    expect(t).toContain("Always categorize Blue Bottle Coffee as Coffee ?");
+    expect(t).toContain("Always do this");
+    expect(t).not.toContain("already categorizes");
+  });
+
+  it("an earlier rule stops the run: the rule is named, the prompt says a new rule would change nothing, and offers no button", () => {
+    const qc = client();
+    qc.setQueryData(["rules"], overridden);
+    qc.setQueryData(key, { verdict: "blocked", rule: { id: U(502), position: 1, name: "Blue things stop here" }, reason: "stop" });
+    const out = html(qc);
+    const t = text(out);
+    expect(t).toContain('Rule #1 "Blue things stop here" ends the rules for this transaction before a rule written now would run, so "always do this" would not categorize Blue Bottle Coffee as Coffee.');
+    expect(t).not.toContain("Always do this");
+    expect(out).toContain('href="/rules"');
+  });
+
+  it("a rule that marks it a transfer, or renames its payee first, is named too", () => {
+    for (const [reason, phrase] of [
+      ["transfer", "marks this transaction a transfer"],
+      ["payee", "renames this transaction's payee before a rule written now would see it"],
+    ] as const) {
       const qc = client();
-      qc.setQueryData(["rules"], [other]);
-      expect(prompt(qc)).toContain("Always do this");
+      qc.setQueryData(key, { verdict: "blocked", rule: { id: U(502), position: 2, name: "" }, reason });
+      expect(text(html(qc))).toContain(`Rule #2 ${phrase}, so "always do this" would not categorize Blue Bottle Coffee as Coffee.`);
     }
+  });
+
+  it("while the rules are checked the offer waits", () => {
+    const qc = client();
+    qc.setQueryData(["rules"], overridden);
+    expect(html(qc)).toMatch(/<button[^>]*disabled=""[^>]*>Always do this<\/button>/);
   });
 });
 
@@ -426,5 +466,53 @@ describe("a8-ledger-ui-04: the register edits a row's payee, notes and tags, and
     const viewer = render(<RowActions {...props} viewer={true} />, client());
     expect(text(viewer)).not.toContain("Payee, notes and tags");
     expect(viewer).not.toMatch(/<textarea/);
+  });
+});
+
+/** Every .tsx file under apps/web/src (tests left out). */
+function webSources(dir = new URL("../", import.meta.url).pathname): string[] {
+  return readdirSync(dir).flatMap((name) => {
+    const path = `${dir}${name}`;
+    if (statSync(path).isDirectory()) return webSources(`${path}/`);
+    return name.endsWith(".tsx") && !name.includes(".test.") ? [path] : [];
+  });
+}
+
+describe("a8-ledger-ui-15, second round: every page that names an account's type reads as people write it (decision 100)", () => {
+  it("the Realized gains page's account filter reads IRA, 401(k), Roth IRA and HSA", () => {
+    const qc = client();
+    qc.setQueryData(AUTH_KEY, OWNER);
+    qc.setQueryData(["accounts"], [
+      account({ id: U(11), type: "ira", name: "Rollover" }),
+      account({ id: U(12), type: "401k", name: "Work plan" }),
+      account({ id: U(13), type: "roth", name: "Mine" }),
+      account({ id: U(14), type: "hsa", name: "Health" }),
+    ]);
+    const t = text(render(<RealizedPage />, qc, "/investments/realized"));
+    for (const label of ["Rollover (IRA)", "Work plan (401(k))", "Mine (Roth IRA)", "Health (HSA)"]) expect(t).toContain(label);
+    for (const bad of ["(Ira)", "(401k)", "(Roth)", "(Hsa)"]) expect(t).not.toContain(bad);
+  });
+
+  it("an account's investments page names the investment types by their labels", () => {
+    const qc = client();
+    qc.setQueryData(AUTH_KEY, OWNER);
+    qc.setQueryData(["accounts"], [account({ id: U(15), type: "checking", name: "Joint Checking" })]);
+    const t = text(
+      render(
+        <Routes>
+          <Route path="/investments/accounts/:id" element={<AccountInvestmentsPage />} />
+        </Routes>,
+        qc,
+        `/investments/accounts/${U(15)}`,
+      ),
+    );
+    expect(t).toContain("Joint Checking is a checking account.");
+    expect(t).toContain("Brokerage, 401(k), IRA, Roth IRA, HSA or 529 plan");
+    expect(t).not.toMatch(/401k|Roth,/);
+  });
+
+  it("no page shows an account's type through titleCase", () => {
+    const offenders = webSources().filter((path) => /titleCase\([^)]*\btype\)/.test(readFileSync(path, "utf8")));
+    expect(offenders).toEqual([]);
   });
 });

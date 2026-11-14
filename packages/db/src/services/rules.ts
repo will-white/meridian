@@ -1,5 +1,5 @@
 import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
-import { evaluateRules, RuleActions, RuleConditions, type IsoDate, type RuleLike } from "@meridian/shared";
+import { alwaysRuleVerdict, evaluateRules, RuleActions, RuleConditions, type AlwaysRuleCheck, type IsoDate, type RuleLike } from "@meridian/shared";
 import type { Db, DbOrTx } from "../index.js";
 import { category, payee, rule, transaction } from "../schema/index.js";
 import { lockLedger } from "./ledgerLock.js";
@@ -133,6 +133,33 @@ export async function applyRulesToRow(tx: DbOrTx, rules: readonly RuleLike[], ro
   // A transfer has no split (audit a8-ledger-ui-10): a rule that marks a split row a transfer removes its lines.
   if (patch.isTransfer === true) await dropTransferSplits(tx, [row.id]);
   return true;
+}
+
+/**
+ * Audit a8-ledger-ui-09, second round: what "always do this" would do for a transaction moved to
+ * `categoryId` (`alwaysRuleVerdict`), with the rules as the sync and a rule run load them and the
+ * transaction as a rule run reads it: its payee's name and other names, description, amount,
+ * account and date. Null when there is no such transaction.
+ */
+export async function alwaysRuleCheck(db: DbOrTx, transactionId: string, categoryId: string): Promise<AlwaysRuleCheck | null> {
+  const [row] = await db
+    .select({
+      accountId: transaction.accountId,
+      date: transaction.date,
+      amountCents: transaction.amountCents,
+      rawDescription: transaction.rawDescription,
+      payeeName: sql<string>`coalesce(${payee.name}, '')`,
+      payeeAliases: sql<string[]>`coalesce(${payee.aliases}, '[]'::jsonb)`,
+    })
+    .from(transaction)
+    .leftJoin(payee, eq(payee.id, transaction.payeeId))
+    .where(eq(transaction.id, transactionId));
+  if (!row) return null;
+  const rules = await loadRules(db);
+  const verdict = alwaysRuleVerdict(rules, { payee: row.payeeName, payeeAliases: row.payeeAliases, description: row.rawDescription, amountCents: row.amountCents, accountId: row.accountId, date: row.date }, categoryId);
+  if (verdict.verdict === "offer") return { verdict: "offer", rule: null, reason: null };
+  const named = rules.find((r) => r.id === verdict.ruleId)!;
+  return { verdict: verdict.verdict, rule: { id: named.id, position: named.position, name: named.name }, reason: verdict.verdict === "blocked" ? verdict.reason : null };
 }
 
 export interface RunRulesOptions {

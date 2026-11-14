@@ -512,6 +512,21 @@ export const TransferCandidateView = z.object({
   isTransfer: z.boolean(),
 });
 export type TransferCandidateView = z.infer<typeof TransferCandidateView>;
+/**
+ * `GET /api/transactions/:id/always-rule?categoryId=` (audit a8-ledger-ui-09, second round):
+ * what the register's "always do this" would do for this transaction, by the rules engine run
+ * on it as the sync and a rule run see it (its payee's other names included). `offer`: a rule
+ * "payee equals <name> → category" written after every other rule would give it the category;
+ * `exists`: the rules already do, through `rule`; `blocked`: they would not, because `rule`
+ * ends the run (`stop`), marks it a transfer (`transfer`) or renames its payee (`payee`) first.
+ */
+export const AlwaysRuleQuery = z.object({ categoryId: z.string().uuid() });
+export const AlwaysRuleCheck = z.object({
+  verdict: z.enum(["offer", "exists", "blocked"]),
+  rule: z.object({ id: z.string().uuid(), position: z.number().int(), name: z.string() }).nullable(),
+  reason: z.enum(["stop", "transfer", "payee"]).nullable(),
+});
+export type AlwaysRuleCheck = z.infer<typeof AlwaysRuleCheck>;
 /** Replace a transaction's split lines: two or more lines that add up to its amount, or none to remove the split. */
 export const SetTransactionSplitsBody = z.object({
   splits: z
