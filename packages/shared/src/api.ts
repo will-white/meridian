@@ -161,7 +161,7 @@ export const UserView = z.object({
   totpEnrolled: z.boolean(),
   createdAt: z.string(),
   passwordChangedAt: z.string(),
-  /** The last completed sign-in (password and code); null when they never signed in. */
+  /** The last completed sign-in (password and code, or a passkey), kept on the member's row past the 90 days of sign-in activity; null when they never signed in. */
   lastSignInAt: z.string().nullable(),
   /** Signed-in sessions that have not expired. */
   activeSessions: z.number().int(),

@@ -66,6 +66,7 @@ export function describeDevice(userAgent: string | null | undefined): string {
 const EVENT_LABELS: Record<SignInEventKind, string> = {
   signed_in: "Signed in",
   password_failed: "Wrong password",
+  reauth_failed: "Wrong current password while signed in",
   code_failed: "Wrong authenticator code",
   code_lockout: "Fifth wrong code: sign-in stopped",
   passkey_signed_in: "Signed in with a passkey",

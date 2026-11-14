@@ -19,6 +19,11 @@ export const user = pgTable("user", {
   totpPendingSecretEnc: text("totp_pending_secret_enc"),
   role: text("role", { enum: ["owner", "viewer"] }).notNull().default("owner"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  /**
+   * The last completed sign-in (password and code, or a passkey): the time of its sign-in
+   * event, kept here because the activity is deleted after 90 days. Null when they never signed in.
+   */
+  lastSignInAt: timestamp("last_sign_in_at", { withTimezone: true }),
 });
 
 export const session = pgTable(
@@ -91,12 +96,12 @@ export const webauthnChallenge = pgTable(
   (t) => [index("webauthn_challenge_expires_idx").on(t.expiresAt)],
 );
 
-export const SIGN_IN_EVENT_KINDS = ["signed_in", "password_failed", "code_failed", "code_lockout", "passkey_signed_in", "passkey_failed"] as const;
+export const SIGN_IN_EVENT_KINDS = ["signed_in", "password_failed", "reauth_failed", "code_failed", "code_lockout", "passkey_signed_in", "passkey_failed"] as const;
 
 /**
  * Sign-in activity the owner can review: completed sign-ins and failed attempts on a real
- * account (a wrong password, a wrong or reused authenticator code, the code that ended a
- * password session, a passkey answer that did not verify). Attempts on unknown usernames are not kept: what is typed there may be
+ * account (a wrong password, a wrong current password on a signed-in session, a wrong or reused
+ * authenticator code, the code that ended a password session, a passkey answer that did not verify). Attempts on unknown usernames are not kept: what is typed there may be
  * a password. Rows older than 90 days are removed by the worker.
  */
 export const signInEvent = pgTable(
