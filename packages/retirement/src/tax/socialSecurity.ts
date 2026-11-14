@@ -250,45 +250,54 @@ function clamp(x: number, lo: number, hi: number): number {
 }
 
 // The factors on a rules record `t` (RU slots at offset 0): one formula each, shared by the
-// exported functions and the hot path.
+// exported functions and the hot path. Each writes its factor to `out[slot]` instead of returning
+// it: the hot path stores the factors fixed once per path in the state, and a double returned from
+// a call V8 does not inline is boxed. The exported functions read them back from `FACTOR`.
 
-function retirementFactorAt(t: Float64Array, claimMonths: number, fra: number): number {
+/** Scratch of the exported factor functions. */
+const FACTOR = new Float64Array(1);
+
+function storeRetirementFactor(out: Float64Array, slot: number, t: Float64Array, claimMonths: number, fra: number): void {
   const c = clamp(claimMonths, t[RU.EARLIEST]!, t[RU.LATEST]!);
   if (c < fra) {
     const m = fra - c;
     const firstMonths = t[RU.EARLY_FIRST_MONTHS]!;
     const first = m < firstMonths ? m : firstMonths;
     const den = t[RU.EARLY_DEN]!;
-    return (den - (first * t[RU.EARLY_FIRST]! + (m - first) * t[RU.EARLY_LATER]!)) / den;
+    out[slot] = (den - (first * t[RU.EARLY_FIRST]! + (m - first) * t[RU.EARLY_LATER]!)) / den;
+    return;
   }
   const den = t[RU.DELAYED_DEN]!;
-  return (den + (c - fra) * t[RU.DELAYED_NUM]!) / den;
+  out[slot] = (den + (c - fra) * t[RU.DELAYED_NUM]!) / den;
 }
 
-function spousalFactorAt(t: Float64Array, ageMonths: number, fra: number): number {
+function storeSpousalFactor(out: Float64Array, slot: number, t: Float64Array, ageMonths: number, fra: number): void {
   const earliest = t[RU.EARLIEST]!;
   const a = ageMonths > earliest ? ageMonths : earliest;
   const e = fra > a ? fra - a : 0;
   const firstMonths = t[RU.SPOUSAL_FIRST_MONTHS]!;
   const first = e < firstMonths ? e : firstMonths;
   const den = t[RU.SPOUSAL_DEN]!;
-  return (den - (first * t[RU.SPOUSAL_FIRST]! + (e - first) * t[RU.SPOUSAL_LATER]!)) / den;
+  out[slot] = (den - (first * t[RU.SPOUSAL_FIRST]! + (e - first) * t[RU.SPOUSAL_LATER]!)) / den;
 }
 
-function survivorFactorAt(t: Float64Array, ageMonths: number, survivorFra: number): number {
+function storeSurvivorFactor(out: Float64Array, slot: number, t: Float64Array, ageMonths: number, survivorFra: number): void {
   const earliest = t[RU.SURVIVOR_EARLIEST]!;
   const span = survivorFra - earliest;
-  if (!(span > 0)) return 1;
+  if (!(span > 0)) {
+    out[slot] = 1;
+    return;
+  }
   const a = ageMonths > earliest ? ageMonths : earliest;
   const k = survivorFra > a ? survivorFra - a : 0;
   const den = t[RU.MAX_REDUCTION_DEN]! * span;
-  return (den - t[RU.MAX_REDUCTION_NUM]! * k) / den;
+  out[slot] = (den - t[RU.MAX_REDUCTION_NUM]! * k) / den;
 }
 
 /** `1 + credits × delayed credit`, as one division. */
-function creditFactorAt(t: Float64Array, credits: number): number {
+function storeCreditFactor(out: Float64Array, slot: number, t: Float64Array, credits: number): void {
   const den = t[RU.DELAYED_DEN]!;
-  return (den + credits * t[RU.DELAYED_NUM]!) / den;
+  out[slot] = (den + credits * t[RU.DELAYED_NUM]!) / den;
 }
 
 /**
@@ -297,7 +306,8 @@ function creditFactorAt(t: Float64Array, credits: number): number {
  * `m = fra − claim`; otherwise `1 + (claim − fra) / 150`. For 804: 7/10 at 62 … 31/25 at 70.
  */
 export function retirementFactor(claimMonths: number, fra: number, r: SsRules = defaultSsRules()): number {
-  return retirementFactorAt(r.table, claimMonths, fra);
+  storeRetirementFactor(FACTOR, 0, r.table, claimMonths, fra);
+  return FACTOR[0]!;
 }
 
 /** `amount ÷ retirementFactor(claimMonths, fra)` as one division of the rational (1,400 ÷ 7/10 is exactly 2,000). */
@@ -313,12 +323,14 @@ function divideByRetirementFactor(amount: number, claimMonths: number, fra: numb
 
 /** The factor of a spousal benefit starting at `ageMonths` (at least 744): `e = max(0, fra − age)`, 25/36 of 1% for 36 months, then 5/12 of 1%; no credits. */
 export function spousalFactor(ageMonths: number, fra: number, r: SsRules = defaultSsRules()): number {
-  return spousalFactorAt(r.table, ageMonths, fra);
+  storeSpousalFactor(FACTOR, 0, r.table, ageMonths, fra);
+  return FACTOR[0]!;
 }
 
 /** The factor of a widow(er)'s benefit starting at `ageMonths` (at least 720): linear from 71.5% at 60 to 1 at survivor full retirement age. */
 export function survivorFactor(ageMonths: number, survivorFra: number, r: SsRules = defaultSsRules()): number {
-  return survivorFactorAt(r.table, ageMonths, survivorFra);
+  storeSurvivorFactor(FACTOR, 0, r.table, ageMonths, survivorFra);
+  return FACTOR[0]!;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -427,7 +439,7 @@ function planTable(rules: SsRules, people: readonly SsPerson[], spousal: boolean
     t[o + SP.CREDITS] = p.totalCreditMonths;
     t[o + SP.PIA_AT_START] = p.piaAtStart;
     for (let c = rules.earliestRetirementMonths; c <= rules.latestCreditMonths; c++) {
-      t[o + SP.FACTOR0 + c - rules.earliestRetirementMonths] = retirementFactorAt(rules.table, c, p.fra);
+      storeRetirementFactor(t, o + SP.FACTOR0 + c - rules.earliestRetirementMonths, rules.table, c, p.fra);
     }
   });
   return t;
@@ -616,31 +628,9 @@ export function resetSsState(plan: SsPlan, st: Float64Array): void {
 const PAY = new Float64Array(3);
 /** Scratch of a run of months: payments, months with a payment, spousal parts, survivor parts (dollars). */
 const ACC = new Float64Array(4);
-
-/**
- * The deceased's own factor, fixed once after the death (§3.9.7): when they had claimed, the factor
- * in pay in the December of the death with every credit counted (and the earnings-test months
- * credited when past full retirement age); when not, 1 before full retirement age, else the
- * credits earned up to the January after the death (at most to 70).
- */
-function deceasedFactor(tb: Float64Array, o: number, arfMonths: number, deathYear: number): number {
-  const december = 12 * deathYear + 11;
-  const claimAge = tb[o + SP.CLAIM_AGE]!;
-  const fra = tb[o + SP.FRA]!;
-  const fraIndex = tb[o + SP.FRA_INDEX]!;
-  if (tb[o + SP.CLAIM_INDEX]! <= december) {
-    if (claimAge < fra) {
-      const credited = december >= fraIndex ? claimAge + arfMonths : claimAge;
-      return retirementFactorAt(tb, credited < fra ? credited : fra, fra);
-    }
-    return creditFactorAt(tb, tb[o + SP.CREDITS]!);
-  }
-  const january = 12 * (deathYear + 1);
-  if (january <= fraIndex) return 1;
-  const months = january - fraIndex;
-  const cap = tb[RU.LATEST]! - fra;
-  return creditFactorAt(tb, months < cap ? months : cap);
-}
+/** Scratch of the scalar entry points (`socialSecurityYear`, `monthlyPayment`): the two death years and the two wages. */
+const DEATHS = new Float64Array(2);
+const WAGES = new Float64Array(2);
 
 /*
  * The per-month functions below call nothing but Math and the store* helpers, which compute and
@@ -649,19 +639,44 @@ function deceasedFactor(tb: Float64Array, o: number, arfMonths: number, deathYea
  * `Math.floor(z + 1e−9)` floorDollar). A double that crosses a call V8 does not inline is boxed,
  * and whether V8 inlines a helper depends on what else the thread has run (measured: after plans
  * of other shapes, about 70 bytes a year were allocated through floorDime and the credit factor).
+ * Nothing but integers and arrays crosses a call here: the factors are written into the state by
+ * the store* helpers and the death years come in an array.
  */
-function storeSpousalFactor(st: Float64Array, slot: number, tb: Float64Array, ageMonths: number, fra: number): void {
-  st[slot] = spousalFactorAt(tb, ageMonths, fra);
-}
-function storeSurvivorFactor(st: Float64Array, slot: number, tb: Float64Array, ageMonths: number, survivorFra: number): void {
-  st[slot] = survivorFactorAt(tb, ageMonths, survivorFra);
-}
-function storeDeceasedFactor(st: Float64Array, slot: number, tb: Float64Array, o: number, arfMonths: number, deathYear: number): void {
-  st[slot] = deceasedFactor(tb, o, arfMonths, deathYear);
+
+/**
+ * The deceased's own factor, fixed once after the death (§3.9.7), written to `st[slot]`: when they
+ * had claimed, the factor in pay in the December of the death with every credit counted (and the
+ * earnings-test months credited when past full retirement age); when not, 1 before full
+ * retirement age, else the credits earned up to the January after the death (at most to 70).
+ * `deaths[d]` is the decedent's death year.
+ */
+function storeDeceasedFactor(st: Float64Array, slot: number, tb: Float64Array, o: number, arfMonths: number, deaths: Float64Array, d: number): void {
+  const deathYear = deaths[d]!;
+  const december = 12 * deathYear + 11;
+  const claimAge = tb[o + SP.CLAIM_AGE]!;
+  const fra = tb[o + SP.FRA]!;
+  const fraIndex = tb[o + SP.FRA_INDEX]!;
+  if (tb[o + SP.CLAIM_INDEX]! <= december) {
+    if (claimAge < fra) {
+      const credited = december >= fraIndex ? claimAge + arfMonths : claimAge;
+      storeRetirementFactor(st, slot, tb, credited < fra ? credited : fra, fra);
+      return;
+    }
+    storeCreditFactor(st, slot, tb, tb[o + SP.CREDITS]!);
+    return;
+  }
+  const january = 12 * (deathYear + 1);
+  if (january <= fraIndex) {
+    st[slot] = 1;
+    return;
+  }
+  const months = january - fraIndex;
+  const cap = tb[RU.LATEST]! - fra;
+  storeCreditFactor(st, slot, tb, months < cap ? months : cap);
 }
 
-/** Writes PAY for person i in month m: own benefit, spousal part, widow(er)'s benefit (each truncated to the dime). */
-function evaluate(tb: Float64Array, st: Float64Array, i: number, m: number, deathYear0: number, deathYear1: number): void {
+/** Writes PAY for person i in month m: own benefit, spousal part, widow(er)'s benefit (each truncated to the dime). `deaths` holds both death years. */
+function evaluate(tb: Float64Array, st: Float64Array, i: number, m: number, deaths: Float64Array): void {
   const rec = tb[PL.PERSON_REC]!;
   const o = PERSON0 + i * rec;
   const year = Math.floor(m / 12);
@@ -697,7 +712,7 @@ function evaluate(tb: Float64Array, st: Float64Array, i: number, m: number, deat
   const j = 1 - i;
   const oj = PERSON0 + j * rec;
   if (tb[oj + SP.PRESENT]! > 0 && tb[o + SP.MODE]! > 0 && tb[oj + SP.MODE]! > 0) {
-    const deathJ = j === 0 ? deathYear0 : deathYear1;
+    const deathJ = deaths[j]!;
     const birth = tb[o + SP.BIRTH]!;
     if (year <= deathJ) {
       // The spousal excess; deemed filing: from the later of the two claims.
@@ -720,7 +735,7 @@ function evaluate(tb: Float64Array, st: Float64Array, i: number, m: number, deat
       const start = january > sixty ? january : sixty;
       if (m >= start) {
         if (st[SS.SURVIVOR_FACTOR + i]! < 0) storeSurvivorFactor(st, SS.SURVIVOR_FACTOR + i, tb, start - birth, tb[o + SP.SURVIVOR_FRA]!);
-        if (st[SS.DECEASED_FACTOR + j]! < 0) storeDeceasedFactor(st, SS.DECEASED_FACTOR + j, tb, oj, st[SS.ARF_MONTHS + j]!, deathJ);
+        if (st[SS.DECEASED_FACTOR + j]! < 0) storeDeceasedFactor(st, SS.DECEASED_FACTOR + j, tb, oj, st[SS.ARF_MONTHS + j]!, deaths, j);
         const sv = st[SS.SURVIVOR_FACTOR + i]!;
         const d = st[SS.DECEASED_FACTOR + j]!;
         const piaJ = st[SS.PIA + j]!;
@@ -749,7 +764,9 @@ function evaluate(tb: Float64Array, st: Float64Array, i: number, m: number, deat
  */
 export function monthlyPayment(plan: SsPlan, st: Float64Array, person: 0 | 1, month: number, deathYear0: number, deathYear1: number): number {
   if (plan.people[person] === undefined) return 0;
-  evaluate(plan.table, st, person, month, deathYear0, deathYear1);
+  DEATHS[0] = deathYear0;
+  DEATHS[1] = deathYear1;
+  evaluate(plan.table, st, person, month, DEATHS);
   const base = PAY[0]! + PAY[1]!;
   return floorDollar(base > PAY[2]! ? base : PAY[2]!);
 }
@@ -761,7 +778,7 @@ export function monthlyPayment(plan: SsPlan, st: Float64Array, person: 0 | 1, mo
  * H16). The partner's death starts a widow(er)'s benefit in a January, which is never strictly
  * inside a period: a period lies within one calendar year (the plan clock).
  */
-function accumulate(tb: Float64Array, st: Float64Array, i: number, from: number, to: number, deathYear0: number, deathYear1: number, shortcut: boolean): void {
+function accumulate(tb: Float64Array, st: Float64Array, i: number, from: number, to: number, deaths: Float64Array, shortcut: boolean): void {
   ACC[0] = 0;
   ACC[1] = 0;
   ACC[2] = 0;
@@ -780,7 +797,7 @@ function accumulate(tb: Float64Array, st: Float64Array, i: number, from: number,
   const evaluations = uniform ? 1 : to - from;
   const times = uniform ? to - from : 1;
   for (let k = 0; k < evaluations; k++) {
-    evaluate(tb, st, i, from + k, deathYear0, deathYear1);
+    evaluate(tb, st, i, from + k, deaths);
     const own = PAY[0]!;
     const base = own + PAY[1]!;
     const wib = PAY[2]!;
@@ -801,10 +818,9 @@ function ssYear(
   periodMonths: number,
   prog: Float64Array,
   progOff: number,
-  deathYear0: number,
-  deathYear1: number,
-  wages0: number,
-  wages1: number,
+  deaths: Float64Array,
+  wages: Float64Array,
+  wagesOff: number,
   out: Float64Array,
   shortcut: boolean,
 ): void {
@@ -824,11 +840,11 @@ function ssYear(
     out[SO.WITHHELD + i] = 0;
     out[SO.MONTHS_PAID + i] = 0;
     const o = PERSON0 + i * rec;
-    if (!(tb[o + SP.MODE]! > 0) || year > (i === 0 ? deathYear0 : deathYear1)) continue;
+    if (!(tb[o + SP.MODE]! > 0) || year > deaths[i]!) continue;
     // 2a. The months of the period before full retirement age.
     const fraIndex = tb[o + SP.FRA_INDEX]!;
     const split = fraIndex < periodStart ? periodStart : fraIndex > periodEnd ? periodEnd : fraIndex;
-    accumulate(tb, st, i, periodStart, split, deathYear0, deathYear1, shortcut);
+    accumulate(tb, st, i, periodStart, split, deaths, shortcut);
     const sPre = ACC[0]!;
     const nPre = ACC[1]!;
     const spousal = ACC[2]!;
@@ -836,18 +852,18 @@ function ssYear(
     // 2b. The earnings test on the person's wages of the period.
     let withheld = 0;
     let monthsWithheld = 0;
-    const wages = i === 0 ? wages0 : wages1;
-    if (sPre > 0 && wages > 0) {
+    const earned = wages[wagesOff + i]!;
+    if (sPre > 0 && earned > 0) {
       const f = periodMonths / 12;
       let over: number;
       let num: number;
       let den: number;
       if (year < Math.floor(fraIndex / 12)) {
-        over = wages - prog[progOff + PR.ET_UNDER]! * f;
+        over = earned - prog[progOff + PR.ET_UNDER]! * f;
         num = tb[RU.WITHHOLD_UNDER_NUM]!;
         den = tb[RU.WITHHOLD_UNDER_DEN]!;
       } else {
-        over = (wages * (split - periodStart)) / periodMonths - prog[progOff + PR.ET_FRA]! * f;
+        over = (earned * (split - periodStart)) / periodMonths - prog[progOff + PR.ET_FRA]! * f;
         num = tb[RU.WITHHOLD_FRA_NUM]!;
         den = tb[RU.WITHHOLD_FRA_DEN]!;
       }
@@ -860,7 +876,7 @@ function ssYear(
       }
     }
     // 2c. The months from full retirement age on, with the withheld months already credited back.
-    accumulate(tb, st, i, split, periodEnd, deathYear0, deathYear1, shortcut);
+    accumulate(tb, st, i, split, periodEnd, deaths, shortcut);
     // 2d and 3.
     out[SO.BENEFIT + i] = (sPre - withheld + ACC[0]!) * scale;
     out[SO.SPOUSAL + i] = (spousal + ACC[2]!) * scale;
@@ -902,7 +918,35 @@ export function socialSecurityYear(
   wages1: number,
   out: Float64Array,
 ): void {
-  ssYear(plan.table, st, year, periodStart, periodMonths, prog, progOff, deathYear0, deathYear1, wages0, wages1, out, true);
+  DEATHS[0] = deathYear0;
+  DEATHS[1] = deathYear1;
+  WAGES[0] = wages0;
+  WAGES[1] = wages1;
+  ssYear(plan.table, st, year, periodStart, periodMonths, prog, progOff, DEATHS, WAGES, 0, out, true);
+}
+
+/**
+ * `socialSecurityYear` with its doubles read from arrays: `deathYears[i]` is person i's death year
+ * (`+Infinity` when they do not die in the plan) and `wages[wagesOff + i]` their gross wages of the
+ * period. The form the year loop calls through `TAX_FUNCTIONS` (its `socialSecurityYear` member):
+ * the year function is too large for V8 to inline, and a double passed to a call it does not inline
+ * is boxed (a heap number for each wage a year). The same operations on the same values as
+ * `socialSecurityYear`.
+ */
+export function socialSecurityYearFrom(
+  plan: SsPlan,
+  st: Float64Array,
+  year: number,
+  periodStart: number,
+  periodMonths: number,
+  prog: Float64Array,
+  progOff: number,
+  deathYears: Float64Array,
+  wages: Float64Array,
+  wagesOff: number,
+  out: Float64Array,
+): void {
+  ssYear(plan.table, st, year, periodStart, periodMonths, prog, progOff, deathYears, wages, wagesOff, out, true);
 }
 
 /** `socialSecurityYear` without the shortcut: every month evaluated (the reference of H16). */
@@ -920,7 +964,11 @@ export function socialSecurityYearMonthLoop(
   wages1: number,
   out: Float64Array,
 ): void {
-  ssYear(plan.table, st, year, periodStart, periodMonths, prog, progOff, deathYear0, deathYear1, wages0, wages1, out, false);
+  DEATHS[0] = deathYear0;
+  DEATHS[1] = deathYear1;
+  WAGES[0] = wages0;
+  WAGES[1] = wages1;
+  ssYear(plan.table, st, year, periodStart, periodMonths, prog, progOff, DEATHS, WAGES, 0, out, false);
 }
 
 /** One person's parts of the year's benefit in cents for the year table (seams C37): spousal, survivor, withheld. */

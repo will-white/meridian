@@ -115,18 +115,28 @@ export const noTaxInto: FederalTaxInto = flatTaxInto(0, 0);
 
 type Rmd = TaxFunctions["requiredMinimumDistribution"];
 
-/** RMD = balance ÷ `divisor` from age `fromAge` on (× f in a partial year, at most the balance), as the real function's period rule. */
+/**
+ * RMD = balance ÷ `divisor` from age `fromAge` on (× f = the period's months ÷ 12 in a partial
+ * year, at most the balance), as the real function's period rule, in the record form the loop
+ * calls (`out[a]` from `balances[a]`).
+ */
 export function rmdByDivisor(divisor: number, fromAge: number): Rmd {
-  return (balance: number, age: number, _startAge: number, _spouseAge: number, yearFraction = 1): number => {
-    if (!(balance > 0) || age < fromAge) return 0;
-    const f = yearFraction > 0 && yearFraction < 1 ? yearFraction : 1;
+  return (balances, a, age, _startAge, _spouseAge, periodMonths, _tables, out): void => {
+    const balance = balances[a]!;
+    if (!(balance > 0) || age < fromAge) {
+      out[a] = 0;
+      return;
+    }
+    const f = periodMonths > 0 && periodMonths < 12 ? periodMonths / 12 : 1;
     const x = (balance / divisor) * f;
-    return x < balance ? x : balance;
+    out[a] = x < balance ? x : balance;
   };
 }
 
 /** No RMD. */
-export const noRmd: Rmd = () => 0;
+export const noRmd: Rmd = (_balances, a, _age, _startAge, _spouseAge, _periodMonths, _tables, out): void => {
+  out[a] = 0;
+};
 
 type SocialSecurityYear = TaxFunctions["socialSecurityYear"];
 
@@ -137,14 +147,14 @@ type SocialSecurityYear = TaxFunctions["socialSecurityYear"];
 export function fixedSocialSecurity(amounts: readonly number[]): SocialSecurityYear {
   const a0 = amounts[0] ?? 0;
   const a1 = amounts[1] ?? 0;
-  return (_plan, _st, year, _periodStart, periodMonths, _prog, _progOff, deathYear0, deathYear1, _w0, _w1, out): void => {
+  return (_plan, _st, year, _periodStart, periodMonths, _prog, _progOff, deathYears, _wages, _wagesOff, out): void => {
     for (let k = 0; k < SO_REC; k++) out[k] = 0;
     const m = periodMonths / 12;
-    if (year <= deathYear0 && a0 > 0) {
+    if (year <= deathYears[0]! && a0 > 0) {
       out[SO.BENEFIT] = a0 * m;
       out[SO.MONTHS_PAID] = periodMonths;
     }
-    if (year <= deathYear1 && a1 > 0) {
+    if (year <= deathYears[1]! && a1 > 0) {
       out[SO.BENEFIT + 1] = a1 * m;
       out[SO.MONTHS_PAID + 1] = periodMonths;
     }
@@ -158,7 +168,9 @@ type PayrollInto = TaxFunctions["employeePayrollTaxInto"];
 
 /** `rate` of each person's gross wages (no wage base, no threshold): `PT.TOTAL` and `PT.MEDICARE`. */
 export function flatPayrollTaxInto(rate: number): PayrollInto {
-  return (_p, _o, wages0, wages1, _status, _f, out): void => {
+  return (_p, _o, wages, wagesOff, _status, _periodMonths, out): void => {
+    const wages0 = wages[wagesOff]!;
+    const wages1 = wages[wagesOff + 1]!;
     for (let k = 0; k < PT_REC; k++) out[k] = 0;
     const x = rate * ((wages0 > 0 ? wages0 : 0) + (wages1 > 0 ? wages1 : 0));
     out[PT.MEDICARE] = x;
@@ -172,7 +184,7 @@ export const noPayrollTaxInto: PayrollInto = flatPayrollTaxInto(0);
 type LimitsInto = TaxFunctions["contributionLimitsInto"];
 
 /** No contribution limit (`+Infinity` in every `CL` slot). */
-export const unlimitedContributionsInto: LimitsInto = (_p, _o, _age, _f, _family, _months, out): void => {
+export const unlimitedContributionsInto: LimitsInto = (_p, _o, _age, _periodMonths, _family, _months, out): void => {
   out[CL.EMPLOYEE_DEFERRAL] = Number.POSITIVE_INFINITY;
   out[CL.ANNUAL_ADDITIONS] = Number.POSITIVE_INFINITY;
   out[CL.IRA] = Number.POSITIVE_INFINITY;
@@ -181,12 +193,12 @@ export const unlimitedContributionsInto: LimitsInto = (_p, _o, _age, _f, _family
 
 /**
  * Fixed annual limits: the deferral (plus `catchUp` from 50), the annual additions and the IRA
- * limit × f; the HSA limit × the months before 65 / 12. Test figures, not law.
+ * limit × f (the period's months ÷ 12); the HSA limit × the months before 65 / 12. Test figures, not law.
  */
 export function fixedContributionLimitsInto(l: { deferral: number; catchUp?: number; additions: number; ira: number; hsa: number }): LimitsInto {
   const catchUp = l.catchUp ?? 0;
-  return (_p, _o, age, f, _family, months, out): void => {
-    const g = f > 0 && f < 1 ? f : 1;
+  return (_p, _o, age, periodMonths, _family, months, out): void => {
+    const g = periodMonths > 0 && periodMonths < 12 ? periodMonths / 12 : 1;
     out[CL.EMPLOYEE_DEFERRAL] = (l.deferral + (age >= 50 ? catchUp : 0)) * g;
     out[CL.ANNUAL_ADDITIONS] = l.additions * g;
     out[CL.IRA] = l.ira * g;

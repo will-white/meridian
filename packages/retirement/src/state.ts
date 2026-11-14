@@ -13,9 +13,17 @@
 
 import { type MarketPath, createMarketPath } from "./models/index.js";
 import type { PreparedRun } from "./prepare.js";
-import { type SpendDecision, type SpendingOutcome, STRATEGY_STATE_LENGTH, createSpendDecision, createSpendingOutcome } from "./strategies/index.js";
+import {
+  type SettleInput,
+  type SpendDecision,
+  type SpendingOutcome,
+  STRATEGY_STATE_LENGTH,
+  createSettleInput,
+  createSpendDecision,
+  createSpendingOutcome,
+} from "./strategies/index.js";
 import { type Assessment, type AssessFn, type EngineHooks, type TaxFunctions, type YearView, TAX_FUNCTIONS, createAssessment } from "./hooks.js";
-import { CL_REC, HW, HW_REC, PROG_REC, PT_REC, RB_REC, RW_REC, SO_REC, SS_REC, TAX_IN, TAX_OUT, TAX_REC, TY_REC, WN_REC } from "./tax/layout.js";
+import { CL_REC, HW, HW_REC, PROG_REC, PT_REC, RB_REC, RW_REC, SO_REC, SS_REC, TAX_IN, TAX_OUT, TAX_REC, TYI_REC, TY_REC, WN_REC } from "./tax/layout.js";
 import { IY_REC } from "./flows.js";
 import { CARRY_REC, PP_COLUMNS, PP_REC, createAssessFn } from "./assess.js";
 
@@ -100,6 +108,8 @@ export interface PathState {
   readonly ssRate: Float64Array;
   /** Scheduled conversion of each person this year (before the death skip and the cap at the pre-tax balance). */
   readonly conv: Float64Array;
+  /** The conversion each person makes this year (after the death skip and the cap), the Roth record's input. */
+  readonly convTake: Float64Array;
   /** Gross wages of each person this year and the employee contributions to pre-tax and HSA accounts (after the caps). */
   readonly grossWages: Float64Array;
   readonly preTaxDeferral: Float64Array;
@@ -130,6 +140,8 @@ export interface PathState {
   readonly iy: Float64Array;
   readonly employee: Float64Array;
   readonly employer: Float64Array;
+  /** Per contribution: the employee amount kept after the caps (the Roth record's input for a Roth contribution). */
+  readonly employeeKept: Float64Array;
   /** Limits per person (`CL`) and the deferral limit without catch-up, at `i × CL_REC`. */
   readonly limits: Float64Array;
   readonly limitsBase: Float64Array;
@@ -175,6 +187,12 @@ export interface PathState {
   readonly hwScratch: Float64Array;
   readonly rothW: Float64Array;
   readonly hsaW: Float64Array;
+  /** Per person: the year's qualified medical spending shared to the person's HSA withdrawal (assess.ts). */
+  readonly hsaQualified: Float64Array;
+  /** The input record of the taxable yields of one account (`TYI`; assess.ts). */
+  readonly tyIn: Float64Array;
+  /** The surplus deposited this year (one slot, `depositAtWeightsFrom`'s input). */
+  readonly surplusDeposit: Float64Array;
   readonly trade: TradeResult;
   readonly zeroW: Float64Array;
 
@@ -233,6 +251,8 @@ export interface PathState {
   readonly view: MutableYearView;
   readonly decision: SpendDecision;
   readonly outcome: SpendingOutcome;
+  /** The inputs of the year's need and settlement (`fillNeedsFor`, `settleSpendingFor`). */
+  readonly settle: SettleInput;
   readonly record: Assessment;
   readonly baseline: Assessment;
   readonly assess: AssessFn;
@@ -312,6 +332,7 @@ const PathStateObject = function PathStateObject(this: PathStateFields, run: Pre
   this.hsaShare = new Float64Array(P);
   this.ssRate = new Float64Array(P);
   this.conv = person();
+  this.convTake = person();
   this.grossWages = person();
   this.preTaxDeferral = person();
   this.value = perAccount();
@@ -332,6 +353,7 @@ const PathStateObject = function PathStateObject(this: PathStateFields, run: Pre
   this.iy = new Float64Array(IY_REC);
   this.employee = new Float64Array(C);
   this.employer = new Float64Array(C);
+  this.employeeKept = new Float64Array(C);
   this.limits = new Float64Array(2 * CL_REC);
   this.limitsBase = new Float64Array(2 * CL_REC);
   this.groupEmployee = new Float64Array(2 * 4);
@@ -363,6 +385,9 @@ const PathStateObject = function PathStateObject(this: PathStateFields, run: Pre
   this.hwScratch = new Float64Array(HW_REC);
   this.rothW = person();
   this.hsaW = person();
+  this.hsaQualified = person();
+  this.tyIn = new Float64Array(TYI_REC);
+  this.surplusDeposit = new Float64Array(1);
   this.trade = createTradeResult();
   this.zeroW = perAccount();
   this.t = 0;
@@ -401,6 +426,7 @@ const PathStateObject = function PathStateObject(this: PathStateFields, run: Pre
   this.view = view;
   this.decision = createSpendDecision();
   this.outcome = createSpendingOutcome();
+  this.settle = createSettleInput();
   this.record = createAssessment();
   this.baseline = createAssessment();
   this.assess = () => undefined;
@@ -493,6 +519,9 @@ export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFu
   ps.assess = createAssessFn(ps);
   // The penalty fractions and shares by person and plan year (tax-rmd-ss §3.7.1, seams C33).
   const hw = new Float64Array(HW_REC);
+  const oneDollar = Float64Array.of(1);
+  const noQualified = Float64Array.of(0);
+  const early65At = new Float64Array(1);
   for (let i = 0; i < P; i++) {
     for (let t = 0; t < Y; t++) {
       const k = i * Y + t;
@@ -504,9 +533,10 @@ export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFu
       ps.earlyTable[k] = early;
       ps.early65Table[k] = early65;
       ps.separated55Table[k] = separated ? 1 : 0;
-      ps.preTaxShareTable[k * 2] = tax.preTaxPenaltyBase(1, early, false, separated);
-      ps.preTaxShareTable[k * 2 + 1] = tax.preTaxPenaltyBase(1, early, true, separated);
-      tax.hsaWithdraw(1, 0, early65, hw);
+      tax.preTaxPenaltyBase(1, early, false, separated, ps.preTaxShareTable, k * 2);
+      tax.preTaxPenaltyBase(1, early, true, separated, ps.preTaxShareTable, k * 2 + 1);
+      early65At[0] = early65;
+      tax.hsaWithdraw(oneDollar, noQualified, early65At, 0, hw);
       ps.hsaShareTable[k] = hw[HW.PENALTY_BASE]!;
     }
   }

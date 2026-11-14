@@ -11,12 +11,22 @@
  *
  * Every function is pure apart from the record it is given, allocates nothing and never throws on
  * finite inputs. A gross-up preview runs `rothWithdraw` on a scratch copy of the record.
+ *
+ * The year loop calls the `…From` / `…Into` forms, which read their amounts from arrays and write
+ * a result into an array instead of taking or returning a double: V8 boxes a double that crosses a
+ * call it does not inline (engine-and-returns §3.15's zero-allocation budget). The scalar forms
+ * (`seedRoth`, `rothWithdraw`, …) are the same functions on a one-slot scratch, for previews and
+ * tests.
  */
 
 import { RB, RW } from "./layout.js";
 
 /** Years after `FIRST_YEAR` from which earnings can be qualified (the five-taxable-year period). */
 const FIVE_YEARS = 5;
+
+/** Scratch of the scalar forms: the amount (or balance) and the early fraction. */
+const AMOUNT = new Float64Array(1);
+const EARLY = new Float64Array(1);
 
 /**
  * Seeds a person's record at the plan start (§3.7.3): `BASIS_FREE` is the sum of the contribution
@@ -26,6 +36,13 @@ const FIVE_YEARS = 5;
  * met for an existing account, §8.2 `roth_history`), else 0.
  */
 export function seedRoth(st: Float64Array, off: number, basisFree: number, fundedAccount: boolean, startYear: number): void {
+  AMOUNT[0] = basisFree;
+  seedRothFrom(st, off, AMOUNT, 0, fundedAccount, startYear);
+}
+
+/** `seedRoth` with the basis read from `basis[at]` (the loop's form: `PreparedRun.rothBasis0`). */
+export function seedRothFrom(st: Float64Array, off: number, basis: Float64Array, at: number, fundedAccount: boolean, startYear: number): void {
+  const basisFree = basis[at]!;
   st[off + RB.BASIS_FREE] = basisFree > 0 ? basisFree : 0;
   for (let k = RB.CONV0; k <= RB.CONV4; k++) st[off + k] = 0;
   st[off + RB.FIRST_YEAR] = fundedAccount ? startYear - FIVE_YEARS : 0;
@@ -49,6 +66,13 @@ function startClock(st: Float64Array, off: number, year: number): void {
 
 /** A regular contribution in `year`: `BASIS_FREE += amount`; the first funding starts the clock. */
 export function addRothContribution(st: Float64Array, off: number, amount: number, year: number): void {
+  AMOUNT[0] = amount;
+  addRothContributionFrom(st, off, AMOUNT, 0, year);
+}
+
+/** `addRothContribution` of `amounts[at]`. */
+export function addRothContributionFrom(st: Float64Array, off: number, amounts: Float64Array, at: number, year: number): void {
+  const amount = amounts[at]!;
   if (!(amount > 0)) return;
   st[off + RB.BASIS_FREE] = (st[off + RB.BASIS_FREE] as number) + amount;
   startClock(st, off, year);
@@ -56,6 +80,13 @@ export function addRothContribution(st: Float64Array, off: number, amount: numbe
 
 /** A conversion in `year`: `CONV4 += amount`; the first funding starts the clock. */
 export function addRothConversion(st: Float64Array, off: number, amount: number, year: number): void {
+  AMOUNT[0] = amount;
+  addRothConversionFrom(st, off, AMOUNT, 0, year);
+}
+
+/** `addRothConversion` of `amounts[at]`. */
+export function addRothConversionFrom(st: Float64Array, off: number, amounts: Float64Array, at: number, year: number): void {
+  const amount = amounts[at]!;
   if (!(amount > 0)) return;
   st[off + RB.CONV4] = (st[off + RB.CONV4] as number) + amount;
   startClock(st, off, year);
@@ -76,6 +107,18 @@ export function rothFiveYearMet(st: Float64Array, off: number, year: number): bo
  * parts. The caller keeps `amount` within the person's Roth balance.
  */
 export function rothWithdraw(st: Float64Array, off: number, amount: number, earlyFrac: number, year: number, out: Float64Array): void {
+  AMOUNT[0] = amount;
+  EARLY[0] = earlyFrac;
+  rothWithdrawFrom(st, off, AMOUNT, EARLY, 0, year, out);
+}
+
+/**
+ * `rothWithdraw` of `amounts[at]` with the early fraction `early[at]` (the loop's form, through
+ * `TAX_FUNCTIONS.rothWithdraw`: the person's withdrawal and early fraction, at the person's index).
+ */
+export function rothWithdrawFrom(st: Float64Array, off: number, amounts: Float64Array, early: Float64Array, at: number, year: number, out: Float64Array): void {
+  const amount = amounts[at]!;
+  const earlyFrac = early[at]!;
   let remaining = amount > 0 ? amount : 0;
   const basis = st[off + RB.BASIS_FREE] as number;
   const fromBasis = basis > 0 ? (remaining < basis ? remaining : basis) : 0;
@@ -106,17 +149,33 @@ export function rothWithdraw(st: Float64Array, off: number, amount: number, earl
  * gives `TAXABLE = PENALTY_BASE = 0`.
  */
 export function rothFreeAmount(st: Float64Array, off: number, balance: number, earlyFrac: number, year: number): number {
+  AMOUNT[0] = balance;
+  EARLY[0] = earlyFrac;
+  rothFreeAmountInto(st, off, AMOUNT, EARLY, 0, year, AMOUNT);
+  return AMOUNT[0]!;
+}
+
+/**
+ * `rothFreeAmount` of the balance `balances[at]` with the early fraction `early[at]`, written to
+ * `out[at]` (the loop's form, through `TAX_FUNCTIONS.rothFreeAmount`; `out` may be `balances`).
+ */
+export function rothFreeAmountInto(st: Float64Array, off: number, balances: Float64Array, early: Float64Array, at: number, year: number, out: Float64Array): void {
+  const balance = balances[at]!;
+  const earlyFrac = early[at]!;
   const total = balance > 0 ? balance : 0;
   const basis = st[off + RB.BASIS_FREE] as number;
   let free = basis > 0 ? basis : 0;
   if (earlyFrac <= 0) {
-    if (rothFiveYearMet(st, off, year)) return total;
+    if (rothFiveYearMet(st, off, year)) {
+      out[at] = total;
+      return;
+    }
     for (let k = RB.CONV0; k <= RB.CONV4; k++) {
       const layer = st[off + k] as number;
       if (layer > 0) free += layer;
     }
   }
-  return free < total ? free : total;
+  out[at] = free < total ? free : total;
 }
 
 /**

@@ -39,8 +39,38 @@ export function createSpendingOutcome(): SpendingOutcome {
   return doubleFields(o, ["need", "floorNeed", "plannedNeed", "funded", "shortfall", "surplus"]);
 }
 
+/**
+ * The settlement's inputs as one record (`fillNeedsFor`, `settleSpendingFor`): the year loop's form,
+ * because V8 boxes a double passed to a call it does not inline, and these are passed every year.
+ */
+export interface SettleInput {
+  /** f, the year fraction. */
+  yearFraction: number;
+  /** The view's phase is drawdown. */
+  drawdown: boolean;
+  /** The record call's net cash (after tax and `need`). */
+  net: number;
+  /** The year's RMDs, all accounts. */
+  rmdTotal: number;
+}
+
+export function createSettleInput(): SettleInput {
+  const s: SettleInput = { yearFraction: 1, drawdown: false, net: 0, rmdTotal: 0 };
+  return doubleFields(s, ["yearFraction", "net", "rmdTotal"]);
+}
+
+/** The scalar forms' record. */
+const SCALAR = createSettleInput();
+
 /** The period's need, floor and planned need of a decision (f = the year fraction). */
 export function fillNeeds(decision: SpendDecision, f: number, out: SpendingOutcome): void {
+  SCALAR.yearFraction = f;
+  fillNeedsFor(decision, SCALAR, out);
+}
+
+/** `fillNeeds` with f from `s.yearFraction`. */
+export function fillNeedsFor(decision: SpendDecision, s: SettleInput, out: SpendingOutcome): void {
+  const f = s.yearFraction;
   out.need = decision.spend * f + decision.lump;
   out.floorNeed = decision.floor * f + decision.lumpFloor;
   out.plannedNeed = decision.planned * f + decision.lump;
@@ -51,7 +81,20 @@ export function fillNeeds(decision: SpendDecision, f: number, out: SpendingOutco
  * year's total RMDs. `drawdown` is the view's phase (1) — failure and below-plan exist only there.
  */
 export function settleSpending(decision: SpendDecision, f: number, drawdown: boolean, net: number, rmdTotal: number, out: SpendingOutcome): void {
-  fillNeeds(decision, f, out);
+  SCALAR.yearFraction = f;
+  SCALAR.drawdown = drawdown;
+  SCALAR.net = net;
+  SCALAR.rmdTotal = rmdTotal;
+  settleSpendingFor(decision, SCALAR, out);
+}
+
+/** `settleSpending` with its inputs from the record `s`. */
+export function settleSpendingFor(decision: SpendDecision, s: SettleInput, out: SpendingOutcome): void {
+  const f = s.yearFraction;
+  const drawdown = s.drawdown;
+  const net = s.net;
+  const rmdTotal = s.rmdTotal;
+  fillNeedsFor(decision, s, out);
   const need = out.need;
   if (net < 0) {
     const shortfall = -net < need ? -net : need;

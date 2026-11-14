@@ -4,7 +4,7 @@ export { TaxDataError, LAW_PATHS, loadTaxData, validateTaxData, rawTaxData, frac
 export type { TaxData, TaxDataErrorCode, RawTaxData, LawPath, LawChange, LawChangeOp, IndexingRule } from "./taxData.js";
 export {
   fraMonths, survivorFraMonths, compileSsRules, defaultSsRules, floorDime, floorDollar, roundCola, retirementFactor, spousalFactor, survivorFactor,
-  compileSsPlan, ssPersonInputs, resetSsState, monthlyPayment, socialSecurityYear, socialSecurityYearMonthLoop, socialSecurityParts,
+  compileSsPlan, ssPersonInputs, resetSsState, monthlyPayment, socialSecurityYear, socialSecurityYearFrom, socialSecurityYearMonthLoop, socialSecurityParts,
   socialSecurityPreview, socialSecurityPreviewView, SS_RULES, ssRuleVerification,
 } from "./socialSecurity.js";
 export type {
@@ -14,12 +14,12 @@ export {
   TAX_DATA_FIRST_YEAR, listTaxRuleSets, fullRetirementAgeTable, taxDataStale, pendingLimits, buildRulesView, federalTaxPreview,
 } from "./rulesView.js";
 export {
-  contributionLimit, contributionLimitsInto, employeeDeferralLimit, annualAdditionsLimit, iraLimit, hsaLimit, hsaMonthsBefore65,
+  contributionLimit, contributionLimitsInto, contributionLimitsFrom, employeeDeferralLimit, annualAdditionsLimit, iraLimit, hsaLimit, hsaMonthsBefore65,
 } from "./contributionLimits.js";
 export type { ContributionLimitKind } from "./contributionLimits.js";
-export { employeePayrollTax, employeePayrollTaxInto } from "./payroll.js";
+export { employeePayrollTax, employeePayrollTaxInto, employeePayrollTaxFrom } from "./payroll.js";
 export {
-  TAX_DRAG_CLASSES, BLEND_STOCK, BLEND_BOND, compileTaxDrag, assetClassMapRows, blendTaxDrag, compileAccountTaxDrag, taxableYieldsInto,
+  TAX_DRAG_CLASSES, BLEND_STOCK, BLEND_BOND, compileTaxDrag, assetClassMapRows, blendTaxDrag, compileAccountTaxDrag, taxableYieldsInto, taxableYieldsFrom,
 } from "./taxDrag.js";
 export type { TaxDragOverrides } from "./taxDrag.js";
 export {
@@ -32,7 +32,7 @@ export { TAX_FUNCTIONS } from "./functions.js";
 export type { TaxFunctions } from "./functions.js";
 export {
   TR, PR, TI, TO, RB, RW, HW, SS, SO, WN, TAX_REC, PROG_REC, TAX_IN, TAX_IN_DOLLAR_SLOTS, TAX_OUT, RB_REC, RW_REC, HW_REC, SS_REC, SO_REC, WN_REC,
-  N_BRACKETS, TD, TD_REC, AD, AD_REC, TY, TY_REC, PT, PT_REC, CL, CL_REC, INTEREST_NONE, INTEREST_PRIOR_BILL_PLUS_SPREAD, INTEREST_BILL_RETURN,
+  N_BRACKETS, TD, TD_REC, AD, AD_REC, TY, TY_REC, TYI, TYI_REC, PT, PT_REC, CL, CL_REC, INTEREST_NONE, INTEREST_PRIOR_BILL_PLUS_SPREAD, INTEREST_BILL_RETURN,
   STATUS_SINGLE, STATUS_MFJ, taxOffset, progOffset, accountDragOffset,
 } from "./layout.js";
 export type { FilingStatusIndex } from "./layout.js";
@@ -44,10 +44,13 @@ export { federalTaxInto, effectiveMarginalRates, assertTaxInput, computeFederalT
 export type { FederalTaxInput, FederalTaxResult, FederalTaxLine, TaxInputErrorCode, TaxYearDetailCents } from "./federalTax.js";
 export {
   MONTHS_59_HALF, MONTHS_65, birthMonthIndex, earlyFraction, earlyFractionBefore59Half, earlyFractionBefore65, isEmployerPlan, separatedAt55, preTaxPenaltyShare, preTaxPenaltyBase,
-  hsaPenaltyShare, hsaWithdraw,
+  preTaxPenaltyBaseInto, hsaPenaltyShare, hsaWithdraw, hsaWithdrawFrom,
 } from "./penalties.js";
 export {
-  seedRoth, rothRollYear, addRothContribution, addRothConversion, rothFiveYearMet, rothWithdraw, rothFreeAmount, mergeRothAtDeath,
+  seedRoth, seedRothFrom, rothRollYear, addRothContribution, addRothContributionFrom, addRothConversion, addRothConversionFrom, rothFiveYearMet,
+  rothWithdraw, rothWithdrawFrom, rothFreeAmount, rothFreeAmountInto, mergeRothAtDeath,
 } from "./rothBasis.js";
-export { compileRmdTables, defaultRmdTables, rmdStartAge, firstRmdYear, rmdDivisor, requiredMinimumDistribution } from "./rmd.js";
+export {
+  compileRmdTables, defaultRmdTables, rmdStartAge, firstRmdYear, rmdDivisor, requiredMinimumDistribution, requiredMinimumDistributionInto,
+} from "./rmd.js";
 export type { RmdTables } from "./rmd.js";

@@ -79,6 +79,15 @@ export function preTaxPenaltyBase(amount: number, earlyFrac: number, employerPla
 }
 
 /**
+ * `preTaxPenaltyBase` written to `out[at]` (the out-record form `TAX_FUNCTIONS.preTaxPenaltyBase`
+ * holds: a double returned from a call V8 does not inline is boxed). The path state builds its
+ * per-thread table of penalty shares with it, at one dollar.
+ */
+export function preTaxPenaltyBaseInto(amount: number, earlyFrac: number, employerPlan: boolean, separated55: boolean, out: Float64Array, at: number): void {
+  out[at] = amount > 0 ? amount * preTaxPenaltyShare(earlyFrac, employerPlan, separated55) : 0;
+}
+
+/**
  * The share of a non-qualified HSA withdrawal in this period that carries the 20% additional tax
  * (seams C33's `hsaPenaltyShare`): the early fraction before 65 (no disability or death exception
  * is modelled, tax-rmd-ss §8.2 `penalty_exceptions`).
@@ -93,8 +102,26 @@ export function hsaPenaltyShare(earlyFrac65: number): number {
  * early fraction before 65 carries the 20% additional tax (`out[HW.PENALTY_BASE]`, to `TI.PEN20_BASE`).
  */
 export function hsaWithdraw(amount: number, qualifiedMedical: number, earlyFrac65: number, out: Float64Array): void {
-  const excess = amount - (qualifiedMedical > 0 ? qualifiedMedical : 0);
+  AMOUNT[0] = amount;
+  QUALIFIED[0] = qualifiedMedical;
+  EARLY[0] = earlyFrac65;
+  hsaWithdrawFrom(AMOUNT, QUALIFIED, EARLY, 0, out);
+}
+
+/** Scratch of `hsaWithdraw`: the amount, the qualified medical spending and the early fraction. */
+const AMOUNT = new Float64Array(1);
+const QUALIFIED = new Float64Array(1);
+const EARLY = new Float64Array(1);
+
+/**
+ * `hsaWithdraw` of `amounts[at]` against `qualifiedMedical[at]` with the early fraction
+ * `earlyFrac65[at]` (the loop's form, through `TAX_FUNCTIONS.hsaWithdraw`: a double passed to a
+ * call V8 does not inline is boxed).
+ */
+export function hsaWithdrawFrom(amounts: Float64Array, qualifiedMedical: Float64Array, earlyFrac65: Float64Array, at: number, out: Float64Array): void {
+  const q = qualifiedMedical[at]!;
+  const excess = amounts[at]! - (q > 0 ? q : 0);
   const taxable = excess > 0 ? excess : 0;
   out[HW.TAXABLE] = taxable;
-  out[HW.PENALTY_BASE] = taxable * hsaPenaltyShare(earlyFrac65);
+  out[HW.PENALTY_BASE] = taxable * hsaPenaltyShare(earlyFrac65[at]!);
 }

@@ -92,13 +92,21 @@ export function firstRmdYear(birthYear: number, tables: RmdTables = defaultRmdTa
  * −1 when there is no living spouse.
  */
 export function rmdDivisor(age: number, spouseAge: number, tables: RmdTables = defaultRmdTables()): number {
-  const joint = tables.joint;
-  if (joint !== null && spouseAge >= 0 && age - spouseAge > tables.spouseGapYears) {
+  const k = rmdDivisorIndex(age, spouseAge, tables);
+  return k >= 0 ? (tables.joint![k] as number) : (tables.uniform[-1 - k] as number);
+}
+
+/**
+ * Where `rmdDivisor` reads its divisor: `k ≥ 0` is `joint[k]`, `k < 0` is `uniform[−1 − k]`. An
+ * integer, so the year loop's form of the RMD looks the divisor up without a double crossing a call.
+ */
+function rmdDivisorIndex(age: number, spouseAge: number, tables: RmdTables): number {
+  if (tables.joint !== null && spouseAge >= 0 && age - spouseAge > tables.spouseGapYears) {
     const a = clampInt(age, tables.jointFirstAge, tables.jointLastAge) - tables.jointFirstAge;
     const b = clampInt(spouseAge, tables.jointFirstAge, tables.jointLastAge) - tables.jointFirstAge;
-    return joint[a * tables.jointSize + b] as number;
+    return a * tables.jointSize + b;
   }
-  return tables.uniform[clampInt(age, tables.uniformFirstAge, tables.uniformLastAge) - tables.uniformFirstAge] as number;
+  return -1 - (clampInt(age, tables.uniformFirstAge, tables.uniformLastAge) - tables.uniformFirstAge);
 }
 
 /**
@@ -121,4 +129,33 @@ export function requiredMinimumDistribution(
   const f = yearFraction > 0 && yearFraction < 1 ? yearFraction : 1;
   const amount = (priorYearEndBalance / rmdDivisor(age, spouseAge, tables)) * f;
   return amount < priorYearEndBalance ? amount : priorYearEndBalance;
+}
+
+/**
+ * The out-record form the year loop calls through `TAX_FUNCTIONS.requiredMinimumDistribution`:
+ * `out[a] = requiredMinimumDistribution(balances[a], age, startAge, spouseAge, periodMonths / 12,
+ * tables)`, the year fraction given as the period's months (1 to 12; 12 is a full year). A double
+ * passed to or returned from a call V8 does not inline is boxed; this form takes and returns none
+ * and makes the same operations on the same values (`periodMonths / 12` is the loop's f).
+ */
+export function requiredMinimumDistributionInto(
+  balances: Float64Array,
+  a: number,
+  age: number,
+  startAge: number,
+  spouseAge: number,
+  periodMonths: number,
+  tables: RmdTables,
+  out: Float64Array,
+): void {
+  const balance = balances[a]!;
+  if (!(balance > 0) || age < startAge) {
+    out[a] = 0;
+    return;
+  }
+  const f = periodMonths > 0 && periodMonths < 12 ? periodMonths / 12 : 1;
+  const k = rmdDivisorIndex(age, spouseAge, tables);
+  const divisor = k >= 0 ? tables.joint![k]! : tables.uniform[-1 - k]!;
+  const amount = (balance / divisor) * f;
+  out[a] = amount < balance ? amount : balance;
 }

@@ -38,13 +38,13 @@ import { BILLS, BONDS, STOCKS } from "./models/index.js";
 import { type PreparedRun, TREATMENT } from "./prepare.js";
 import { CARRY, assessInto, prepareAssessYear } from "./assess.js";
 import { PATH_FLAG, type PathState } from "./state.js";
-import { fillNeeds, settleSpending } from "./strategies/index.js";
+import { fillNeedsFor, settleSpendingFor } from "./strategies/index.js";
 import { hsaMonthsBefore65 } from "./tax/contributionLimits.js";
 import { CL, PT, PT_REC, RB_REC, RW, SO, SO_REC, TAX_IN, TAX_OUT, TI, TO, TY, TY_REC, WN, progOffset, taxOffset } from "./tax/layout.js";
-import { addRothContribution, addRothConversion, mergeRothAtDeath, rothRollYear, seedRoth } from "./tax/rothBasis.js";
+import { addRothContributionFrom, addRothConversionFrom, mergeRothAtDeath, rothRollYear, seedRothFrom } from "./tax/rothBasis.js";
 import { resetSsState } from "./tax/socialSecurity.js";
 import { noteWarning, resetPathWarnings } from "./tax/warnings.js";
-import { depositAtWeights, planTradesFrom } from "./trades.js";
+import { depositAtWeightsFrom, planTradesFrom } from "./trades.js";
 
 const TAXABLE = TREATMENT.taxable;
 const PRE_TAX = TREATMENT.pre_tax;
@@ -249,7 +249,7 @@ export function simulatePath(ps: PathState, pathIndex: number, detail: PathDetai
   resetSsState(run.ssPlan, ps.ss);
   ps.roth.fill(0);
   for (let i = 0; i < P; i++) {
-    seedRoth(ps.roth, i * RB_REC, run.rothBasis0[i]!, run.rothFunded[i] === 1, run.startYear);
+    seedRothFrom(ps.roth, i * RB_REC, run.rothBasis0, i, run.rothFunded[i] === 1, run.startYear);
     ps.rothBasisUnknown[i] = run.rothBasisUnknown[i]!;
   }
   ps.bal.set(run.bal0);
@@ -328,6 +328,7 @@ function beginYear(ps: PathState, t: number): void {
   ps.t = t;
   ps.year = year;
   ps.f = t === 0 ? run.firstYearFraction : 1;
+  ps.settle.yearFraction = ps.f;
   ps.periodStart = periodStart(run.clock, t);
   ps.periodMonths = periodMonths(run.clock, t);
   let living = 0;
@@ -385,7 +386,7 @@ function yearIncome(ps: PathState, t: number): void {
   // The first drawdown year's months before startMonth are priced on the state as the year starts (preStartYear).
   if (t === run.incomes.preStart.t) ps.preSs.set(ps.ss);
   const so = ps.so;
-  ps.tax.socialSecurityYear(run.ssPlan, ps.ss, ps.year, ps.periodStart, ps.periodMonths, ps.progTable, progOffset(t), ps.deathYear[0]!, ps.deathYear[1]!, ps.grossWages[0]!, ps.grossWages[1]!, so);
+  ps.tax.socialSecurityYear(run.ssPlan, ps.ss, ps.year, ps.periodStart, ps.periodMonths, ps.progTable, progOffset(t), ps.deathYear, ps.grossWages, 0, so);
   const ssTotal = so[SO.BENEFIT]! + so[SO.BENEFIT + 1]!;
   for (let i = 0; i < run.personCount; i++) ps.ssRate[i] = so[SO.BENEFIT + i]! / ps.f;
   noteWarning(ps.wn, WN.SS_EARNINGS_TEST, so[SO.WITHHELD]! + so[SO.WITHHELD + 1]!);
@@ -400,7 +401,7 @@ function yearContributions(ps: PathState, t: number): void {
   const po = progOffset(t);
   capContributions(ps, po);
   const payroll = ps.payroll;
-  if (run.includePayrollTax) ps.tax.employeePayrollTaxInto(ps.progTable, po, ps.grossWages[0]!, ps.grossWages[1]!, ps.status, ps.f, payroll);
+  if (run.includePayrollTax) ps.tax.employeePayrollTaxInto(ps.progTable, po, ps.grossWages, 0, ps.status, ps.periodMonths, payroll);
   else for (let k = 0; k < PT_REC; k++) payroll[k] = 0;
   ps.payrollTotal = payroll[PT.TOTAL]!;
 }
@@ -428,7 +429,7 @@ function preStartYear(ps: PathState, t: number): void {
   const w1 = iy[IY.WAGES1]!;
   const po = progOffset(t);
   const so = ps.preSo;
-  tax.socialSecurityYear(run.ssPlan, ps.preSs, ps.year, ps.periodStart, inc.preStart.months, ps.progTable, po, ps.deathYear[0]!, ps.deathYear[1]!, w0, w1, so);
+  tax.socialSecurityYear(run.ssPlan, ps.preSs, ps.year, ps.periodStart, inc.preStart.months, ps.progTable, po, ps.deathYear, iy, IY.WAGES0, so);
   let ss = so[SO.BENEFIT]! + so[SO.BENEFIT + 1]!;
   if (ss > ps.ssTotal) ss = ps.ssTotal;
   // Contributions of those months, cut by the year's scales (capContributions): the employee cash use and the pre-tax deferrals by person.
@@ -449,7 +450,7 @@ function preStartYear(ps: PathState, t: number): void {
   }
   let payroll = 0;
   if (run.includePayrollTax) {
-    tax.employeePayrollTaxInto(ps.progTable, po, w0, w1, ps.status, ps.f, ps.prePayroll);
+    tax.employeePayrollTaxInto(ps.progTable, po, iy, IY.WAGES0, ps.status, ps.periodMonths, ps.prePayroll);
     payroll = ps.prePayroll[PT.TOTAL]!;
   }
   ps.preStartCash = iy[IY.CASH]! + ss - employee - payroll;
@@ -487,7 +488,7 @@ function yearSpending(ps: PathState, t: number): void {
   view.stockShare = ps.stockShare;
   const decision = ps.decision;
   ps.hooks.decideSpending(view, ps.strategy, decision);
-  fillNeeds(decision, f, ps.outcome);
+  fillNeedsFor(decision, ps.settle, ps.outcome);
   ps.need = ps.outcome.need;
   ps.qualifiedMedical = decision.healthcare * f;
 }
@@ -508,9 +509,8 @@ function forcedFlows(ps: PathState, t: number): void {
     const o = owner[a]!;
     if (ps.alive[o] !== 1) continue;
     const spouseAge = P === 2 && ps.alive[1 - o] === 1 ? ps.age[1 - o]! : -1;
-    const x = tax.requiredMinimumDistribution(value[a]!, ps.age[o]!, run.rmdStartAge[o]!, spouseAge, ps.f, run.rmdTables);
-    rmd[a] = x;
-    rmdTotal += x;
+    tax.requiredMinimumDistribution(value, a, ps.age[o]!, run.rmdStartAge[o]!, spouseAge, ps.periodMonths, run.rmdTables, rmd);
+    rmdTotal += rmd[a]!;
   }
   ps.rmdTotal = rmdTotal;
   conversionsYearInto(run.conversions, t, ps.cpi, ps.conv);
@@ -531,7 +531,8 @@ function forcedFlows(ps: PathState, t: number): void {
     }
     const target = run.conversions.target[i]!;
     ps.convIn[target] = ps.convIn[target]! + take;
-    addRothConversion(ps.roth, i * RB_REC, take, ps.year);
+    ps.convTake[i] = take;
+    addRothConversionFrom(ps.roth, i * RB_REC, ps.convTake, i, ps.year);
     convTotal += take;
   }
   ps.convTotal = convTotal;
@@ -555,7 +556,9 @@ function yearAvailable(ps: PathState, t: number): void {
   for (let i = 0; i < run.personCount; i++) {
     let roth = 0;
     for (let a = 0; a < A; a++) if (treatment[a] === ROTH && owner[a] === i) roth += available[a]!;
-    ps.rothFree[i] = ps.tax.rothFreeAmount(ps.roth, i * RB_REC, roth, ps.early[i]!, ps.year);
+    // The person's Roth balance in, what leaves free of tax and penalty out, in the same slot.
+    ps.rothFree[i] = roth;
+    ps.tax.rothFreeAmount(ps.roth, i * RB_REC, ps.rothFree, ps.early, i, ps.year, ps.rothFree);
   }
 }
 
@@ -606,7 +609,11 @@ function yearWithdrawals(ps: PathState, t: number): void {
   }
   // A record net within the tolerance below 0 is the solver's convergence band (|net| ≤ CASH_TOL,
   // engine-and-returns §3.9): settled as 0, so a funded year carries no shortfall of a few ulps.
-  settleSpending(decision, ps.f, ps.drawdown, net < 0 && net >= -CASH_TOL ? 0 : net, ps.rmdTotal, outcome);
+  const settle = ps.settle;
+  settle.drawdown = ps.drawdown;
+  settle.net = net < 0 && net >= -CASH_TOL ? 0 : net;
+  settle.rmdTotal = ps.rmdTotal;
+  settleSpendingFor(decision, settle, outcome);
   if (outcome.failed) {
     yearFlags |= YEAR_FLAG.FAILED;
     if (ps.failIdx < 0) ps.failIdx = t;
@@ -653,7 +660,7 @@ function applyTaxState(ps: PathState): void {
   for (let i = 0; i < run.personCount; i++) {
     const amount = ps.rothW[i]!;
     if (!(amount > 0)) continue;
-    ps.tax.rothWithdraw(ps.roth, i * RB_REC, amount, ps.early[i]!, ps.year, rw);
+    ps.tax.rothWithdraw(ps.roth, i * RB_REC, ps.rothW, ps.early, i, ps.year, rw);
     if (ps.rothBasisUnknown[i] === 1 && rw[RW.TAXABLE]! + rw[RW.PENALTY_BASE]! > 0) noteWarning(ps.wn, WN.ROTH_BASIS_UNKNOWN, amount);
   }
   const taxOut = ps.record.taxResult;
@@ -670,7 +677,10 @@ function saveSurplus(ps: PathState, t: number): void {
   const bal = ps.bal;
   const surplus = ps.outcome.surplus;
   const sa = run.surplusAccount;
-  if (surplus > 0) depositAtWeights(bal, ps.basis, sa * 3, run.weights, (t * A + sa) * 3, surplus, run.treatment[sa] === TAXABLE);
+  if (surplus > 0) {
+    ps.surplusDeposit[0] = surplus;
+    depositAtWeightsFrom(bal, ps.basis, sa * 3, run.weights, (t * A + sa) * 3, ps.surplusDeposit, 0, run.treatment[sa] === TAXABLE);
+  }
   let afterTotal = 0;
   for (let k = 0; k < A * 3; k++) {
     ps.afterTrades[k] = bal[k]!;
@@ -810,9 +820,9 @@ function capContributions(ps: PathState, po: number): void {
     for (let g = 1; g < GROUPS; g++) if (gE[i * GROUPS + g]! > 0 || gR[i * GROUPS + g]! > 0) any = true;
     if (!any) continue;
     const months = hsaMonthsBefore65(run.birthIndex[i]!, ps.periodStart, ps.periodMonths);
-    tax.contributionLimitsInto(ps.progTable, po, ps.age[i]!, ps.f, true, months, lim);
+    tax.contributionLimitsInto(ps.progTable, po, ps.age[i]!, ps.periodMonths, true, months, lim);
     // The deferral limit without catch-up: the same limits at an age that has none.
-    tax.contributionLimitsInto(ps.progTable, po, 0, ps.f, true, months, base);
+    tax.contributionLimitsInto(ps.progTable, po, 0, ps.periodMonths, true, months, base);
     // Employer plan.
     let k = i * GROUPS + LIMIT.EMPLOYER_PLAN;
     let e = gE[k]!;
@@ -888,9 +898,10 @@ function capContributions(ps: PathState, po: number): void {
     ps.deposit[a] = ps.deposit[a]! + e + r;
     ps.employeeTotal += e0;
     ps.employerTotal += r;
+    ps.employeeKept[c] = e;
     const kind = ct.kind[c]!;
     if (kind === CONTRIB.PRE_TAX && o >= 0) ps.preTaxDeferral[o] = ps.preTaxDeferral[o]! + e;
-    else if (kind === CONTRIB.ROTH && o >= 0) addRothContribution(ps.roth, o * RB_REC, e, ps.year);
+    else if (kind === CONTRIB.ROTH && o >= 0) addRothContributionFrom(ps.roth, o * RB_REC, ps.employeeKept, c, ps.year);
   }
   if (excess > 0) {
     const sa = run.surplusAccount;
