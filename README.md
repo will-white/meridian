@@ -38,7 +38,7 @@ Caddy serves the app on the LAN at `https://$SITE_ADDRESS` with an internally is
 
 After an update (`up -d --build` again), an app that is still open, on a phone as on a desktop, shows "A new version of Meridian is ready" when it next comes into view (it also checks hourly); choosing **Reload to use it** switches to the new build. Nothing reloads on its own, so nothing being typed is lost.
 
-The `web` container serves the built UI and the API on port 3000, reachable only from the compose network. The UI's files load without a session; everything under `/api` needs one. Changes are accepted only from the app's own origin and only as JSON. If you put a different reverse proxy in front, it must pass the `Host` header through (or send `X-Forwarded-Host`), and `TRUST_PROXY` in `deploy/docker-compose.yml` must name its address so the sign-in rate limits count the real client.
+The `web` container serves the built UI and the API on port 3000, reachable only from the compose network. The UI's files load without a session; everything under `/api` needs one. Any other path a browser opens loads the app, except a file the build does not have (anything under `/assets/`, or a name with an extension, such as a previous build's script) and `/api` itself, which answer 404. Changes are accepted only from the app's own origin and only as JSON. If you put a different reverse proxy in front, it must pass the `Host` header through (or send `X-Forwarded-Host`), and you set `TRUST_PROXY` in `.env` to its address so the sign-in rate limits count the real client; unset or empty, the web container trusts `uniquelocal`, which is Caddy on the compose network (`deploy/services.yml`). Recreate the container after changing it (`up -d` again).
 
 ## Accounts and sign-in
 

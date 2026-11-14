@@ -126,7 +126,7 @@ export async function buildApp({ db, config, logger, now, authNow }: BuildAppOpt
       // wildcard: false registers one exact route per file found at boot; nothing else is reachable.
       await ui.register(fastifyStatic, { root: webDistDir, wildcard: false, index: false });
       ui.setNotFoundHandler(async (request, reply) => {
-        if (request.method === "GET" && !request.url.startsWith("/api/")) return reply.sendFile("index.html");
+        if (servesShell(request.method, request.url)) return reply.sendFile("index.html");
         return reply.status(404).send({ error: "Not found", code: "not_found" });
       });
     });
@@ -138,3 +138,30 @@ export async function buildApp({ db, config, logger, now, authNow }: BuildAppOpt
 }
 
 export type App = Awaited<ReturnType<typeof buildApp>>;
+
+/** The prefix itself or a path below it: `/api` and `/api/...`, not `/apiary`. */
+const isUnder = (pathname: string, prefix: string) => pathname === prefix || pathname.startsWith(`${prefix}/`);
+
+/**
+ * Whether a request no route answered gets the app's shell (index.html) under the SPA fallback:
+ * only a GET or HEAD of a client-side route. Everything else gets the JSON 404: the API's own
+ * paths (`/api`, `/api?x=1` and `/api/...`), and any file the build does not have, which is
+ * anything under `/assets/` or with an extension in its last segment (a previous build's hashed
+ * chunk asked for by an open tab, `/favicon.ico`). HTML under a script's URL fails under
+ * `nosniff` with a MIME-type error that hides the cause; a 404 says what happened. Client-side
+ * routes have no dot in their last segment (App.tsx). The path is judged decoded, as the router
+ * matches it (`/%61pi/x` is under /api). The service worker's navigation fallback follows the
+ * same rule (apps/web/src/lib/shellRoutes.ts; audit a1-serve-and-guard, second round).
+ */
+function servesShell(method: string, url: string): boolean {
+  if (method !== "GET" && method !== "HEAD") return false;
+  const raw = url.split("?", 1)[0] ?? "";
+  let pathname = raw;
+  try {
+    pathname = decodeURIComponent(raw);
+  } catch {
+    // A malformed escape: judge the path as sent.
+  }
+  if (isUnder(pathname, "/api") || isUnder(pathname, "/assets")) return false;
+  return !pathname.slice(pathname.lastIndexOf("/") + 1).includes(".");
+}

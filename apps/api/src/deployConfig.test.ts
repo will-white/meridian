@@ -31,8 +31,9 @@ describe("deploy files: where the API listens and which proxy it trusts", () => 
     const web = composeService(compose, "web");
     const env = settings(web);
     expect(env["API_HOST"]).toBe("0.0.0.0");
-    expect(env["TRUST_PROXY"]).toBe("uniquelocal");
-    expect(parseTrustProxy(env["TRUST_PROXY"])).toEqual(["uniquelocal"]);
+    // .env may name the proxy; unset or empty, the web container trusts private-network peers (Caddy).
+    expect(env["TRUST_PROXY"]).toBe("${TRUST_PROXY:-uniquelocal}");
+    expect(parseTrustProxy(/^\$\{TRUST_PROXY:-(.+)\}$/.exec(env["TRUST_PROXY"] ?? "")?.[1])).toEqual(["uniquelocal"]);
     expect(env["NODE_ENV"]).toBe("production");
     expect(env["MERIDIAN_DB_HOST"]).toBe("db");
     expect(repo("deploy/docker-compose.yml")).toMatch(/include:\n\s+- path: \.\/services\.yml\n\s+env_file: \.\.\/\.env/);
@@ -65,6 +66,25 @@ describe("deploy files: where the API listens and which proxy it trusts", () => 
     expect(config.host).toBe("127.0.0.1");
     expect(config.trustProxy).toEqual([]);
     expect(config.port).toBe(3000);
+  });
+
+  it("a1-serve-and-guard (second round): the README and .env.example send a household to the file that sets TRUST_PROXY", () => {
+    const readme = repo("README.md");
+    const named = [...readme.matchAll(/`TRUST_PROXY` in `([^`]+)`/g)].map((m) => m[1]!);
+    expect(named.length, "the README says where TRUST_PROXY is set").toBeGreaterThan(0);
+    for (const file of named) {
+      if (file === ".env") {
+        // .env feeds compose (docker-compose.yml includes services.yml with it), and the web entry reads the value.
+        expect(repo(".env.example")).toMatch(/^# TRUST_PROXY=$/m);
+        expect(composeService(compose, "web")).toMatch(/^\s+- TRUST_PROXY=\$\{TRUST_PROXY:-uniquelocal\}$/m);
+      } else {
+        expect(repo(file), `${file} has a TRUST_PROXY entry`).toMatch(/^\s+- TRUST_PROXY=/m);
+      }
+    }
+    // The example names where the default comes from and that .env overrides it.
+    const example = repo(".env.example");
+    expect(example).toMatch(/deploy\/services\.yml/);
+    expect(example).not.toMatch(/The compose file sets `uniquelocal` for the web container\./);
   });
 
   it(".env.example states the session lifetimes the API defaults to: 30 days, 14 idle", () => {

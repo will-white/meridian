@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
+import { parseTrustProxy } from "./config.js";
 
 /**
  * The compose stack, the Dockerfiles and the ignore rules (audit a7-backup-deploy-secrets 01,
@@ -135,6 +136,20 @@ describe.skipIf(!haveCompose)("deploy stack as compose renders it", () => {
     expect(stack.services["web"]!.build!.args!["NODE_IMAGE"]).toContain("@sha256:" + "b".repeat(64));
     expect(stack.services["worker"]!.build!.args!["NODE_IMAGE"]).toContain("@sha256:" + "b".repeat(64));
     expect(stack.services["proxy"]!.image).toContain("@sha256:" + "c".repeat(64));
+  });
+
+  it("a1-serve-and-guard (second round): TRUST_PROXY in .env names the proxy the web container trusts; unset or empty it is uniquelocal", () => {
+    const trusted = (overrides: Record<string, string>) => render(overrides).services["web"]!.environment!["TRUST_PROXY"];
+    // .env.example leaves it commented out: Caddy on the compose network.
+    expect(trusted({})).toBe("uniquelocal");
+    // An uncommented empty line is not "trust nobody", which would make every client one address to the sign-in limits.
+    expect(trusted({ TRUST_PROXY: "" })).toBe("uniquelocal");
+    const own = trusted({ TRUST_PROXY: "192.168.1.10,10.0.0.0/8" });
+    expect(own).toBe("192.168.1.10,10.0.0.0/8");
+    expect(parseTrustProxy(own ?? undefined)).toEqual(["192.168.1.10", "10.0.0.0/8"]);
+    // Only the API reads it.
+    const stack = render({ TRUST_PROXY: "192.168.1.10" });
+    for (const name of ["worker", "db", "backup", "proxy"]) expect(stack.services[name]!.environment?.["TRUST_PROXY"], name).toBeUndefined();
   });
 
   it("a7-backup-deploy-secrets-07: every setting the API and the worker read is passed to their container", () => {
