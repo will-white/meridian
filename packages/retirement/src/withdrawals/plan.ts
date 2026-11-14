@@ -40,10 +40,11 @@
  */
 
 import { CASH_TOL } from "../constants.js";
+import { doubleFields } from "../doubleFields.js";
 import { type AssessFn, type Assessment, type EngineHooks, ASSESS_MAX_CALLS, createAssessment } from "../hooks.js";
 import { decideSpending } from "../strategies/decide.js";
 import type { SpendDecision } from "../strategies/types.js";
-import { type SolveState, solve } from "./solve.js";
+import { SOLVE_DOUBLES, type SolveState, solve } from "./solve.js";
 import { type TierView, type WithdrawalTiers, buildTiers, createWithdrawalTiers, fillTiers } from "./tiers.js";
 
 /** What `planWithdrawalsWith` reads of the loop's `YearView`: the tiers' fields and the year's RMDs (a structural subset). */
@@ -66,7 +67,7 @@ const NO_ASSESS: AssessFn = () => undefined;
 
 /** A planner with room for `accountCount` accounts; `limit` caps the `assess` calls of a year (default `ASSESS_MAX_CALLS`). */
 export function createWithdrawalPlanner(accountCount = 0, limit: number = ASSESS_MAX_CALLS): WithdrawalPlanner {
-  return {
+  const p: WithdrawalPlanner = {
     lo: 0,
     hlo: 0,
     hi: 0,
@@ -82,6 +83,7 @@ export function createWithdrawalPlanner(accountCount = 0, limit: number = ASSESS
     w: new Float64Array(0),
     released: Number.NaN,
   };
+  return doubleFields(p, [...SOLVE_DOUBLES, "released"]);
 }
 
 /** `net(p.x)`: fill, assess, `p.hx = net`; counts the call. */

@@ -5,6 +5,7 @@
  */
 
 import type { StrategyEvent } from "@meridian/shared";
+import { doubleFields } from "../doubleFields.js";
 import type { StrategyTables } from "./prepare.js";
 
 /**
@@ -36,7 +37,8 @@ export interface SpendDecision {
 }
 
 export function createSpendDecision(): SpendDecision {
-  return { spend: 0, floor: 0, lump: 0, lumpFloor: 0, healthcare: 0, gross: Number.NaN, planned: 0, rule: 0 };
+  const d: SpendDecision = { spend: 0, floor: 0, lump: 0, lumpFloor: 0, healthcare: 0, gross: Number.NaN, planned: 0, rule: 0 };
+  return doubleFields(d, ["spend", "floor", "lump", "lumpFloor", "healthcare", "gross", "planned"]);
 }
 
 /** The rule flags of `SpendDecision.rule` (§2.2). */

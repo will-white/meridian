@@ -33,6 +33,7 @@
 
 import type { TaxableRebalance } from "@meridian/shared";
 import { CASH_TOL } from "./constants.js";
+import { doubleFields } from "./doubleFields.js";
 import { EngineInvariantError } from "./errors.js";
 import { SIM_ASSET_COUNT } from "./models/market.js";
 
@@ -60,13 +61,14 @@ export interface TradeResult {
 }
 
 export function createTradeResult(): TradeResult {
-  return {
+  const r: TradeResult = {
     realizedGain: 0,
     valueAfter: 0,
     sell: new Float64Array(SIM_ASSET_COUNT),
     buy: new Float64Array(SIM_ASSET_COUNT),
     post: new Float64Array(SIM_ASSET_COUNT),
   };
+  return doubleFields(r, ["realizedGain", "valueAfter"]);
 }
 
 /**

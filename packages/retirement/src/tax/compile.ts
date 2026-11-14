@@ -441,10 +441,27 @@ export interface FillOptions {
 
 /**
  * Writes one plan year's records at index factors `F` and `W` and COLA `cola` (used only after the
- * last published year). `fillPathTables` calls it for every plan year; the previews call it with a
- * factor the owner typed. Allocates nothing.
+ * last published year). The previews call it with a factor the owner typed. Allocates nothing.
  */
 export function fillYearAtFactors(law: CompiledTaxLaw, i: number, F: number, W: number, cola: number, outTax: Float64Array, outProg: Float64Array): void {
+  const po = i * PROG_REC;
+  outProg[po + PR.CPI_FACTOR] = F;
+  outProg[po + PR.WAGE_FACTOR] = W;
+  outProg[po + PR.COLA] = cola;
+  fillYearAtProgFactors(law, i, outTax, outProg);
+}
+
+/**
+ * `fillYearAtFactors` with its factors read from the year's own program record, where they end up:
+ * `F` at `PR.CPI_FACTOR`, `W` at `PR.WAGE_FACTOR` and the COLA at `PR.COLA`. `fillPathTables`
+ * calls this form: the function is too large for V8 to inline, and a double passed to a call it
+ * does not inline is boxed (three heap numbers a plan year, about 2.8 KB a path, measured).
+ */
+function fillYearAtProgFactors(law: CompiledTaxLaw, i: number, outTax: Float64Array, outProg: Float64Array): void {
+  const po = i * PROG_REC;
+  const F = outProg[po + PR.CPI_FACTOR]!;
+  const W = outProg[po + PR.WAGE_FACTOR]!;
+  const cola = outProg[po + PR.COLA]!;
   const { taxBase, taxStep, taxMode, progBase, progStep, progMode } = law;
   for (let s = 0; s < 2; s++) {
     const off = (i * 2 + s) * TAX_REC;
@@ -457,7 +474,6 @@ export function fillYearAtFactors(law: CompiledTaxLaw, i: number, F: number, W: 
       outTax[off + TR.BASE0 + b] = base;
     }
   }
-  const po = i * PROG_REC;
   for (let k = 0; k < PROG_REC; k++) outProg[po + k] = indexedValue(progBase[po + k]!, progMode[po + k]!, progStep[po + k]!, F, W);
   if (law.startYear + i > law.lastPublishedYear) outProg[po + PR.COLA] = cola;
   outProg[po + PR.CPI_FACTOR] = F;
@@ -509,6 +525,10 @@ export function fillPathTables(law: CompiledTaxLaw, indexInflation: Float64Array
       cola = roundCola(P / H - 1, colaStep);
       if (cola > 0) H = P;
     }
-    fillYearAtFactors(law, i, F, W, cola, outTax, outProg);
+    const po = i * PROG_REC;
+    outProg[po + PR.CPI_FACTOR] = F;
+    outProg[po + PR.WAGE_FACTOR] = W;
+    outProg[po + PR.COLA] = cola;
+    fillYearAtProgFactors(law, i, outTax, outProg);
   }
 }

@@ -27,6 +27,7 @@
  */
 
 import type { SimInput } from "@meridian/shared";
+import { doubleFields } from "./doubleFields.js";
 import type { StrategyTables } from "./strategies/prepare.js";
 import type { SpendDecision, SpendingView } from "./strategies/types.js";
 import { TAX_OUT } from "./tax/layout.js";
@@ -107,7 +108,8 @@ export interface Assessment {
 }
 
 export function createAssessment(): Assessment {
-  return { net: 0, tax: 0, otherCharges: 0, taxResult: new Float64Array(TAX_OUT) };
+  const a: Assessment = { net: 0, tax: 0, otherCharges: 0, taxResult: new Float64Array(TAX_OUT) };
+  return doubleFields(a, ["net", "tax", "otherCharges"]);
 }
 
 /** `assess(w, out)`: the year's tax and net cash for the candidate withdrawal `w[a]` (dollars per account). */

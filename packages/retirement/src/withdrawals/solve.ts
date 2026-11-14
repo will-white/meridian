@@ -30,6 +30,7 @@
  */
 
 import { CASH_TOL } from "../constants.js";
+import { type NumberKey, doubleFields } from "../doubleFields.js";
 
 /** The solver's record: the bracket, the trial point and its net, and the year's evaluation count. */
 export interface SolveState {
@@ -50,8 +51,11 @@ export interface SolveState {
 }
 
 export function createSolveState(limit: number): SolveState {
-  return { lo: 0, hlo: 0, hi: 0, hhi: 0, x: 0, hx: 0, calls: 0, limit, converged: 1 };
+  return doubleFields({ lo: 0, hlo: 0, hi: 0, hhi: 0, x: 0, hx: 0, calls: 0, limit, converged: 1 }, SOLVE_DOUBLES);
 }
+
+/** The solver record's money fields (doubleFields.ts). */
+export const SOLVE_DOUBLES = ["lo", "hlo", "hi", "hhi", "x", "hx"] as const satisfies readonly NumberKey<SolveState>[];
 
 /**
  * Solves `net(x) = 0` on `[s.lo, s.hi]` (`s.hlo = net(lo) < −CASH_TOL`, `s.hhi = net(hi) > CASH_TOL`)

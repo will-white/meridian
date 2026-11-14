@@ -20,9 +20,9 @@
  */
 
 import type { ParametricParams } from "@meridian/shared";
-import { detExp, detLog } from "../detmath.js";
+import { detExpInPlace, detLog } from "../detmath.js";
 import { EngineInputError } from "../errors.js";
-import { PURPOSE, type RngKey, invNorm, uniformAt } from "../rng.js";
+import { PURPOSE, type RngKey, invNormInPlace, uniformsAt } from "../rng.js";
 import { cholesky, covarianceFrom } from "./cholesky.js";
 import { estimateLogMoments } from "./estimate.js";
 import { lognormalFromArithmetic, lognormalFromGeometric } from "./lognormal.js";
@@ -189,6 +189,7 @@ export class ParametricPaths {
   private readonly z = new Float64Array(4);
   private readonly state = new Float64Array(2);
   private readonly ce = new Float64Array(8);
+  private readonly ex = new Float64Array(6);
 
   constructor(
     params: ParametricLogParams,
@@ -204,24 +205,40 @@ export class ParametricPaths {
   }
 
   fill(pathIndex: number, out: MarketPath): void {
-    const { z, state, ce, key, f } = this;
+    const { z, state, ce, ex, key, f } = this;
     const sqrtF = Math.sqrt(f);
     state[0] = this.lnBills0;
     state[1] = this.lnInflation0;
+    // The year's draws, normals and factors go through arrays (uniformsAt, invNormInPlace,
+    // detExpInPlace): a double crossing a call V8 does not inline is boxed. `ex` holds the log
+    // factors: full-year bills and inflation, then stocks and bonds, then in a partial year 0 the
+    // part-year bills and inflation.
     for (let t = 0; t < out.years; t++) {
-      for (let j = 0; j < 4; j++) z[j] = invNorm(uniformAt(key, pathIndex, PURPOSE.MARKET, t, j));
+      uniformsAt(key, pathIndex, PURPOSE.MARKET, t, 4, z);
+      invNormInPlace(z, 0, 4);
       parametricStep(this.core, z, state, ce);
       const g = t * SIM_ASSET_COUNT;
-      const billsFull = detExp(ce[PV_BILLS]! + ce[4 + PV_BILLS]!);
-      const inflationFull = detExp(ce[PV_INFLATION]! + ce[4 + PV_INFLATION]!);
-      if (t === 0 && f < 1) {
-        out.growth[g + STOCKS] = detExp(f * ce[PV_STOCKS]! + sqrtF * ce[4 + PV_STOCKS]!);
-        out.growth[g + BONDS] = detExp(f * ce[PV_BONDS]! + sqrtF * ce[4 + PV_BONDS]!);
-        out.growth[g + BILLS] = detExp(f * ce[PV_BILLS]! + sqrtF * ce[4 + PV_BILLS]!);
-        out.priceFactor[t] = detExp(f * ce[PV_INFLATION]! + sqrtF * ce[4 + PV_INFLATION]!);
+      ex[0] = ce[PV_BILLS]! + ce[4 + PV_BILLS]!;
+      ex[1] = ce[PV_INFLATION]! + ce[4 + PV_INFLATION]!;
+      const partial = t === 0 && f < 1;
+      if (partial) {
+        ex[2] = f * ce[PV_STOCKS]! + sqrtF * ce[4 + PV_STOCKS]!;
+        ex[3] = f * ce[PV_BONDS]! + sqrtF * ce[4 + PV_BONDS]!;
+        ex[4] = f * ce[PV_BILLS]! + sqrtF * ce[4 + PV_BILLS]!;
+        ex[5] = f * ce[PV_INFLATION]! + sqrtF * ce[4 + PV_INFLATION]!;
       } else {
-        out.growth[g + STOCKS] = detExp(ce[PV_STOCKS]! + ce[4 + PV_STOCKS]!);
-        out.growth[g + BONDS] = detExp(ce[PV_BONDS]! + ce[4 + PV_BONDS]!);
+        ex[2] = ce[PV_STOCKS]! + ce[4 + PV_STOCKS]!;
+        ex[3] = ce[PV_BONDS]! + ce[4 + PV_BONDS]!;
+      }
+      detExpInPlace(ex, 0, partial ? 6 : 4);
+      const billsFull = ex[0]!;
+      const inflationFull = ex[1]!;
+      out.growth[g + STOCKS] = ex[2]!;
+      out.growth[g + BONDS] = ex[3]!;
+      if (partial) {
+        out.growth[g + BILLS] = ex[4]!;
+        out.priceFactor[t] = ex[5]!;
+      } else {
         out.growth[g + BILLS] = billsFull;
         out.priceFactor[t] = inflationFull;
       }

@@ -22,6 +22,7 @@ import { CARRY_REC, PP_COLUMNS, PP_REC, createAssessFn } from "./assess.js";
 export { CARRY, CARRY_REC } from "./assess.js";
 import { type TradeResult, createTradeResult } from "./trades.js";
 import { periodMonths, periodStart } from "./clock.js";
+import { type NumberKey, doubleFields } from "./doubleFields.js";
 import { earlyFractionBefore59Half, earlyFractionBefore65, separatedAt55 } from "./tax/penalties.js";
 
 /** The mutable implementation of `YearView` the loop writes. */
@@ -256,8 +257,18 @@ export interface PathState {
   readonly spendingReal: Float64Array;
 }
 
-/** Allocates the state of one thread for `run`. `tax` defaults to the real functions; tests pass stubs. */
-export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFunctions = TAX_FUNCTIONS): PathState {
+/** `PathState` with its fields writable: what its constructor assigns. */
+type PathStateFields = { -readonly [K in keyof PathState]: PathState[K] };
+
+/**
+ * The state's fields, one `this.x = …` assignment each. A constructor, not an object literal: V8
+ * builds a literal of 128 properties or more as a dictionary and, once it is fast again, gives
+ * every field the tagged representation, so each double written to one (`ps.f`, `ps.portfolio`,
+ * `ps.employeeTotal`, …) is a new heap number. A constructor's fields keep the representation of
+ * what is stored in them (small integer, double, object), V8 reserves them in the object from the
+ * count of `this.x` assignments, and a double field is written in place.
+ */
+const PathStateObject = function PathStateObject(this: PathStateFields, run: PreparedRun, hooks: EngineHooks, tax: TaxFunctions, view: MutableYearView): void {
   const Y = run.years;
   const A = run.accountCount;
   const P = run.personCount;
@@ -265,6 +276,167 @@ export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFu
   const C = run.contributions.count;
   const person = () => new Float64Array(2);
   const perAccount = () => new Float64Array(A);
+  this.run = run;
+  this.hooks = hooks;
+  this.tax = tax;
+  this.pathIndex = 0;
+  this.market = createMarketPath(Y);
+  this.cpi = new Float64Array(Y + 1);
+  this.deathIdx = new Int16Array(P);
+  this.deathYear = new Float64Array(2);
+  this.bal = new Float64Array(A * 3);
+  this.basis = new Float64Array(A * 3);
+  this.owner = new Int8Array(A);
+  this.roth = new Float64Array(2 * RB_REC);
+  this.ss = new Float64Array(SS_REC);
+  this.so = new Float64Array(SO_REC);
+  this.taxTable = new Float64Array(Y * 2 * TAX_REC);
+  this.progTable = new Float64Array(Y * PROG_REC);
+  this.carry = new Float64Array(CARRY_REC);
+  this.strategy = new Float64Array(STRATEGY_STATE_LENGTH);
+  this.wn = new Float64Array(WN_REC);
+  this.rothBasisUnknown = new Uint8Array(2);
+  this.alive = new Uint8Array(P);
+  this.retired = new Uint8Array(P);
+  this.age = new Int16Array(P);
+  this.yearsToDeath = new Int16Array(P);
+  this.early = person();
+  this.early65 = person();
+  this.separated55 = new Uint8Array(2);
+  this.earlyTable = new Float64Array(P * Y);
+  this.early65Table = new Float64Array(P * Y);
+  this.separated55Table = new Uint8Array(P * Y);
+  this.preTaxShareTable = new Float64Array(P * Y * 2);
+  this.hsaShareTable = new Float64Array(P * Y);
+  this.rothFree = new Float64Array(P);
+  this.hsaShare = new Float64Array(P);
+  this.ssRate = new Float64Array(P);
+  this.conv = person();
+  this.grossWages = person();
+  this.preTaxDeferral = person();
+  this.value = perAccount();
+  this.rmd = perAccount();
+  this.deposit = perAccount();
+  this.convOut = perAccount();
+  this.convIn = perAccount();
+  this.available = perAccount();
+  this.w = perAccount();
+  this.preTaxShare = perAccount();
+  this.gain = perAccount();
+  this.yields = new Float64Array(A * TY_REC);
+  this.afterTrades = new Float64Array(A * 3);
+  this.netOut = perAccount();
+  this.sold = perAccount();
+  this.bought = perAccount();
+  this.streamAmounts = new Float64Array(S);
+  this.iy = new Float64Array(IY_REC);
+  this.employee = new Float64Array(C);
+  this.employer = new Float64Array(C);
+  this.limits = new Float64Array(2 * CL_REC);
+  this.limitsBase = new Float64Array(2 * CL_REC);
+  this.groupEmployee = new Float64Array(2 * 4);
+  this.groupEmployer = new Float64Array(2 * 4);
+  this.scaleEmployee = new Float64Array(2 * 4);
+  this.scaleEmployer = new Float64Array(2 * 4);
+  this.hsaLimit = new Float64Array(2);
+  this.hsaCatchUp = new Float64Array(2);
+  this.hsaFamily = new Float64Array(2);
+  this.hsaWanted = new Float64Array(2);
+  this.payroll = new Float64Array(PT_REC);
+  this.preAmounts = new Float64Array(S);
+  this.preIncome = new Float64Array(IY_REC);
+  this.preSs = new Float64Array(SS_REC);
+  this.preSo = new Float64Array(SO_REC);
+  this.preEmployee = new Float64Array(C);
+  this.preEmployer = new Float64Array(C);
+  this.prePayroll = new Float64Array(PT_REC);
+  this.preTaxIn = new Float64Array(TAX_IN);
+  this.preTaxOut = new Float64Array(TAX_OUT);
+  this.ppFixed = new Float64Array(PP_COLUMNS * PP_REC);
+  this.pp = new Float64Array(PP_COLUMNS * PP_REC);
+  this.taxIn = new Float64Array(TAX_IN);
+  this.rw = new Float64Array(2 * RW_REC);
+  this.hw = new Float64Array(2 * HW_REC);
+  this.rothScratch = new Float64Array(RB_REC);
+  this.tyScratch = new Float64Array(TY_REC);
+  this.rwScratch = new Float64Array(RW_REC);
+  this.hwScratch = new Float64Array(HW_REC);
+  this.rothW = person();
+  this.hsaW = person();
+  this.trade = createTradeResult();
+  this.zeroW = perAccount();
+  this.t = 0;
+  this.year = run.startYear;
+  this.f = run.firstYearFraction;
+  this.status = 0;
+  this.drawdown = false;
+  this.periodStart = 0;
+  this.periodMonths = 12;
+  this.billRef = 0;
+  this.need = 0;
+  this.cashIncome = 0;
+  this.employeeTotal = 0;
+  this.employerTotal = 0;
+  this.contributionExcess = 0;
+  this.payrollTotal = 0;
+  this.rmdTotal = 0;
+  this.convTotal = 0;
+  this.qualifiedMedical = 0;
+  this.nAged = 0;
+  this.taxBaseline = 0;
+  this.otherBaseline = 0;
+  this.preStartCash = 0;
+  this.preStartTax = 0;
+  this.calls = 0;
+  this.portfolio = 0;
+  this.stockShare = 0;
+  this.ssTotal = 0;
+  this.availableTotal = 0;
+  this.withdrawn = 0;
+  this.yearFlags = 0;
+  this.afterTotal = 0;
+  this.endTotal = 0;
+  this.interestIn = 0;
+  this.interestOut = 0;
+  this.view = view;
+  this.decision = createSpendDecision();
+  this.outcome = createSpendingOutcome();
+  this.record = createAssessment();
+  this.baseline = createAssessment();
+  this.assess = () => undefined;
+  this.flags = 0;
+  this.failIdx = -1;
+  this.endIdx = 0;
+  this.endNominal = 0;
+  this.endReal = 0;
+  this.shortfallReal = 0;
+  this.taxesReal = 0;
+  this.payrollReal = 0;
+  this.spendReal = 0;
+  this.conversionsSkipped = 0;
+  this.notConvergedYears = 0;
+  this.totalNominal = new Float64Array(Y);
+  this.totalReal = new Float64Array(Y);
+  this.spendingReal = new Float64Array(Y);
+} as unknown as new (run: PreparedRun, hooks: EngineHooks, tax: TaxFunctions, view: MutableYearView) => PathStateFields;
+
+/** The state's money and fraction scalars, which get their double form when the state is made (doubleFields.ts). */
+const STATE_DOUBLES = [
+  "f", "billRef", "need", "cashIncome", "employeeTotal", "employerTotal", "contributionExcess", "payrollTotal", "rmdTotal", "convTotal",
+  "qualifiedMedical", "taxBaseline", "otherBaseline", "preStartCash", "preStartTax", "portfolio", "stockShare", "ssTotal", "availableTotal",
+  "withdrawn", "afterTotal", "endTotal", "interestIn", "interestOut", "endNominal", "endReal", "shortfallReal", "taxesReal", "payrollReal", "spendReal",
+] as const satisfies readonly NumberKey<PathStateFields>[];
+
+/** The view's money and fraction scalars (doubleFields.ts). */
+const VIEW_DOUBLES = [
+  "yearFraction", "cpi", "portfolioStart", "wages", "guaranteedIncome", "otherIncome", "stockShare", "prevPortfolioReturn", "prevInflation", "prevFundedSpend",
+] as const satisfies readonly NumberKey<MutableYearView>[];
+
+/** Allocates the state of one thread for `run`. `tax` defaults to the real functions; tests pass stubs. */
+export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFunctions = TAX_FUNCTIONS): PathState {
+  const Y = run.years;
+  const A = run.accountCount;
+  const P = run.personCount;
   const view: MutableYearView = {
     pathIndex: 0,
     t: 0,
@@ -302,150 +474,8 @@ export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFu
     strategies: run.strategies,
     input: run.input,
   };
-  const ps: Omit<PathState, "assess"> & { assess: AssessFn } = {
-    run,
-    hooks,
-    tax,
-    pathIndex: 0,
-    market: createMarketPath(Y),
-    cpi: new Float64Array(Y + 1),
-    deathIdx: new Int16Array(P),
-    deathYear: new Float64Array(2),
-    bal: new Float64Array(A * 3),
-    basis: new Float64Array(A * 3),
-    owner: new Int8Array(A),
-    roth: new Float64Array(2 * RB_REC),
-    ss: new Float64Array(SS_REC),
-    so: new Float64Array(SO_REC),
-    taxTable: new Float64Array(Y * 2 * TAX_REC),
-    progTable: new Float64Array(Y * PROG_REC),
-    carry: new Float64Array(CARRY_REC),
-    strategy: new Float64Array(STRATEGY_STATE_LENGTH),
-    wn: new Float64Array(WN_REC),
-    rothBasisUnknown: new Uint8Array(2),
-    alive: new Uint8Array(P),
-    retired: new Uint8Array(P),
-    age: new Int16Array(P),
-    yearsToDeath: new Int16Array(P),
-    early: person(),
-    early65: person(),
-    separated55: new Uint8Array(2),
-    earlyTable: new Float64Array(P * Y),
-    early65Table: new Float64Array(P * Y),
-    separated55Table: new Uint8Array(P * Y),
-    preTaxShareTable: new Float64Array(P * Y * 2),
-    hsaShareTable: new Float64Array(P * Y),
-    rothFree: new Float64Array(P),
-    hsaShare: new Float64Array(P),
-    ssRate: new Float64Array(P),
-    conv: person(),
-    grossWages: person(),
-    preTaxDeferral: person(),
-    value: perAccount(),
-    rmd: perAccount(),
-    deposit: perAccount(),
-    convOut: perAccount(),
-    convIn: perAccount(),
-    available: perAccount(),
-    w: perAccount(),
-    preTaxShare: perAccount(),
-    gain: perAccount(),
-    yields: new Float64Array(A * TY_REC),
-    afterTrades: new Float64Array(A * 3),
-    netOut: perAccount(),
-    sold: perAccount(),
-    bought: perAccount(),
-    streamAmounts: new Float64Array(S),
-    iy: new Float64Array(IY_REC),
-    employee: new Float64Array(C),
-    employer: new Float64Array(C),
-    limits: new Float64Array(2 * CL_REC),
-    limitsBase: new Float64Array(2 * CL_REC),
-    groupEmployee: new Float64Array(2 * 4),
-    groupEmployer: new Float64Array(2 * 4),
-    scaleEmployee: new Float64Array(2 * 4),
-    scaleEmployer: new Float64Array(2 * 4),
-    hsaLimit: new Float64Array(2),
-    hsaCatchUp: new Float64Array(2),
-    hsaFamily: new Float64Array(2),
-    hsaWanted: new Float64Array(2),
-    payroll: new Float64Array(PT_REC),
-    preAmounts: new Float64Array(S),
-    preIncome: new Float64Array(IY_REC),
-    preSs: new Float64Array(SS_REC),
-    preSo: new Float64Array(SO_REC),
-    preEmployee: new Float64Array(C),
-    preEmployer: new Float64Array(C),
-    prePayroll: new Float64Array(PT_REC),
-    preTaxIn: new Float64Array(TAX_IN),
-    preTaxOut: new Float64Array(TAX_OUT),
-    ppFixed: new Float64Array(PP_COLUMNS * PP_REC),
-    pp: new Float64Array(PP_COLUMNS * PP_REC),
-    taxIn: new Float64Array(TAX_IN),
-    rw: new Float64Array(2 * RW_REC),
-    hw: new Float64Array(2 * HW_REC),
-    rothScratch: new Float64Array(RB_REC),
-    tyScratch: new Float64Array(TY_REC),
-    rwScratch: new Float64Array(RW_REC),
-    hwScratch: new Float64Array(HW_REC),
-    rothW: person(),
-    hsaW: person(),
-    trade: createTradeResult(),
-    zeroW: perAccount(),
-    t: 0,
-    year: run.startYear,
-    f: run.firstYearFraction,
-    status: 0,
-    drawdown: false,
-    periodStart: 0,
-    periodMonths: 12,
-    billRef: 0,
-    need: 0,
-    cashIncome: 0,
-    employeeTotal: 0,
-    employerTotal: 0,
-    contributionExcess: 0,
-    payrollTotal: 0,
-    rmdTotal: 0,
-    convTotal: 0,
-    qualifiedMedical: 0,
-    nAged: 0,
-    taxBaseline: 0,
-    otherBaseline: 0,
-    preStartCash: 0,
-    preStartTax: 0,
-    calls: 0,
-    portfolio: 0,
-    stockShare: 0,
-    ssTotal: 0,
-    availableTotal: 0,
-    withdrawn: 0,
-    yearFlags: 0,
-    afterTotal: 0,
-    endTotal: 0,
-    interestIn: 0,
-    interestOut: 0,
-    view,
-    decision: createSpendDecision(),
-    outcome: createSpendingOutcome(),
-    record: createAssessment(),
-    baseline: createAssessment(),
-    assess: () => undefined,
-    flags: 0,
-    failIdx: -1,
-    endIdx: 0,
-    endNominal: 0,
-    endReal: 0,
-    shortfallReal: 0,
-    taxesReal: 0,
-    payrollReal: 0,
-    spendReal: 0,
-    conversionsSkipped: 0,
-    notConvergedYears: 0,
-    totalNominal: new Float64Array(Y),
-    totalReal: new Float64Array(Y),
-    spendingReal: new Float64Array(Y),
-  };
+  doubleFields(view, VIEW_DOUBLES);
+  const ps = doubleFields(new PathStateObject(run, hooks, tax, view), STATE_DOUBLES);
   // The view shares the state's arrays (the hooks read them through it).
   view.cpiSeries = ps.cpi;
   view.alive = ps.alive;
@@ -460,7 +490,7 @@ export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFu
   view.socialSecurity = ps.ssRate;
   view.rothFree = ps.rothFree;
   view.hsaPenaltyShare = ps.hsaShare;
-  ps.assess = createAssessFn(ps as PathState);
+  ps.assess = createAssessFn(ps);
   // The penalty fractions and shares by person and plan year (tax-rmd-ss §3.7.1, seams C33).
   const hw = new Float64Array(HW_REC);
   for (let i = 0; i < P; i++) {
@@ -480,5 +510,5 @@ export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFu
       ps.hsaShareTable[k] = hw[HW.PENALTY_BASE]!;
     }
   }
-  return ps as PathState;
+  return ps;
 }

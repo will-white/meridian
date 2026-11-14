@@ -122,6 +122,18 @@ export function uniformAt(key: RngKey, path: number, purpose: number, step: numb
   return uniformFromWords(WORDS[0]!, WORDS[1]!);
 }
 
+/**
+ * `out[j] = uniformAt(key, path, purpose, step, j)` for the slots j = 0 … count − 1: one step's
+ * draws written to an array. The return models' form: a double returned from a call V8 does not
+ * inline is boxed (a heap number per draw), and this writes its results where the caller reads them.
+ */
+export function uniformsAt(key: RngKey, path: number, purpose: number, step: number, count: number, out: Float64Array): void {
+  for (let j = 0; j < count; j++) {
+    threefry2x32(key[0], key[1], path, counterWord(purpose, step, j), WORDS);
+    out[j] = uniformFromWords(WORDS[0]!, WORDS[1]!);
+  }
+}
+
 // AS241 (Wichura, "Algorithm AS 241: The Percentage Points of the Normal Distribution", Applied
 // Statistics 37(3), 1988), routine PPND16, as in CPython's statistics.NormalDist.inv_cdf and R's
 // qnorm.c. Coefficients from the constant term c[0] up to c[7].
@@ -178,4 +190,9 @@ export function invNorm(u: number): number {
     z = poly7(E, r) / poly7(F, r);
   }
   return q < 0 ? -z : z;
+}
+
+/** `values[i] = invNorm(values[i])` for i in [start, start + count): the array form of `invNorm` (see `uniformsAt`). */
+export function invNormInPlace(values: Float64Array, start: number, count: number): void {
+  for (let i = start; i < start + count; i++) values[i] = invNorm(values[i]!);
 }

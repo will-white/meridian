@@ -22,6 +22,7 @@
  * `yearsToDeath` is read here and nowhere else in the strategies: a rule sees only `spendable`.
  */
 
+import { doubleFields } from "../doubleFields.js";
 import type { StrategyTables } from "./prepare.js";
 
 export interface PlannedYear {
@@ -44,7 +45,8 @@ export interface PlannedYear {
 }
 
 export function createPlannedYear(): PlannedYear {
-  return { corePlanned: 0, essentialCore: 0, healthcare: 0, healthcareCap: 0, longTermCare: 0, goals: 0, reserved: 0, spendable: 0 };
+  const py: PlannedYear = { corePlanned: 0, essentialCore: 0, healthcare: 0, healthcareCap: 0, longTermCare: 0, goals: 0, reserved: 0, spendable: 0 };
+  return doubleFields(py, ["corePlanned", "essentialCore", "healthcare", "healthcareCap", "longTermCare", "goals", "reserved", "spendable"]);
 }
 
 /**

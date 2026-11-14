@@ -12,6 +12,11 @@
  *
  * Constants are decimal literals in shortest round-trip form or quotients of exact integers; none
  * comes from `Math.E`, `Math.LN2` or `Math.pow` (§3.14 item 2).
+ *
+ * The special results are `Number.NaN` and `Number.POSITIVE_INFINITY`, never the globals `NaN` and
+ * `Infinity`: with a global among its results V8 gives an inlined `detExp` or `detLog` a boxed
+ * result, one heap number per call (measured: 16 bytes a call through `detExpInPlace`, none with
+ * `Number.NaN`). The values are the same.
  */
 
 const LN2_HI = 6.93147180369123816490e-01;
@@ -53,8 +58,8 @@ function pow2(k: number): number {
  * ln m = 2·atanh(s) with s = (m − 1)/(m + 1), summed to twelve terms.
  */
 export function detLog(x: number): number {
-  if (!(x > 0)) return x === 0 ? -Infinity : NaN;
-  if (x === Infinity) return Infinity;
+  if (!(x > 0)) return x === 0 ? Number.NEGATIVE_INFINITY : Number.NaN;
+  if (x === Number.POSITIVE_INFINITY) return Number.POSITIVE_INFINITY;
   let k = 0;
   while (x >= SQRT2) {
     x *= 0.5;
@@ -88,8 +93,8 @@ export function detLog(x: number): number {
  * overflow or underflow.
  */
 export function detExp(x: number): number {
-  if (x !== x) return NaN;
-  if (x > 709.78) return Infinity;
+  if (x !== x) return Number.NaN;
+  if (x > 709.78) return Number.POSITIVE_INFINITY;
   if (x < -745.2) return 0;
   const k = Math.round(x * INV_LN2);
   const r = (x - k * LN2_HI) - k * LN2_LO;
@@ -110,6 +115,15 @@ export function detExp(x: number): number {
   if (k > 1023) return e * pow2(1023) * pow2(k - 1023);
   if (k < -1022) return e * pow2(k + 1022) * pow2(-1022);
   return e * pow2(k);
+}
+
+/**
+ * `values[i] = detExp(values[i])` for i in [start, start + count): the array form the return models
+ * use, because a double passed to or returned from a call V8 does not inline is boxed (a heap
+ * number each way); the same operations on the same values, so the same bits.
+ */
+export function detExpInPlace(values: Float64Array, start: number, count: number): void {
+  for (let i = start; i < start + count; i++) values[i] = detExp(values[i]!);
 }
 
 /** x^y for x > 0 as `detExp(y × detLog(x))` (no `Math.pow`, no `**`). */

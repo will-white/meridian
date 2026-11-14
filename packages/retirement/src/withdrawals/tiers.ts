@@ -40,6 +40,7 @@
  * `fillTiers` takes is the record's `amount` field (engine-and-returns §4.3).
  */
 
+import { doubleFields } from "../doubleFields.js";
 import { TREATMENT } from "../prepare.js";
 import type { SpendDecision } from "../strategies/types.js";
 
@@ -92,13 +93,14 @@ export interface WithdrawalTiers {
 }
 
 export function createWithdrawalTiers(accountCount: number): WithdrawalTiers {
-  return {
+  const tiers: WithdrawalTiers = {
     accountCount,
     cap: new Float64Array(TIER_COUNT),
     accountCap: new Float64Array(TIER_COUNT * accountCount),
     total: 0,
     amount: 0,
   };
+  return doubleFields(tiers, ["total", "amount"]);
 }
 
 const CASH = TREATMENT.cash;

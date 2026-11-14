@@ -16,6 +16,7 @@
  */
 
 import { CASH_TOL } from "../constants.js";
+import { doubleFields } from "../doubleFields.js";
 import type { SpendDecision } from "./types.js";
 
 export interface SpendingOutcome {
@@ -34,7 +35,8 @@ export interface SpendingOutcome {
 }
 
 export function createSpendingOutcome(): SpendingOutcome {
-  return { need: 0, floorNeed: 0, plannedNeed: 0, funded: 0, shortfall: 0, surplus: 0, failed: false, belowPlan: false };
+  const o: SpendingOutcome = { need: 0, floorNeed: 0, plannedNeed: 0, funded: 0, shortfall: 0, surplus: 0, failed: false, belowPlan: false };
+  return doubleFields(o, ["need", "floorNeed", "plannedNeed", "funded", "shortfall", "surplus"]);
 }
 
 /** The period's need, floor and planned need of a decision (f = the year fraction). */
