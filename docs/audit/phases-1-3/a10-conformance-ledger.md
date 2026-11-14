@@ -99,3 +99,122 @@ Tests: api passkeys "adds a passkey only with the password, verified against thi
 ## Checks
 
 `pnpm typecheck`, `pnpm lint` and `pnpm build` pass. Suites (with `TEST_DATABASE_URL`, prefix `meridian_fix_a_`): shared, db, api, worker and web all pass; the counts after the final merge are in the commit's check list (`a10/` holds the logs).
+
+## Second round
+
+An independent review of the first round found four items not done (01 and 05 regressions, 02 and 03 incomplete) and two new issues. Each was checked against the code first. Decisions 131 to 135 in `docs/phase-1-plan.md` record what changed. Decisions 104, 105, 106 and 108, the data model, sync pipeline, rules engine, transfer pairing, CSV import sections and the test matrix point to them, and so does the README ("A CSV over days the sync already has", "Corrections in the register", "Account types, manual accounts and payees"). Migration `0014_ledger_decisions` adds `transaction.transfer_locked` and `transaction.pending_seen_through` and marks the legs of pairs made by hand.
+
+Unless an entry says otherwise, the tests are in `packages/db/src/services/conformanceLedger.round2.audit.test.ts` (db), `packages/db/src/test/ledgerDecisionsMigration.test.ts` (db migration), `packages/shared/src/csvConformance.audit.test.ts` (shared, "second round" block) and `apps/api/src/conformanceLedger.round2.audit.test.ts` (api). Every new test was run against the code before the fix. The outputs are in the lane's scratch directory under `a10r2/`:
+
+- `red-db.txt`: 11 of 14 failed. The three that passed are controls: the lock-order check itself, one rule's run keeping a flag another rule still sets, and an earlier payment of the same amount. The migration test failed in its setup, because the migration did not exist yet. `red-db-migration.txt` has it failing with the migration but without its data step.
+- `red-db-deadlock.txt`: both deadlock tests fail with `40P01 deadlock detected`.
+- `red-db-05.txt`: the pending case. The hold was deleted and a new row created.
+- `red-shared.txt`: 2 of 8 failed. The other 6 are the first round's tests.
+- `red-api.txt`: 3 of 4 failed. The one that passed is the evidence for rejecting the second new issue.
+
+### a10-conformance-ledger-01 (regression): the ledger lock taken after a write can deadlock
+
+Status: fixed.
+
+Checked: reproduced as the reviewer described. A pairing pass held the lock and was due to pair an IRA's bank row. Meanwhile a trades commit linked that bank row to its cash transfer, which marks the row a transfer. The commit then ingested its second cash row, which takes the lock. Postgres ended the commit with 40P01. `createInvestmentTxn` has the same order. A cash transfer between two investment accounts links the first leg's bank row, then derives a ledger row for the second leg and pairs it. It deadlocked the same way.
+
+What changed (decision 131): `importTrades` and `createInvestmentTxn` take `lockLedger` at the start of their transaction. To find every other path, `lockLedger` gained a check, `setLedgerLockOrderCheck`, which `createTestDb` turns on for every suite. Under it, the lock is refused in a transaction that has already written, detected with `pg_current_xact_id_if_assigned()` while the lock is not yet held. Run over the whole db suite before the fix, it failed nine tests, all through these two functions (`a10r2/db-check-only.txt`). The api and worker suites found no other path. The apps run without the check: there it could only turn a rare deadlock into a certain error.
+
+Tests (db):
+- "a trades commit that marks a bank row a transfer waits for a pairing pass that holds the lock, and both finish" is the reviewer's interleaving. It runs with the check off, waits until the commit is blocked on a lock, then releases the pass. It also checks that the bank row is paired.
+- "a cash transfer entered by hand between two accounts waits for the lock as well".
+- "under the suites' check, the lock taken after a write is refused; taken first, and again after writes, it is not".
+
+### a10-conformance-ledger-02 (incomplete): one file read with two different id columns is added twice
+
+Status: fixed.
+
+Checked: reproduced. A file with Reference and Transaction ID columns, committed once with each as the id column, held 4 rows for 2 purchases. Both sets of ids had the scheme `csvid`, so the ids decided and nothing compared the rows by content. The plan's line "also with another id column" was therefore not true.
+
+What changed (decision 132): a bank id is `csvid2:<column>:<value>`, built by `csvIdColumnKey`.
+- The column is the header as a mapping matches it (sanitized, lower case). The same column gives the same id whether the mapping names it or gives its position. A file without a header row uses `#<position>`. `%` and `:` are escaped.
+- `csvIdScheme` returns `csvid2:<column>`. Another id column is therefore another scheme, and decision 105's content match finds the purchases: in `findSameTransactions`, in the preview's `csvDuplicateIds` and in undo.
+- Within one column the ids still decide.
+- Ids stored as `csvid:` are their own scheme and are recognized by content. No migration: the column of a stored id is not known.
+
+`packages/shared/src/csv.test.ts` and the first round's db test now expect the new form.
+
+Tests:
+- db "the same file imported with one id column, then with another, is one set of rows, in the preview and the commit (both ways)". The preview marks 2 of 2. After both imports, either file adds nothing.
+- db "within one id column the ids decide: two equal coffees of one day are two rows, and a third id is a third row".
+- db "rows stored under the earlier csvid: ids, which did not name the column, are recognized by their content".
+- shared "is csvid2:<column as a mapping matches it>:<the file's id>, so two id columns of one file are two schemes".
+- shared "names a column without a header by its position, and escapes a colon in a header".
+- api "a10-conformance-ledger-02: the same file committed with one id column and then with another is marked as duplicates and adds nothing".
+
+### a10-conformance-ledger-03 (incomplete): the next rule run undid what the household decided by hand
+
+Status: fixed.
+
+Checked: reproduced. A pair made by hand ("VENMO CASHOUT" and "TRANSFER TO BANK") was unpaired by `runRules({ scope: "uncategorized" })` with a "VENMO, not a transfer" rule. Saving that rule on the Rules page runs it the same way: the rule alone, over uncategorized rows, which paired rows are. A row marked a transfer by hand was unmarked by the next run over all rows.
+
+What changed (decision 133): `transaction.transfer_locked` (migration 0014) records a decision made by hand.
+- Set by: marking a row a transfer, or not a transfer (`updateTransaction`); pairing by hand; linking an investment row by hand (`markAsTransfers` with `byHand`).
+- `applyRulesToRow` skips the transfer action on such a row unless `force` is set. Rows come to it from rule runs, the posted form replacing a pending row, and released partners.
+- A row the household said is not a transfer is left out of automatic pairing (`pairTransfersInDb`) and of automatic marking. The household pairs it by hand.
+- Undoing a pair locks the row undone. Its other leg goes back to automation, and the dismissal still keeps the two apart.
+- A released pair keeps a hand-locked leg a transfer, without a pair (`releasePairs`, and the replacement path in `ingestTransactions`).
+- A CSV or manual row folded into the feed's row brings its lock when the merged row agrees with it.
+- Migration 0014 locks the legs of pairs made by hand, found by the audit entry that names the pair id they still carry. Hand marks were never audited, so they cannot be recovered.
+
+Tests:
+- db "a pair made by hand stays a transfer through rule runs that say it is not one (a saved rule's run, uncategorized, all)".
+- db "a row marked a transfer by hand, or marked not one, keeps that through rule runs and when it posts".
+- db "a row nobody decided by hand still follows the rules, and a pair undone by the household stays undone".
+- db migration "marks the legs of a pair made by hand as decided by hand, and nothing else". This covers an automatic pair, and a pair made by hand, undone and paired again automatically.
+- api "a10-conformance-ledger-03: a pair made by hand and a row marked a transfer by hand stay so when a 'not a transfer' rule is saved and when the rules run". The rule is created through `POST /api/rules` with "apply to uncategorized", then `POST /api/rules/run` runs over all rows.
+
+### a10-conformance-ledger-05 (regression): an undated hold that posts with only its posting day loses its edits
+
+Status: fixed.
+
+Checked: reproduced. An undated hold was first seen on 10-24, listed again on 10-28 and 11-01, and posted on 11-02 with only `posted`. The posted item was 9 days from the row's date, so nothing replaced the row (replacedPending 0). The row was then deleted as vanished, a new row was created, and the household's note was lost. Before the first round's fix, the row had moved to 11-01 and was replaced in place.
+
+What changed (decision 135): the row keeps both the day it was first seen and the last day the feed listed it, in `transaction.pending_seen_through`.
+- Set when an undated pending item is inserted, and on each sync that lists it. This write is not counted as an update.
+- Cleared when the row posts, or when the item gains a date.
+- When a posted item replaces a pending row that was not listed, it is matched by its distance to the days from the first to the last day seen, within 5 days as before. The first round's case (`transacted_at` on the first day) still matches.
+
+Tests (db):
+- "posted with only its posting day, nine days after it was first seen: replaced in place, with the household's note" checks replacedPending 1, the same row id, the date 11-02, and the note kept.
+- "a purchase of the same amount that posted days before the hold was first seen is another purchase" is a control that passes before and after.
+- The first round's two tests still pass.
+
+### New issue 1: a 'not a transfer' rule left a flag that outlived the rule
+
+Status: fixed.
+
+Checked: reproduced. A rule "description contains TRANSFER, not a transfer" flagged a checking row. The rule was deleted and `runRules({ scope: "all" })` ran. The savings leg then arrived, and the pairing pass paired nothing: the checking row still had `not_transfer`.
+
+What changed (decision 134): a row keeps `not_transfer` only while some rule of the household's whole set rules it out.
+- `applyRulesToRow` clears the flag where no rule decides the row. It checks the whole set (`allRules`, loaded when only one rule runs), so saving another rule does not clear a flag that a remaining rule still sets.
+- `clearStaleNotTransfer` checks every flagged row against the current rules, clears the stale ones and pairs them. It runs after `DELETE /api/rules/:id`, after `PATCH /api/rules/:id` when the change is to `enabled`, the conditions or the actions, after `POST /api/rules/reorder`, and at the end of every rule run.
+
+Tests:
+- db "deleted, then the rules run: the row it ruled out is no longer, and its other leg pairs with it".
+- db "a run of one rule (saving another rule) leaves the flag a rule still sets; the full run keeps it too" is a control.
+- db "when a rule is deleted or changed, the rows only it ruled out lose the flag and may pair; the rows another rule rules out keep it".
+- api "a10-conformance-ledger-03: deleting a 'not a transfer' rule, or switching it off, lets the rows it ruled out pair".
+
+### New issue 2: the "Delete mapping" prompt promised an undo the app does not offer
+
+Status: rejected.
+
+Evidence: the review read the Import page before commit d303b3f (a5-ingest-transfers, second round) reached the branch. That commit added **Recent bank imports** at the foot of the Import page, with its Undo:
+- The list comes from `GET /api/import/csv/history`, which calls `listCsvImports`. That lists bank CSV import logs by kind, whatever their connection, so an import whose profile was deleted (its `connection_id` set to null by decision 107) is still listed.
+- `canUndo` stays true for such an import.
+
+The prompt is accurate, and deleting a profile changes nothing about undo: the list shows the latest 25 bank imports, with or without a profile.
+
+Tests:
+- api "a deleted mapping profile's import stays in the Import page's history, with its undo" passed before any change in this round. It covers the import listed with its profile, still listed with `canUndo` after the profile is deleted (`profileName` null), the undo removing 2 rows, and the import then marked undone.
+- Browser check in headless Chromium against the built app on port 3481 (`a10r2/ui-check.cjs`, result in `a10r2/ui-check-result.txt`): an import made with the profile "First Bank"; the profile deleted on the Connections page, whose prompt says the imports can still be undone from the Import page; the import listed under Recent bank imports without the mapping's name and with **Undo** (`ui-1-history-after-profile-deleted.png`); Undo removed its 2 rows and the line says "undone" (`ui-2-undone.png`). No console errors.
+
+### Checks (second round)
+
+`pnpm typecheck`, `pnpm lint` and `pnpm build` pass. Suites ran with `TEST_DATABASE_URL` and the `meridian_fix_a_` prefix, all with the lock-order check on, after the branch was brought in. Counts: shared 1051, db 460, api 377, worker 129 and web 559 tests pass. The branch had meanwhile gained Phase 4's migration `0013_phase4_retirement`, so this round's migration is `0014_ledger_decisions`, generated after it.

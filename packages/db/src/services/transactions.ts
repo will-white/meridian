@@ -317,15 +317,24 @@ export async function updateTransaction(db: Db, id: string, patch: TransactionPa
       set.payeeLocked = true;
     }
     if (patch.notes !== undefined) set.notes = patch.notes;
+    if (patch.isTransfer !== undefined) {
+      // The household decided by hand: the rules leave the row's transfer state alone from now on (a10-conformance-ledger-03, second round).
+      set.transferLocked = true;
+      set.notTransfer = false;
+    }
     if (patch.isTransfer === true) {
       set.isTransfer = true;
-      // A transfer marked by hand wins over a rule's "not a transfer" (a10-conformance-ledger-03).
-      set.notTransfer = false;
       // A transfer leaves the plan, so a category automation gave it goes, as pairing clears it (audit a5-ingest-transfers-12).
       const [row] = await tx.select({ categoryLocked: transaction.categoryLocked }).from(transaction).where(eq(transaction.id, id));
       if (row && !row.categoryLocked && patch.categoryId === undefined) set.categoryId = null;
     }
-    if (patch.isTransfer === false) await unpairTransfer(tx, id);
+    if (patch.isTransfer === false) {
+      // The other leg of a pair the household undoes goes back to automation: the household's word was about this row.
+      const [row] = await tx.select({ pairId: transaction.transferPairId }).from(transaction).where(eq(transaction.id, id));
+      const others = row?.pairId ? (await tx.select({ id: transaction.id }).from(transaction).where(eq(transaction.transferPairId, row.pairId))).map((r) => r.id).filter((other) => other !== id) : [];
+      await unpairTransfer(tx, id);
+      if (others.length > 0) await tx.update(transaction).set({ transferLocked: false }).where(inArray(transaction.id, others));
+    }
     await tx.update(transaction).set(set).where(eq(transaction.id, id));
     // A transfer has no split (audit a8-ledger-ui-10).
     if (patch.isTransfer === true) await dropTransferSplits(tx, [id]);

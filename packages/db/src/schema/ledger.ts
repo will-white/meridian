@@ -85,6 +85,21 @@ export const transaction = pgTable(
      * a10-conformance-ledger-03).
      */
     notTransfer: boolean("not_transfer").notNull().default(false),
+    /**
+     * The household decided by hand whether this row is a transfer: marked it one, marked it not
+     * one, paired it, or linked it to an investment row. The rules then leave its transfer state
+     * alone, and a row the household said is not a transfer is not paired automatically (audit
+     * a10-conformance-ledger-03, second round). Cleared when a pair the household did not make
+     * is released, and on the other leg of a pair the household undoes.
+     */
+    transferLocked: boolean("transfer_locked").notNull().default(false),
+    /**
+     * For a pending row stored from an item without a date of its own (dated by the day it was
+     * first seen, decision 108): the last day the feed listed it. Its posted form is matched
+     * against the days from `date` to this one (audit a10-conformance-ledger-05, second round).
+     * Null for a dated item and once the row posts.
+     */
+    pendingSeenThrough: date("pending_seen_through"),
     /** Phase 2: the recurring item this charge belongs to (set by the detector/matcher). */
     recurringId: uuid("recurring_id"),
     notes: text("notes"),

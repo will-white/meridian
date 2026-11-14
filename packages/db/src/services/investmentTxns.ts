@@ -26,6 +26,7 @@ import { loadInvestmentAccount, type InvestmentAccountRow } from "./holdings.js"
 import { ingestTransactions, type IncomingTransaction } from "./ingest.js";
 import { unfeedReinvestedDividends } from "./investmentIncome.js";
 import { enqueueJob } from "./jobs.js";
+import { lockLedger } from "./ledgerLock.js";
 import { listLotPicks, rebuildLotsForAccounts, validateLotPicks, writeLotPicks, type LotPickInputRecord, type LotPickRecord } from "./lots.js";
 import { resolvePayee } from "./payees.js";
 import { requestPriceRefresh } from "./prices.js";
@@ -687,6 +688,8 @@ export async function createInvestmentTxn(db: Db, input: CreateInvestmentTxnInpu
   const shape = normalizeManual(input);
   const memo = input.memo === undefined || input.memo === null ? null : sanitizeText(input.memo, 2000) || null;
   return db.transaction(async (tx) => {
+    // Settling the ledger side pairs transfers (a lock holder's work): the ledger lock comes before the first write (a10-conformance-ledger-01, second round).
+    await lockLedger(tx);
     const acct = await loadInvestmentAccount(tx, input.accountId);
     if (shape.securityId !== null) await requireSecurity(tx, shape.securityId);
     let counterparty: InvestmentAccountRow | null = null;
@@ -1401,6 +1404,10 @@ export async function importTrades(db: Db, input: ImportTradesInput): Promise<Im
   if (unknown.length > 0) throw new PlanError(400, "unknown_action", `Map these actions before committing: ${unknown.join(", ")}`);
 
   const inner = await db.transaction(async (tx) => {
+    // The commit links and marks bank rows, then ingests and pairs, as an ingest and the pairing pass do: it takes the ledger
+    // lock before its first write, or it could hold a bank row a lock holder waits for while it waits for the lock
+    // (a10-conformance-ledger-01, second round).
+    await lockLedger(tx);
     const upserted = await upsertInvestmentTxns(tx, {
       accountId: input.accountId,
       trades: input.trades,

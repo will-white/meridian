@@ -235,24 +235,44 @@ function resolveColumn(ref: ColumnRef, headers: readonly string[] | undefined): 
 
 /**
  * The ways a bank CSV row's external id is made (audit a10-conformance-ledger-02):
- * - `csvid`: `csvid:<the file's own id>`, when the mapping has an id column and the row a value;
+ * - `csvid2`: `csvid2:<id column>:<the file's own id>`, when the mapping has an id column and the
+ *   row a value (second round). The column is named (`csvIdColumnKey`), because ids of two
+ *   columns of one file are not comparable: the scheme is `csvid2:<id column>`;
+ * - `csvid`: `csvid:<the file's own id>`, the same before the second round, without the column;
  * - `csv2`: `csv2:<sha256(date|cents|description text)>[:n]`, the content hash of rows without an
  *   id (current);
  * - `csv`: `csv:<sha256(date|cents|normalized payee)>[:n]`, the content hash before this audit. It
  *   hashed `normalizePayee`'s output, so it changed whenever the payee heuristics did; rows and
  *   ids stored under it keep it and are recognized by their content.
- * Within one scheme the ids decide; across schemes the same purchase is found by its content
- * (`findSameTransactions` in packages/db).
+ * Within one scheme the ids decide; across schemes (another id column, an id column and none,
+ * ids made before) the same purchase is found by its content (`findSameTransactions` in
+ * packages/db).
  */
-export type CsvIdScheme = "csvid" | "csv2" | "csv";
+export type CsvIdScheme = "csvid" | "csv2" | "csv" | `csvid2:${string}`;
 
 /** The scheme of a CSV external id, or undefined for an id that is not one. */
 export function csvIdScheme(externalId: string | null | undefined): CsvIdScheme | undefined {
   if (!externalId) return undefined;
+  if (externalId.startsWith("csvid2:")) {
+    const end = externalId.indexOf(":", "csvid2:".length);
+    return end < 0 ? undefined : (externalId.slice(0, end) as CsvIdScheme);
+  }
   if (externalId.startsWith("csvid:")) return "csvid";
   if (externalId.startsWith("csv2:")) return "csv2";
   if (externalId.startsWith("csv:")) return "csv";
   return undefined;
+}
+
+/**
+ * How a `csvid2` id names its column (audit a10-conformance-ledger-02, second round): the
+ * header's text as a mapping matches it (`headerKey`: sanitized, lower case), or `#<position>`
+ * for a file without a header row or a column without a name. `%` and `:` are escaped, so the
+ * column ends at the id's second colon.
+ */
+export function csvIdColumnKey(headers: readonly string[] | undefined, column: number): string {
+  const name = headers?.[column] !== undefined ? headerKey(headers[column]!).trim() : "";
+  const key = name !== "" ? name : `#${column}`;
+  return key.replace(/%/g, "%25").replace(/:/g, "%3A");
 }
 
 /**
@@ -283,6 +303,7 @@ export async function mapCsvRows(rows: readonly string[][], mappingInput: CsvMap
   const descCol = resolveColumn(mapping.description.column, headers);
   const memoCol = mapping.memo ? resolveColumn(mapping.memo.column, headers) : undefined;
   const idCol = mapping.externalId ? resolveColumn(mapping.externalId.column, headers) : undefined;
+  const idColumnKey = idCol !== undefined ? csvIdColumnKey(headers, idCol) : "";
   const amountCols =
     mapping.amount.mode === "single"
       ? { mode: "single" as const, col: resolveColumn(mapping.amount.column, headers), invert: mapping.amount.invert }
@@ -331,7 +352,8 @@ export async function mapCsvRows(rows: readonly string[][], mappingInput: CsvMap
     let externalId: string;
     const providedId = idCol !== undefined ? sanitizeText(row[idCol] ?? "", 200) : "";
     if (providedId) {
-      externalId = `csvid:${providedId}`;
+      // The id column is part of the id (second round): another column's ids are another scheme, compared by content.
+      externalId = `csvid2:${idColumnKey}:${providedId}`;
     } else {
       // The cell as the file has it (not the sanitized text): the id must not move when the sanitizer does.
       const rawDescription = row[descCol] ?? "";
