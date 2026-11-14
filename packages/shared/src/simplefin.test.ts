@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   decodeSetupToken,
   describeSimplefinError,
+  highWaterMarkAfterBalances,
   highWaterMarkAfterSync,
   jsonbSafe,
   parseAccessUrl,
@@ -10,6 +11,7 @@ import {
   SimplefinAccountSet,
   simplefinFeedHealth,
   simplefinTransactionDate,
+  syncGapRange,
   syncWindowStart,
 } from "./simplefin.js";
 
@@ -171,6 +173,37 @@ describe("highWaterMarkAfterSync", () => {
     expect(highWaterMarkAfterSync({ ...base, accountsCreated: 1, incomplete: true })).toBeNull();
     // The first sync and a full resync already asked for all of it.
     expect(highWaterMarkAfterSync({ ...base, previous: null, windowStart: "2026-07-12", accountsCreated: 3 })).toBe("2026-10-13");
+  });
+});
+
+describe("a3-sync-core (second round): the mark after a Balances only refresh, and the days a capped window leaves out", () => {
+  const config = { initialWindowDays: 93, overlapDays: 7 };
+
+  it("highWaterMarkAfterBalances: a refresh never moves the mark, but one that finds an account clears it so the next full sync asks for its history", () => {
+    // 2026-10-11 - 93 days = 2026-07-10.
+    expect(highWaterMarkAfterBalances({ previous: "2026-10-10", today: "2026-10-11", accountsCreated: 0, config })).toBe("2026-10-10");
+    expect(highWaterMarkAfterBalances({ previous: null, today: "2026-10-11", accountsCreated: 0, config })).toBeNull();
+    // A new (or attached again) account: the next window would start 2026-10-03, after 2026-07-10, so the mark goes.
+    expect(highWaterMarkAfterBalances({ previous: "2026-10-10", today: "2026-10-11", accountsCreated: 1, config })).toBeNull();
+    // 2026-07-18 - 7 = 2026-07-11, one day short of the first-sync window: cleared.
+    expect(highWaterMarkAfterBalances({ previous: "2026-07-18", today: "2026-10-11", accountsCreated: 2, config })).toBeNull();
+    // 2026-07-17 - 7 = 2026-07-10: the next sync asks for the whole first-sync window anyway, so the mark stays and the days it misses are still reported.
+    expect(highWaterMarkAfterBalances({ previous: "2026-07-17", today: "2026-10-11", accountsCreated: 1, config })).toBe("2026-07-17");
+    expect(highWaterMarkAfterBalances({ previous: "2026-06-01", today: "2026-10-11", accountsCreated: 1, config })).toBe("2026-06-01");
+  });
+
+  it("syncGapRange: from the overlap before the last complete sync to the day before the window, and only when the cap cut the window", () => {
+    // Mark 2026-06-01, today 2026-10-20: the window is capped at 2026-07-19 (93 days back). An ordinary sync would have
+    // asked from 2026-05-25 (7 days before the mark, for items that post late), so 2026-05-25 to 2026-07-18 were not asked for again.
+    expect(syncGapRange("2026-06-01", "2026-07-19", config)).toEqual({ from: "2026-05-25", to: "2026-07-18" });
+    // Today 2026-10-13, 93 days back 2026-07-12. Mark 2026-07-19: the overlap reaches 2026-07-12 exactly, nothing is left out.
+    expect(syncGapRange("2026-07-19", syncWindowStart("2026-07-19", "2026-10-13", config), config)).toBeNull();
+    // Mark 2026-07-18: the overlap would start 2026-07-11, one day before the window.
+    expect(syncGapRange("2026-07-18", syncWindowStart("2026-07-18", "2026-10-13", config), config)).toEqual({ from: "2026-07-11", to: "2026-07-11" });
+    // No mark (first sync), or a window that reaches the overlap (an ordinary sync, a full resync after a recent one).
+    expect(syncGapRange(null, "2026-07-12", config)).toBeNull();
+    expect(syncGapRange("2026-10-10", "2026-10-03", config)).toBeNull();
+    expect(syncGapRange("2026-10-10", "2026-07-12", config)).toBeNull();
   });
 });
 

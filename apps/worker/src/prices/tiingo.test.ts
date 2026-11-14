@@ -99,6 +99,30 @@ describe("TiingoProvider", () => {
     expect(bodyNamesUnknownTicker(CSV)).toBe(false);
     expect(bodyNamesUnknownTicker("{not json")).toBe(false);
   });
+
+  it("a3-sync-core (second round), live-15: a body cut off after the headers says why, as a failed request does", async () => {
+    /** A 200 whose body sends one chunk and then fails the way undici fails it. */
+    const cutOff = (reason: unknown) => {
+      let sent = false;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent) return controller.error(reason);
+          sent = true;
+          controller.enqueue(new TextEncoder().encode(`${HEADER}\n2026-10-13,305.25`));
+        },
+      });
+      return new TiingoProvider({ apiKey: "secret-key", fetch: fakeFetch(() => new Response(body, { status: 200 })).fetchImpl, timeoutMs: 2000 });
+    };
+    // The server closed the socket mid-body: undici says "terminated" and keeps the reason in `cause`.
+    const closed = await cutOff(new TypeError("terminated", { cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }) })).fetchDaily("VTI", RANGE);
+    expect(closed).toEqual({ ok: false, kind: "network", message: "tiingo: response body could not be read: other side closed (UND_ERR_SOCKET)" });
+    // The request's timeout ran out while the body was arriving.
+    const slow = await cutOff(new DOMException("The operation was aborted due to timeout", "TimeoutError")).fetchDaily("VTI", RANGE);
+    expect(slow).toEqual({ ok: false, kind: "network", message: "tiingo: response body could not be read: timeout (no answer within 2 seconds)" });
+    // A URL in the reason is cut down to its host (the key is never in a URL, but the rule is the Bridge's too).
+    const quoted = await cutOff(new TypeError("terminated", { cause: new Error("socket hang up at https://api.tiingo.com/tiingo/daily/VTI/prices?token=x") })).fetchDaily("VTI", RANGE);
+    expect(quoted).toEqual({ ok: false, kind: "network", message: "tiingo: response body could not be read: socket hang up at https://api.tiingo.com" });
+  });
 });
 
 /** A provider that answers from a script, one result per call. */

@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connection, job } from "@meridian/db";
 import { encryptSecret } from "@meridian/shared";
-import { createTestApp, signInOwner, TEST_DATABASE_URL, type TestApp } from "./test/helpers.js";
+import { createTestApp, signInOwner, TEST_DATABASE_URL, viewerCookies, type TestApp } from "./test/helpers.js";
 
 /**
  * What the Connections page needs from the API to recover from a bank outage: how the last
@@ -143,5 +143,54 @@ describe.skipIf(!TEST_DATABASE_URL)("connections: a setup token that could not b
       code: "no_access_url",
       error: "This connection has no access URL: its setup token was refused or used up. Remove the connection and add it again with a new setup token from the SimpleFIN Bridge.",
     });
+  });
+});
+
+/**
+ * Audit a3-sync-core, second round: a sync.gap notice names days the feed was never asked for
+ * again. It stays on the connection through later syncs, so the household needs a way to put
+ * it away once a CSV import has covered those days.
+ */
+describe.skipIf(!TEST_DATABASE_URL)("connections: dismissing a sync.gap notice (a3-sync-core, second round)", () => {
+  let t: TestApp;
+  let connectionId: string;
+  const auth = { code: "con.auth", message: "The bank connection needs to be re-authenticated at the SimpleFIN Bridge." };
+  const gap = (from: string, to: string) => ({ code: "sync.gap", message: `Transactions dated ${from} to ${to} may be missing.`, from, to });
+  const view = async () => (await t.call({ method: "GET", url: "/api/connections" })).json().find((c: { id: string }) => c.id === connectionId);
+  const dismiss = (id: string, payload: unknown, cookies?: Record<string, string>) =>
+    t.call({ method: "POST", url: `/api/connections/${id}/sync-gaps/dismiss`, payload: payload as Record<string, unknown>, ...(cookies ? { cookies } : {}) });
+
+  beforeAll(async () => {
+    t = await createTestApp();
+    await signInOwner(t);
+    const [row] = await t.db.db
+      .insert(connection)
+      .values({ type: "simplefin", name: "Bank", status: "auth_required", lastErrors: [auth, gap("2026-01-10", "2026-02-20"), gap("2026-05-25", "2026-07-18")] })
+      .returning({ id: connection.id });
+    connectionId = row!.id;
+  });
+  afterAll(async () => {
+    await t?.cleanup();
+  });
+
+  it("shows the days a notice names, so the page can offer to dismiss it", async () => {
+    expect((await view()).lastErrors).toEqual([auth, gap("2026-01-10", "2026-02-20"), gap("2026-05-25", "2026-07-18")]);
+  });
+
+  it("the owner dismisses one notice by its first day; the others stay, and asking again changes nothing", async () => {
+    const res = await dismiss(connectionId, { from: "2026-05-25" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ id: connectionId, lastErrors: [auth, gap("2026-01-10", "2026-02-20")] });
+    const again = await dismiss(connectionId, { from: "2026-05-25" });
+    expect(again.statusCode).toBe(200);
+    expect((await view()).lastErrors).toEqual([auth, gap("2026-01-10", "2026-02-20")]);
+  });
+
+  it("a viewer cannot dismiss one; an unknown connection is 404 and a day that is not a date is 400", async () => {
+    const viewer = await dismiss(connectionId, { from: "2026-01-10" }, await viewerCookies(t));
+    expect(viewer.statusCode).toBe(403);
+    expect((await view()).lastErrors).toEqual([auth, gap("2026-01-10", "2026-02-20")]);
+    expect((await dismiss("00000000-0000-4000-8000-000000000000", { from: "2026-01-10" })).statusCode).toBe(404);
+    for (const payload of [{}, { from: "2026-02-30" }, { from: "yesterday" }]) expect((await dismiss(connectionId, payload)).statusCode).toBe(400);
   });
 });

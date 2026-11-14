@@ -70,3 +70,18 @@ export function removeConnectionPrompt(name: string): string {
 export function deleteProfilePrompt(name: string): string {
   return `Delete the mapping "${name}"? Only the saved column mapping goes; the imports made with it, and their rows, stay, and each can still be undone from the Import page.`;
 }
+
+/**
+ * Audit a3-sync-core, second round: a sync.gap notice names days the feed was never asked for
+ * again. It stays on the connection through later syncs, so the page offers to put it away;
+ * nothing else in the list is dismissed (the next response replaces those). Null for an entry
+ * that is not one, or a notice without its days.
+ */
+export function dismissibleGap(e: ConnectionView["lastErrors"][number]): { from: string; to: string } | null {
+  return e.code === "sync.gap" && e.from && e.to ? { from: e.from, to: e.to } : null;
+}
+
+/** Asked before a notice is dismissed: after that nothing on the page says those days may be missing. */
+export function dismissGapPrompt(gap: { from: string; to: string }): string {
+  return `Dismiss the notice about ${gap.from} to ${gap.to}? Do it once a CSV import from the bank covers those days: no sync asks the Bridge for them again.`;
+}

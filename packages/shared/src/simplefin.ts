@@ -363,6 +363,45 @@ export function highWaterMarkAfterSync(input: HighWaterMarkInput): IsoDate | nul
   return today;
 }
 
+export interface BalancesMarkInput {
+  /** The mark before the refresh. */
+  previous: IsoDate | null;
+  today: IsoDate;
+  /** Accounts the refresh saw for the first time, or attached to this connection again. */
+  accountsCreated: number;
+  config: SyncWindowConfig;
+}
+
+/**
+ * The high-water mark after a Balances only refresh (audit a3-sync-core, second round). The
+ * refresh asks for no transactions, so it never moves the mark. But an account it is the first
+ * to see (new at the Bridge, or attached again after its connection was removed) is on the
+ * connection from now on without any of its history, and the next full sync would not count it
+ * as new: the mark is cleared, as after a full sync whose window was short, so that sync asks
+ * for the first-sync window. When the next sync asks for that window anyway (the mark is older
+ * than the window can reach), the mark stays, so the days it leaves out are still reported.
+ */
+export function highWaterMarkAfterBalances(input: BalancesMarkInput): IsoDate | null {
+  if (input.accountsCreated === 0 || input.previous === null) return input.previous;
+  const earliest = addDays(input.today, -input.config.initialWindowDays);
+  return syncWindowStart(input.previous, input.today, input.config) > earliest ? null : input.previous;
+}
+
+/**
+ * The days a sync's window left out (audit decision 25, a3-sync-core second round): from the
+ * start of the window an ordinary sync would have asked for, `overlapDays` before the mark (the
+ * mark day was only seen up to the hour of that sync, items post late, and the stale-copy rule
+ * lets an account be up to `overlapDays` behind it), to the day before the window this sync
+ * asked for. Null when the window reaches that far (always, unless the first-sync cap cut it)
+ * or there is no mark.
+ */
+export function syncGapRange(previous: IsoDate | null, windowStart: IsoDate, config: SyncWindowConfig): { from: IsoDate; to: IsoDate } | null {
+  if (previous === null) return null;
+  const from = addDays(previous, -config.overlapDays);
+  const to = addDays(windowStart, -1);
+  return from > to ? null : { from, to };
+}
+
 /** The setup token is the Base64 of the claim URL. It must be HTTPS. */
 export function decodeSetupToken(token: string): string {
   const trimmed = token.trim();

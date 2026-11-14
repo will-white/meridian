@@ -118,4 +118,19 @@ describe.skipIf(!TEST_DATABASE_URL)("job queue", () => {
     expect(after!.lastError).toMatch(/^The worker stopped before this job finished/);
     await completeJob(t.db, first.id);
   });
+
+  it("a3-sync-core (second round): a sync a dead worker left behind empties the last response's entries but keeps a sync.gap notice", async () => {
+    const gap = { code: "sync.gap", message: "Transactions dated 2026-05-25 to 2026-07-18 may be missing.", from: "2026-05-25", to: "2026-07-18" };
+    const [conn] = await t.db
+      .insert(connection)
+      .values({ type: "simplefin", name: "Bank", status: "auth_required", lastErrors: [{ code: "con.auth", message: "The bank connection needs to be re-authenticated at the SimpleFIN Bridge." }, gap] })
+      .returning({ id: connection.id });
+    const twoHoursAgo = new Date(Date.now() - 2 * 3600_000);
+    const stale = await enqueueJob(t.db, "simplefin.sync", { connectionId: conn!.id }, { maxAttempts: 3 });
+    await t.db.update(job).set({ status: "running", attempts: 1, startedAt: twoHoursAgo, runAt: twoHoursAgo }).where(eq(job.id, stale.id));
+    expect(await requeueStaleJobs(t.db, 30)).toEqual({ requeued: 1, failed: 0 });
+    const [after] = await t.db.select().from(connection).where(eq(connection.id, conn!.id));
+    expect(after).toMatchObject({ status: "error", lastErrors: [gap] });
+    await completeJob(t.db, stale.id);
+  });
 });

@@ -2,11 +2,12 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { activeJobsByConnection, connection, enqueueJob, importLog, job as jobTable, listRecentJobs } from "@meridian/db";
+import { activeJobsByConnection, connection, dismissSyncGap, enqueueJob, importLog, job as jobTable, listRecentJobs } from "@meridian/db";
 import {
   ConnectionView,
   CreateSimplefinConnectionBody,
   decodeSetupToken,
+  DismissSyncGapBody,
   encryptSecret,
   ImportLogView,
   JobView,
@@ -117,6 +118,16 @@ export async function connectionRoutes(app: FastifyInstance): Promise<void> {
       return toJobView(upgraded);
     },
   );
+
+  /**
+   * Audit a3-sync-core, second round: put away the sync.gap notice whose first day is `from`
+   * (once a CSV import covers those days). The notice names days no later sync asks for, so it
+   * stays through every sync until this. Owner only, like every change; asking again is a no-op.
+   */
+  r.post("/connections/:id/sync-gaps/dismiss", { schema: { params: UuidParams, body: DismissSyncGapBody, response: { 200: ConnectionView } } }, async (request) => {
+    if (!(await dismissSyncGap(app.db, request.params.id, request.body.from))) throw notFound("Connection not found");
+    return (await listConnections()).find((c) => c.id === request.params.id)!;
+  });
 
   /**
    * Phase 3 (imports design §4, plan decision 18): replay the connection's stored sync payloads
