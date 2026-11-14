@@ -24,7 +24,7 @@ await build({
   // The images run the bundles with --enable-source-maps (NODE_OPTIONS), so a logged stack names
   // the source file and line. The map only needs the positions for that: the sources themselves
   // are not embedded, which keeps the four maps (the API's server and admin, the worker's main and
-  // simThread) at about 2.3 MB instead of 10 MB.
+  // simThread; all but admin carry the retirement engine) at about 2.6 MB instead of 11 MB.
   sourcemap: true,
   sourcesContent: false,
   logLevel: "info",
