@@ -288,4 +288,4 @@ Tests:
 
 ### Checks
 
-`pnpm typecheck`, `pnpm lint` and `pnpm build` pass. The suites of the packages touched and of those that run the detection, with `TEST_DATABASE_URL` and prefix `meridian_fix_b_`, all pass: db 61 files and 455 tests, worker 15 and 130, api 46 and 375. Only `packages/db` changed (no app and no web code), so no browser check was needed. The two lock-wait tests passed in five repeated runs. No check failed inside the Phase 4 paths.
+`pnpm typecheck`, `pnpm lint` and `pnpm build` pass. The suites of the packages touched and of those that run the detection, with `TEST_DATABASE_URL` and prefix `meridian_fix_b_`, all pass: db 61 files and 455 tests, worker 15 and 130, api 46 and 375. Only `packages/db` changed (no app and no web code), so no browser check was needed. The two lock-wait tests passed in five repeated runs. After bringing in the branch (Phase 4's planner services and the a10 second round), `pnpm typecheck`, `pnpm lint`, `pnpm build` and the same suites were run again and pass: db 67 files and 541 tests, worker 15 and 130, api 47 and 379 (`laneB/b5r2-merge-*.txt`). No check failed inside the Phase 4 paths.
