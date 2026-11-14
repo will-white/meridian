@@ -883,6 +883,132 @@ describe.skipIf(!TEST_DATABASE_URL)("sync of odd responses (a4-sync-parse)", () 
   });
 });
 
+/**
+ * Audit batch a4-sync-parse, second round: a 200 whose errors or errlist is not a list, whose
+ * accounts is missing or null, or which is nested deeper than the database takes. The clock is
+ * 2026-11-01T01:00Z (Oct 31 in the household's zone) and each case starts from the mark
+ * 2026-10-20, so a complete response moves it to the balance date, 2026-10-31.
+ */
+describe.skipIf(!TEST_DATABASE_URL)("sync of odd responses, second round (a4-sync-parse)", () => {
+  let t: TestDb;
+  let ctx: JobContext;
+  let connectionId: string;
+  const secretsKey = generateSecretsKey();
+  const now = new Date("2026-11-01T01:00:00Z");
+  let body: () => string = () => "";
+  const config: WorkerConfig = { databaseUrl: "unused", secretsKey, workerId: "test-worker", syncIntervalHours: 6, pollIntervalMs: 10, initialWindowDays: 93, overlapDays: 7, requestTimeoutMs: 5000 };
+  const unix = (date: IsoDate, hour = 12) => Math.floor(isoDateToUtcMs(date) / 1000) + hour * 3600;
+  const checking = (transactions: unknown[]) => ({
+    org: { name: "First Example Bank" },
+    id: "CHK",
+    name: "Everyday Checking",
+    currency: "USD",
+    balance: "100.00",
+    "balance-date": unix("2026-10-31", 6),
+    transactions,
+  });
+  const posted = (id: string, amount: string) => ({ id, posted: unix("2026-10-30"), amount, description: "KING SOOPERS" });
+  const hold = (id: string, amount: string) => ({ id, posted: 0, amount, description: "HOLD", pending: true, transacted_at: unix("2026-10-30") });
+  const conn = async () => (await t.db.select().from(connection).where(eq(connection.id, connectionId)))[0]!;
+  const lastLog = async () => (await t.db.select().from(importLog).where(eq(importLog.connectionId, connectionId)).orderBy(desc(importLog.startedAt), desc(importLog.id)))[0]!;
+  const ids = async () => (await t.db.select({ ext: transaction.externalId }).from(transaction).orderBy(asc(transaction.externalId))).map((r) => r.ext);
+  const syncFromMark = async (respondWith: () => string) => {
+    await t.db.update(connection).set({ syncedThrough: "2026-10-20", status: "ok", lastError: null }).where(eq(connection.id, connectionId));
+    body = respondWith;
+    await enqueueJob(t.db, "simplefin.sync", { connectionId });
+    await drainQueue(ctx);
+  };
+
+  beforeAll(async () => {
+    t = await createTestDb();
+    ctx = {
+      db: t.db,
+      config,
+      client: { allowedHosts: ["bridge.example.test"], fetch: (async () => new Response(body())) as typeof fetch },
+      now: () => now,
+      log: { info: () => {}, warn: () => {}, error: () => {} },
+    };
+    const [row] = await t.db.insert(connection).values({ type: "simplefin", name: "Bank", status: "ok", accessUrlEnc: await encryptSecret(ACCESS, secretsKey) }).returning({ id: connection.id });
+    connectionId = row!.id;
+    // The account exists before the cases start, so none of them is a first sync that clears the mark.
+    await syncFromMark(() => JSON.stringify({ errors: [], accounts: [checking([posted("E0", "-0.50")])] }));
+  });
+  afterAll(async () => {
+    await t?.cleanup();
+  });
+
+  it("a4-sync-parse-03: errors as one message, and errlist as one entry, are read instead of failing the sync", async () => {
+    await syncFromMark(() => JSON.stringify({ errors: "Scheduled maintenance tonight", accounts: [checking([posted("E1", "-1.00")])] }));
+    expect(await lastLog()).toMatchObject({ status: "ok" });
+    expect(await conn()).toMatchObject({ status: "ok", lastError: null, syncedThrough: "2026-10-31", lastErrors: [{ code: "error", message: "Scheduled maintenance tonight" }] });
+    expect(await ids()).toContain("E1");
+
+    // One act.failed entry, sent bare: read as that entry, so it holds the mark as it would in a list.
+    await syncFromMark(() => JSON.stringify({ errors: [], errlist: { code: "act.failed", account_id: "CARD" }, accounts: [checking([posted("E2", "-2.00")])] }));
+    const c = await conn();
+    expect(c).toMatchObject({ status: "ok", lastError: null, syncedThrough: "2026-10-20" });
+    expect(c.lastErrors).toEqual([expect.objectContaining({ code: "act.failed", accountId: "CARD" })]);
+    expect(await ids()).toContain("E2");
+  });
+
+  it("a4-sync-parse-03: an errlist nothing can be read from applies the accounts but is not taken as complete", async () => {
+    await syncFromMark(() => JSON.stringify({ errors: [], accounts: [checking([posted("E3", "-3.00"), hold("H1", "-9.00")])] }));
+    expect(await conn()).toMatchObject({ syncedThrough: "2026-10-31" });
+    expect(await ids()).toContain("H1");
+
+    // The hold is missing from this response, but the response cannot say whether the Bridge read the account in full.
+    await syncFromMark(() => JSON.stringify({ errors: [], errlist: true, accounts: [checking([posted("E3", "-3.00"), posted("E4", "-4.00")])] }));
+    expect(await lastLog()).toMatchObject({ status: "ok" });
+    expect(await conn()).toMatchObject({
+      status: "ok",
+      lastError: null,
+      syncedThrough: "2026-10-20",
+      lastErrors: [
+        {
+          code: "errlist.unreadable",
+          message: "The Bridge's list of problems could not be read, so this response was not taken as complete: pending items were kept, and the next sync asks again from the last complete one",
+        },
+      ],
+    });
+    expect(await ids()).toEqual(expect.arrayContaining(["E4", "H1"]));
+  });
+
+  it("new issue: a 200 whose accounts is missing or null fails with its payload kept and the mark held; an empty list is still an account set", async () => {
+    const before = await ids();
+    const nullAccounts = { errors: ["Temporary failure, try later"], accounts: null };
+    await syncFromMark(() => JSON.stringify(nullAccounts));
+    const said = "SimpleFIN response did not match protocol v2: accounts: missing (the Bridge said: Temporary failure, try later)";
+    expect(await lastLog()).toMatchObject({ status: "error", message: said, rawPayload: nullAccounts });
+    expect(await conn()).toMatchObject({ status: "error", lastError: said, syncedThrough: "2026-10-20" });
+
+    await syncFromMark(() => JSON.stringify({ message: "Service temporarily unavailable" }));
+    expect(await lastLog()).toMatchObject({ status: "error", message: "SimpleFIN response did not match protocol v2: accounts: missing", rawPayload: { message: "Service temporarily unavailable" } });
+    expect(await conn()).toMatchObject({ status: "error", syncedThrough: "2026-10-20" });
+    expect(await ids()).toEqual(before);
+
+    await syncFromMark(() => JSON.stringify({ errors: [], accounts: [] }));
+    expect(await conn()).toMatchObject({ status: "ok", lastError: null });
+  });
+
+  it("a4-sync-parse-05: a body nested 20,000 levels deep is stored cut off below 1000 levels, and the rest of the sync works", async () => {
+    const levels = 20_000;
+    await syncFromMark(() => `${JSON.stringify({ errors: [], accounts: [checking([posted("E5", "-5.00")])] }).slice(0, -1)},"junk":${"[".repeat(levels)}"x"${"]".repeat(levels)}}`);
+    const log = await lastLog();
+    expect(log.status).toBe("ok");
+    expect(await conn()).toMatchObject({ status: "ok", lastError: null, syncedThrough: "2026-10-31" });
+    expect(await ids()).toContain("E5");
+    // The root object is level 1, so the field keeps 999 levels of lists and then the marker.
+    let node = (log.rawPayload as { junk: unknown }).junk;
+    let kept = 0;
+    while (Array.isArray(node)) {
+      node = node[0];
+      kept++;
+    }
+    expect(kept).toBe(999);
+    expect(node).toBe("[not kept: nested more than 1000 levels deep]");
+  });
+});
+
 /** Audit a4-sync-parse-06: a setup token whose claim failed for a reason that passes can still be claimed. */
 describe.skipIf(!TEST_DATABASE_URL)("claim after a transient failure (a4-sync-parse-06)", () => {
   let t: TestDb;

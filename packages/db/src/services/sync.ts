@@ -43,7 +43,8 @@ export interface ApplyAccountSetOptions {
    * What `readSimplefinAccountSet` skipped (audit a4-sync-parse-03). Reported with the
    * connection's entries; an account it skipped makes the response incomplete (unless the
    * household closed it), and an account some of whose transactions it skipped keeps its
-   * unmatched pending rows.
+   * unmatched pending rows. An `errlist` it could not read (second round) makes the response
+   * incomplete and keeps every account's unmatched pending rows, as a connection problem does.
    */
   readProblems?: readonly SimplefinReadProblem[];
 }
@@ -107,9 +108,9 @@ export interface ApplyAccountSetResult {
   /** Phase 3: synced investment accounts with an income feed on (the worker queues `investments.income_feed` when > 0 after a full sync). */
   incomeFeedAccounts: number;
   /**
-   * The Bridge reported a connection or account problem (`simplefinFeedHealth`), or an open
-   * account could not be read at all: the data of the accounts it covers may be stale or
-   * partial. Their pending rows were kept, and the connection's high-water mark must not move.
+   * The Bridge reported a connection or account problem (`simplefinFeedHealth`), its problem
+   * report could not be read, or an open account could not be read at all: the data of the
+   * accounts it covers may be stale or partial. Their pending rows were kept, and the connection's high-water mark must not move.
    * Problems with accounts the household closed are left out.
    */
   incomplete: boolean;
@@ -349,6 +350,8 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
   const readProblems = options.readProblems ?? [];
   // An open account the reader could not read sent none of its transactions: the same hole as act.failed.
   const unreadableAccount = readProblems.some((p) => p.code === "account.unreadable" && !(p.accountId !== undefined && closedLabels.has(p.accountId)));
+  // A problem report that could not be read may cover any account: as a con.* problem would (a4-sync-parse-03, second round).
+  const unreadableErrlist = readProblems.some((p) => p.code === "errlist.unreadable");
   const partlyRead = new Set(readProblems.flatMap((p) => (p.code === "transaction.unreadable" && p.accountId !== undefined ? [p.accountId] : [])));
   const feedErrors: ConnectionError[] = [];
   const balanceDates: IsoDate[] = [];
@@ -434,7 +437,7 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
     if (options.importLogId) ingestOptions.importLogId = options.importLogId;
     if (options.windowStart) ingestOptions.windowStart = options.windowStart;
     // A list with a transaction left out is not the whole list: a pending row missing from it may be that one.
-    if (health.affects(sf) || unreadable > 0 || partlyRead.has(accountLabel)) ingestOptions.keepUnmatchedPending = true;
+    if (health.affects(sf) || unreadableErrlist || unreadable > 0 || partlyRead.has(accountLabel)) ingestOptions.keepUnmatchedPending = true;
     const stats = await ingestTransactions(db, incoming, ingestOptions);
     totals.created += stats.created;
     totals.updated += stats.updated;
@@ -475,7 +478,7 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
     holdings,
     investmentTxnsLinked,
     incomeFeedAccounts,
-    incomplete: health.incomplete || unreadableAccount,
+    incomplete: health.incomplete || unreadableAccount || unreadableErrlist,
     balanceDates,
   };
 }
