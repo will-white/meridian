@@ -1,9 +1,8 @@
-import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { DashboardView } from "@meridian/shared";
 import { api, query } from "../lib/api.js";
 import { shortDate } from "../lib/format.js";
-import { localToday } from "../lib/plan.js";
+import { useLocalToday } from "../lib/useLocalToday.js";
 import { ErrorText } from "../components/ui.js";
 import { BillsDueCard } from "../components/dashboard/BillsDueCard.js";
 import { CashFlowCard } from "../components/dashboard/CashFlowCard.js";
@@ -17,10 +16,12 @@ import "./DashboardPage.css";
 /**
  * The household's morning glance: one card per block of DashboardView. The
  * server computes everything per request (Cache-Control: no-store); the client
- * keeps it 30 s and refetches on focus. `today` is the browser's local date.
+ * keeps it 30 s and refetches on focus. `today` is the browser's local date,
+ * kept current while the page stays open (useLocalToday).
  */
 export function DashboardPage() {
-  const today = useMemo(() => localToday(), []);
+  // The local date at this moment: a page left open past midnight (or woken from sleep) asks for the new day.
+  const today = useLocalToday();
   const dash = useQuery({
     queryKey: ["dashboard", { today }],
     queryFn: () => api<DashboardView>(`/dashboard${query({ today })}`),

@@ -1,16 +1,8 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from "react";
-import { useNavigate } from "react-router";
 import type { PlanCellEdit, PlanResponse, PlanRow, RolloverMode } from "@meridian/shared";
-import {
-  TRANSACTION_DRAG_TYPE,
-  drillDownUrl,
-  fillRightEdits,
-  nextCategoryIndex,
-  rowHeight,
-  stickyBucketIndex,
-  type PlanCategoryRow,
-} from "../../lib/plan.js";
+import { beforePlanStart, cellEdits, fillRightEdits, monthLabel, nextCategoryIndex, rowHeight, stickyBucketIndex, type DrillTarget, type PlanCategoryRow } from "../../lib/plan.js";
+import { TRANSACTION_DRAG_TYPE } from "../../lib/recategorize.js";
 import { Badge } from "../ui.js";
 import { CellMenu, type MenuSection } from "./CellMenu.js";
 import { CategoryCell, TotalCell, type CellActions, type MonthState, type MoveDir } from "./PlanCell.js";
@@ -24,10 +16,14 @@ export interface PlanGridProps {
   zeroBased: boolean;
   /** A write is in flight: menu actions wait, typing does not. */
   busy: boolean;
+  /** The signed-in user is a viewer: every value is read-only and nothing is a drop target. */
+  readOnly: boolean;
   onEdits: (edits: PlanCellEdit[]) => void;
   onPlanFromAverage: (row: PlanCategoryRow, month: string, months: 3 | 6 | 12) => void;
   onRollover: (row: PlanCategoryRow, mode: RolloverMode, fromMonth: string | null) => void;
   onDropTransaction: (transactionId: string, categoryId: string) => void;
+  /** Open the drill-down panel (an actual, the cell menu, the strip's uncategorized badge). */
+  onDrill: (target: DrillTarget) => void;
 }
 
 interface MenuState {
@@ -43,7 +39,7 @@ interface FocusTarget {
 }
 
 const BUCKET_LABELS: Record<PlanRow["bucket"], string> = { income: "Income", bills: "Bills", savings: "Savings", spending: "Spending" };
-const BUCKET_HEADER_HEIGHT = 40;
+const VIEWER_LOCK = "Read-only: only the household's owner can change the plan";
 
 function rowKey(row: PlanRow): string {
   if (row.kind === "bucket") return `b:${row.bucket}`;
@@ -86,11 +82,12 @@ function RowName({ row }: { row: PlanRow }) {
 /**
  * The virtualized multi-month grid. The summary strip and the current bucket
  * header stick to the top of the scroll container; the name column sticks to
- * the left. Rows are absolutely positioned by the virtualizer.
+ * the left. Rows are absolutely positioned by the virtualizer and sized to their
+ * content (measured), so a cell whose values wrap or carry notes is never
+ * covered by the next row.
  */
 export function PlanGrid(props: PlanGridProps) {
-  const { plan, rows, compact, zeroBased, busy, onEdits, onPlanFromAverage, onRollover, onDropTransaction } = props;
-  const navigate = useNavigate();
+  const { plan, rows, compact, zeroBased, busy, readOnly, onEdits, onPlanFromAverage, onRollover, onDropTransaction, onDrill } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
   const [stripHeight, setStripHeight] = useState(96);
@@ -100,6 +97,8 @@ export function PlanGrid(props: PlanGridProps) {
   const months = plan.months;
   const stateByMonth = useMemo(() => new Map(plan.summary.map((s) => [s.month, s.state])), [plan.summary]);
   const monthState = (month: string): MonthState => stateByMonth.get(month) ?? "future";
+  const startLock = `Before the plan start month (${monthLabel(plan.startMonth)}): change it in Settings`;
+  const lockFor = (month: string): string | null => (readOnly ? VIEWER_LOCK : beforePlanStart(month, plan.startMonth) ? startLock : null);
 
   useLayoutEffect(() => {
     const el = stripRef.current;
@@ -112,6 +111,7 @@ export function PlanGrid(props: PlanGridProps) {
     return () => ro.disconnect();
   }, []);
 
+  const [headerHeight, setHeaderHeight] = useState(() => rowHeight({ kind: "bucket" }, compact));
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
@@ -122,17 +122,26 @@ export function PlanGrid(props: PlanGridProps) {
     },
     overscan: 8,
     scrollMargin: stripHeight,
-    scrollPaddingStart: stripHeight + BUCKET_HEADER_HEIGHT,
+    // The strip and the sticky bucket header cover the top of the viewport: keep focused rows below them.
+    scrollPaddingStart: stripHeight + headerHeight,
   });
-  // Row heights depend on density only; re-measure when it changes.
-  const measure = virtualizer.measure;
-  useEffect(() => measure(), [measure, compact]);
+  // A density change resizes every row: forget the old sizes and measure the mounted rows again
+  // (the rest are measured when they mount).
+  useLayoutEffect(() => {
+    virtualizer.measure();
+    virtualizer.elementsCache.forEach((el) => virtualizer.measureElement(el));
+  }, [virtualizer, compact]);
 
   const items = virtualizer.getVirtualItems();
   const scrollTop = virtualizer.scrollOffset ?? 0;
   const firstVisible = items.find((it) => it.end > scrollTop + stripHeight)?.index ?? items[0]?.index ?? 0;
   const stickyIndex = rows.length > 0 ? stickyBucketIndex(rows, firstVisible) : -1;
   const stickyRow = stickyIndex >= 0 ? rows[stickyIndex] : undefined;
+  // The sticky header is as tall as its bucket row measures.
+  const measuredHeader = virtualizer.measurementsCache[stickyIndex]?.size;
+  useEffect(() => {
+    if (measuredHeader !== undefined && measuredHeader !== headerHeight) setHeaderHeight(measuredHeader);
+  }, [measuredHeader, headerHeight]);
 
   // Focus requests outlive one render: the target row may not be mounted until the virtualizer scrolls.
   useEffect(() => {
@@ -155,11 +164,11 @@ export function PlanGrid(props: PlanGridProps) {
 
   const actions = useMemo<CellActions>(
     () => ({
-      commit: (rowIndex, col, cents) => {
+      apply: (rowIndex, col, commit, fillRight) => {
         const row = rows[rowIndex];
-        const month = months[col];
-        if (!row || row.kind !== "category" || month === undefined) return;
-        onEdits([{ month, categoryId: row.categoryId, plannedCents: cents === null ? null : cents.toString(), source: "manual" }]);
+        if (!row || row.kind !== "category") return;
+        const edits = cellEdits(row, months, col, commit, { fillRight });
+        if (edits.length > 0) onEdits(edits);
       },
       move: (rowIndex, col, dir: MoveDir) => {
         const last = months.length - 1;
@@ -182,15 +191,14 @@ export function PlanGrid(props: PlanGridProps) {
         focusCell(target.rowIndex, target.col);
         return true;
       },
-      fillRight: (rowIndex, col) => {
-        const row = rows[rowIndex];
-        if (!row || row.kind !== "category") return;
-        const edits = fillRightEdits(row, months, col);
-        if (edits.length > 0) onEdits(edits);
-      },
       openMenu: (rowIndex, col, anchor, section) => setMenu({ rowIndex, col, anchor: anchor.getBoundingClientRect(), section }),
+      drill: (rowIndex, col) => {
+        const row = rows[rowIndex];
+        const month = months[col];
+        if (row?.kind === "category" && month !== undefined) onDrill({ kind: "category", row, month });
+      },
     }),
-    [rows, months, onEdits, focusCell],
+    [rows, months, onEdits, onDrill, focusCell],
   );
 
   const closeMenu = useCallback(() => setMenu(null), []);
@@ -217,27 +225,29 @@ export function PlanGrid(props: PlanGridProps) {
       const month = months[col] ?? "";
       const state = monthState(month);
       return row.kind === "category" ? (
-        <CategoryCell key={month} row={row} cell={cell} month={month} rowIndex={rowIndex} col={col} compact={compact} state={state} actions={actions} />
+        <CategoryCell key={month} row={row} cell={cell} month={month} rowIndex={rowIndex} col={col} compact={compact} state={state} lockedReason={lockFor(month)} actions={actions} />
       ) : (
         <TotalCell key={month} cell={cell} bucket={row.bucket} compact={compact} state={state} />
       );
     });
 
-  const renderRow = (row: PlanRow, rowIndex: number, style: CSSProperties, sticky: boolean) => {
-    const isCategory = row.kind === "category";
-    const classes = ["plan-row", `kind-${row.kind}`, `bucket-${row.bucket}`, sticky ? "plan-sticky-bucket" : "", isCategory && dragOverCategory === row.categoryId ? "drop-over" : ""]
+  const renderRow = (row: PlanRow, rowIndex: number, style: CSSProperties, sticky: boolean, measured: boolean) => {
+    const dropTarget = row.kind === "category" && !readOnly;
+    const classes = ["plan-row", `kind-${row.kind}`, `bucket-${row.bucket}`, sticky ? "plan-sticky-bucket" : "", row.kind === "category" && dragOverCategory === row.categoryId ? "drop-over" : ""]
       .filter(Boolean)
       .join(" ");
     return (
       <div
         key={sticky ? `sticky:${rowKey(row)}` : rowKey(row)}
+        ref={measured ? virtualizer.measureElement : undefined}
+        data-index={measured ? rowIndex : undefined}
         className={classes}
         style={style}
         role="row"
         data-row-index={rowIndex}
-        onDragOver={isCategory ? onRowDragOver(row) : undefined}
-        onDragLeave={isCategory ? () => setDragOverCategory((c) => (c === row.categoryId ? null : c)) : undefined}
-        onDrop={isCategory ? onRowDrop(row) : undefined}
+        onDragOver={dropTarget ? onRowDragOver(row) : undefined}
+        onDragLeave={dropTarget ? () => setDragOverCategory((c) => (c === row.categoryId ? null : c)) : undefined}
+        onDrop={dropTarget ? onRowDrop(row) : undefined}
       >
         <div className="plan-name" role="rowheader">
           <RowName row={row} />
@@ -255,10 +265,18 @@ export function PlanGrid(props: PlanGridProps) {
       role="grid"
       aria-rowcount={rows.length}
       aria-colcount={months.length + 1}
+      aria-readonly={readOnly || undefined}
     >
-      <SummaryStrip ref={stripRef} summary={plan.summary} zeroBased={zeroBased} compact={compact} />
+      <SummaryStrip
+        ref={stripRef}
+        summary={plan.summary}
+        zeroBased={zeroBased}
+        compact={compact}
+        startMonth={plan.startMonth}
+        onUncategorized={(month) => onDrill({ kind: "uncategorized", month })}
+      />
       <div className="plan-body" style={{ height: virtualizer.getTotalSize() }}>
-        {stickyRow && renderRow(stickyRow, stickyIndex, { position: "sticky", top: stripHeight, height: rowHeight(stickyRow, compact) }, true)}
+        {stickyRow && renderRow(stickyRow, stickyIndex, { position: "sticky", top: stripHeight, minHeight: rowHeight(stickyRow, compact) }, true, false)}
         {items.map((item) => {
           const row = rows[item.index];
           if (!row) return null;
@@ -270,10 +288,11 @@ export function PlanGrid(props: PlanGridProps) {
               top: item.start - virtualizer.options.scrollMargin,
               left: 0,
               right: 0,
-              height: item.size,
+              minHeight: rowHeight(row, compact),
               visibility: item.index === stickyIndex ? "hidden" : undefined,
             },
             false,
+            true,
           );
         })}
       </div>
@@ -286,10 +305,13 @@ export function PlanGrid(props: PlanGridProps) {
           anchor={menu.anchor}
           initialSection={menu.section}
           canFillRight={menu.col < months.length - 1}
+          canEdit={lockFor(menuMonth) === null}
+          canSetRollover={!readOnly}
           busy={busy}
           onClose={closeMenu}
           onFillRight={() => {
-            actions.fillRight(menu.rowIndex, menu.col);
+            const edits = fillRightEdits(menuRow, months, menu.col);
+            if (edits.length > 0) onEdits(edits);
             closeMenu();
           }}
           onPlanFromAverage={(n) => {
@@ -297,7 +319,7 @@ export function PlanGrid(props: PlanGridProps) {
             closeMenu();
           }}
           onClear={() => {
-            actions.commit(menu.rowIndex, menu.col, null);
+            actions.apply(menu.rowIndex, menu.col, { kind: "clear" }, false);
             closeMenu();
           }}
           onRollover={(mode, fromMonth) => {
@@ -306,7 +328,7 @@ export function PlanGrid(props: PlanGridProps) {
           }}
           onDrillDown={() => {
             closeMenu();
-            void navigate(drillDownUrl(menuRow, menuMonth));
+            onDrill({ kind: "category", row: menuRow, month: menuMonth });
           }}
         />
       )}

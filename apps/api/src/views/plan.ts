@@ -123,6 +123,7 @@ export function toPlanResponse(result: PlanResult): PlanResponse {
   return {
     today: result.today,
     currentMonth: result.currentMonth,
+    startMonth: result.startMonth,
     from: result.from,
     to: result.to,
     months: result.months,
