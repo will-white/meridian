@@ -6,7 +6,7 @@ import { api, query } from "../lib/api.js";
 import { accountTypeLabel, money, shortDate } from "../lib/format.js";
 import { lastReconciliationText, positionsMatchText } from "../lib/investmentForms.js";
 import { taxTreatmentLabel } from "../lib/investments.js";
-import { linkableFeedAccounts, linkResultText } from "../lib/ledgerCorrections.js";
+import { linkableFeedAccounts, linkConfirmText, linkResultText } from "../lib/ledgerCorrections.js";
 import { balanceFieldLabel, closeQuestion, isDebtType, netWorthCents, owedText, parseManualBalance, parseThreshold, reopenNotice, typeChangeQuestion } from "../lib/accountForms.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
 import { FidelityBadge } from "../components/investments/FidelityBadge.js";
@@ -329,11 +329,15 @@ export function AccountsPage() {
                             <select
                               value=""
                               aria-label={`${a.name} is the same account as a feed account`}
-                              title="The bank connection created a second account for this one (it was re-linked, or this account's history came from a CSV): fold that account into this one"
+                              title={
+                                a.connectionId === null
+                                  ? "The bank connection created a second account for this one (it was re-linked, or this account's history came from a CSV): fold that account into this one"
+                                  : "The Bridge no longer sends this account: if a re-link gave it a new id, fold the new account into this one"
+                              }
                               disabled={link.isPending}
                               onChange={(e) => {
                                 const feed = all.find((x) => x.id === e.target.value);
-                                if (feed && window.confirm(`Make ${a.name} the account the feed fills, and fold "${feed.name}" into it? Transactions both have are kept once.`)) {
+                                if (feed && window.confirm(linkConfirmText(a, feed))) {
                                   link.mutate({ id: a.id, feedAccountId: feed.id });
                                 }
                               }}

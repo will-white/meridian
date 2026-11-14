@@ -235,8 +235,9 @@ const dockerEnv = (stage: string): Record<string, string> => Object.fromEntries(
  * `dependencies` and everything they need (dependencies and optionalDependencies of each
  * snapshot), as `name@version(peers)` keys. Workspace links are skipped: the bundles compile
  * @meridian/* from source, and `pnpm install --prod --filter <app>` installs the app's own list.
+ * With `throughPeers: false` the edges from a snapshot to the peers its key names are not followed.
  */
-function prodClosure(importer: string): Set<string> {
+function prodClosure(importer: string, { throughPeers = true } = {}): Set<string> {
   const unquote = (s: string) => s.replace(/^'(.*)'$/, "$1");
   const direct = new Map<string, string[]>();
   const snapshots = new Map<string, string[]>();
@@ -261,11 +262,24 @@ function prodClosure(importer: string): Set<string> {
   for (let key = queue.shift(); key !== undefined; key = queue.shift()) {
     if (seen.has(key)) continue;
     seen.add(key);
-    queue.push(...(snapshots.get(key) ?? []));
+    const peers = new Set(peersOf(key).map(packageName));
+    queue.push(...(snapshots.get(key) ?? []).filter((edge) => throughPeers || !peers.has(packageName(edge))));
   }
   return seen;
 }
 const packageName = (key: string) => key.slice(0, key.indexOf("@", 1));
+
+/** The peers a snapshot key names, outermost only: `a@1.0.0(b@2.0.0)(c@3.0.0(d@4.0.0))` → `b@2.0.0`, `c@3.0.0(d@4.0.0)`. */
+function peersOf(key: string): string[] {
+  const peers: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = Math.max(key.indexOf("("), 0); i < key.length; i++) {
+    if (key[i] === "(" && depth++ === 0) start = i + 1;
+    else if (key[i] === ")" && --depth === 0) peers.push(key.slice(start, i));
+  }
+  return peers;
+}
 
 describe("the API and worker images carry only what they run (audit a9-dependencies)", () => {
   const images = [
@@ -308,18 +322,32 @@ describe("the API and worker images carry only what they run (audit a9-dependenc
     expect(block("worker")).not.toMatch(/MERIDIAN_MIGRATIONS_DIR/);
   });
 
-  it("a9-dependencies-01: the production install of the API and the worker holds no React (drizzle-orm's optional peers stay unresolved)", () => {
-    // What the bundles import at run time is there (so the closure was read), React is not.
+  it("a9-dependencies-01: the production install of the API and the worker holds no package that is there only to fill a peer (drizzle-orm's optional peers stay unresolved)", () => {
+    // What the bundles import at run time is there (so the closure was read).
     const imported = {
       "apps/api": ["drizzle-orm", "postgres", "zod", "re2js", "fastify", "@node-rs/argon2", "@fastify/static"],
       "apps/worker": ["drizzle-orm", "postgres", "zod", "re2js"],
       "packages/db": ["drizzle-orm", "postgres"],
     };
     for (const [importer, needed] of Object.entries(imported)) {
-      const names = new Set([...prodClosure(importer)].map(packageName));
+      const closure = prodClosure(importer);
+      const names = new Set([...closure].map(packageName));
       for (const name of needed) expect(names.has(name), `${importer} ${name}`).toBe(true);
-      for (const stray of ["react", "react-dom", "@types/react", "csstype"]) expect(names.has(stray), `${importer} ${stray}`).toBe(false);
+      // pnpm fills an optional peer with any copy the lockfile has: drizzle-orm 0.38's React
+      // peers took the web app's React, and drizzle-orm 0.45's `gel` peer kept drizzle-kit
+      // 0.30's gel (a CLI and 8 packages under it) after the kit stopped needing it.
+      for (const stray of ["react", "react-dom", "@types/react", "csstype", "gel"]) expect(names.has(stray), `${importer} ${stray}`).toBe(false);
+      // In general: every peer the closure resolves is a package the importer holds anyway,
+      // reached without going through a peer. One that is there only because pnpm filled it is
+      // a package no bundle imports.
+      const withoutPeers = new Set([...prodClosure(importer, { throughPeers: false })].map(packageName));
+      expect([...names].filter((name) => !withoutPeers.has(name)).sort(), `${importer}: packages reached only through a peer`).toEqual([]);
+      // drizzle-orm's own peers: the driver the app uses and nothing else.
+      for (const key of closure) if (packageName(key) === "drizzle-orm") expect(peersOf(key).map(packageName), `${importer} ${key}`).toEqual(["postgres"]);
     }
+    // The worker and the db package need nothing else, so their closures are exactly that.
+    expect([...new Set([...prodClosure("apps/worker")].map(packageName))].sort()).toEqual(["drizzle-orm", "postgres", "re2js", "zod"]);
+    expect([...new Set([...prodClosure("packages/db")].map(packageName))].sort()).toEqual(["drizzle-orm", "postgres"]);
   });
 
   it("a9-dependencies-02: the images run the bundles with their source maps, so a logged stack names the source file and line", () => {

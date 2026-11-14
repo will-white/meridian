@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { CsvDateFormat, type AccountView, type ConnectionView, type CsvKind, type CsvMappingInput, type CsvPreviewResponse, type ImportResult, type UndoImportResult } from "@meridian/shared";
+import { CsvDateFormat, type AccountView, type ConnectionView, type CsvImportHistoryItem, type CsvKind, type CsvMappingInput, type CsvPreviewResponse, type ImportResult, type UndoImportResult } from "@meridian/shared";
 import { api } from "../lib/api.js";
 import { money, shortDate } from "../lib/format.js";
 import {
@@ -20,8 +20,9 @@ import {
   type BankColumnField,
   type BankPreviewBody,
 } from "../lib/importMapping.js";
-import { undoResultText } from "../lib/ledgerCorrections.js";
+import { importHistoryLine, undoResultText } from "../lib/ledgerCorrections.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
+import { useIsViewer } from "../components/investments/queries.js";
 import { PositionsImport } from "../components/import/PositionsImport.js";
 import { TradesImport } from "../components/import/TradesImport.js";
 import { nextFileKey, PREVIEW_KEY } from "../components/import/previewQuery.js";
@@ -111,20 +112,25 @@ function BankImport({ accounts: accountList, connections: connectionList }: { ac
       void qc.invalidateQueries({ queryKey: ["transactions"] });
       void qc.invalidateQueries({ queryKey: ["accounts"] });
       void qc.invalidateQueries({ queryKey: ["connections"] });
+      void qc.invalidateQueries({ queryKey: IMPORT_HISTORY_KEY });
       // The rows just imported are in the ledger now: the preview runs again and marks them.
       void qc.invalidateQueries({ queryKey: PREVIEW_KEY });
     },
   });
 
-  // Audit a5-ingest-transfers-09: the import just committed can be taken back out.
+  // Audit a5-ingest-transfers-09: the import just committed can be taken back out, and (second round) any earlier one from the history below.
   const undo = useMutation({
     mutationFn: (importLogId: string) => api<UndoImportResult>(`/import/csv/${importLogId}/undo`, { method: "POST", body: {} }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["transactions"] });
       void qc.invalidateQueries({ queryKey: ["accounts"] });
+      void qc.invalidateQueries({ queryKey: IMPORT_HISTORY_KEY });
       void qc.invalidateQueries({ queryKey: PREVIEW_KEY });
     },
   });
+  const confirmUndo = (importLogId: string) => {
+    if (window.confirm("Take this import back out? The rows it added are deleted; the file can be imported again.")) undo.mutate(importLogId);
+  };
 
   const onFile = async (file: File | undefined) => {
     if (!file) return;
@@ -277,20 +283,58 @@ function BankImport({ accounts: accountList, connections: connectionList }: { ac
                 <button
                   className="link"
                   disabled={undo.isPending}
-                  onClick={() => {
-                    if (window.confirm("Take this import back out? The rows it added are deleted; the file can be imported again.")) undo.mutate(commit.data!.importLogId!);
-                  }}
+                  onClick={() => confirmUndo(commit.data!.importLogId!)}
                 >
                   Undo this import
                 </button>
               )}
             </p>
           )}
-          {undo.data && <p className="notice">{undoResultText(undo.data)}</p>}
-          <ErrorText error={undo.error} />
         </Card>
       )}
+      {undo.data && <p className="notice">{undoResultText(undo.data)}</p>}
+      <ErrorText error={undo.error} />
+      <ImportHistory onUndo={confirmUndo} undoing={undo.isPending ? (undo.variables ?? null) : null} />
     </>
+  );
+}
+
+const IMPORT_HISTORY_KEY = ["import-history"] as const;
+
+/**
+ * Audit a5-ingest-transfers, second round: the latest bank imports, so one can be undone after
+ * the page that made it is gone (a file imported into the wrong account, or with the wrong sign,
+ * noticed later in the register). A viewer sees the list without the undo.
+ */
+function ImportHistory({ onUndo, undoing }: { onUndo: (importLogId: string) => void; undoing: string | null }) {
+  const viewer = useIsViewer();
+  const history = useQuery({ queryKey: IMPORT_HISTORY_KEY, queryFn: () => api<CsvImportHistoryItem[]>("/import/csv/history") });
+  return (
+    <Card title="Recent bank imports">
+      <ErrorText error={history.error} />
+      {history.isPending && <p className="muted">Loading imports…</p>}
+      {history.data !== undefined && history.data.length === 0 && <Empty>No bank CSV has been imported yet.</Empty>}
+      {history.data !== undefined && history.data.length > 0 && (
+        <ul className="imp-history">
+          {history.data.map((h) => (
+            <li key={h.id} className={h.undoneAt || h.status !== "ok" ? "muted" : ""}>
+              <span>{importHistoryLine(h)}</span>{" "}
+              {!viewer && h.canUndo && (
+                <button
+                  type="button"
+                  className="link"
+                  disabled={undoing !== null}
+                  title={h.rowsHeld > 0 ? `Deletes the ${h.rowsHeld} row${h.rowsHeld === 1 ? "" : "s"} this import added that are still in the ledger` : "Forgets the rows this import found already in the ledger, so the file can be imported again"}
+                  onClick={() => onUndo(h.id)}
+                >
+                  {undoing === h.id ? "Undoing…" : "Undo"}
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
   );
 }
 

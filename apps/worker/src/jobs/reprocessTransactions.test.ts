@@ -108,6 +108,25 @@ describe.skipIf(!TEST_DATABASE_URL)("simplefin.reprocess_transactions (audit a5-
     expect(await ledger()).toHaveLength(2);
   });
 
+  it("a5-ingest-transfers (second round): a response whose sync failed while it was applied is replayed too; one that is not an account set is passed over", async () => {
+    // The worker stores a response before applying it; an older ingest crashed on this one, so the sync was marked failed.
+    const crashed = payload("2026-08-03", [posted("ELEC", "2026-08-01", "-96.40", "XCEL ENERGY"), pending("P-GAS", "2026-08-03", "-30.00", "SHELL OIL")]);
+    const [failed] = await db
+      .insert(importLog)
+      .values({ connectionId, kind: "simplefin.sync", status: "error", startedAt: new Date("2026-08-03T18:00:00Z"), rawPayload: crashed, message: "TypeError: cannot read properties of undefined" })
+      .returning({ id: importLog.id });
+    // A 502 page the Bridge sent instead of an account set, kept as it came.
+    await db.insert(importLog).values({ connectionId, kind: "simplefin.sync", status: "error", startedAt: new Date("2026-08-04T18:00:00Z"), rawPayload: { notJson: "<html>502 Bad Gateway</html>" }, message: "not JSON" });
+    const run = await runReprocessTransactionsJob(ctx, fakeJob({ connectionId }));
+    expect(run).toMatchObject({ created: 1, payloadsFailedSync: 1, payloadsUnparseable: 0 });
+    const elec = await db.select({ amount: transaction.amountCents, importLogId: transaction.importLogId }).from(transaction).where(eq(transaction.externalId, "ELEC"));
+    expect(elec).toEqual([{ amount: -9640n, importLogId: failed!.id }]);
+    expect(await db.select().from(transaction).where(eq(transaction.externalId, "P-GAS"))).toHaveLength(0);
+    // Replayed once more, nothing changes.
+    expect(await runReprocessTransactionsJob(ctx, fakeJob({ connectionId }))).toMatchObject({ created: 0, payloadsFailedSync: 1 });
+    expect(await db.select().from(transaction).where(eq(transaction.externalId, "ELEC"))).toHaveLength(1);
+  });
+
   it("a missing connection is a no-op", async () => {
     expect(await runReprocessTransactionsJob(ctx, fakeJob({ connectionId: randomUUID() }))).toMatchObject({ importLogId: null, payloads: 0 });
   });

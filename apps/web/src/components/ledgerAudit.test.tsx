@@ -77,6 +77,7 @@ const account = (over: Partial<AccountView> = {}): AccountView => ({
   cashInference: "auto",
   investmentIncomeFeed: "off",
   investment: null,
+  inFeed: null,
   ...over,
 });
 

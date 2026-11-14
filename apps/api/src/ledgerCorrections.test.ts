@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as OTPAuth from "otpauth";
-import { account, applyAccountSet, auditLog, connection, job, transaction } from "@meridian/db";
+import { account, applyAccountSet, auditLog, connection, importLog, job, transaction } from "@meridian/db";
 import { isoDateToUtcMs, type IsoDate, type SimplefinAccountSet } from "@meridian/shared";
 import { createTestApp, TEST_DATABASE_URL, type TestApp } from "./test/helpers.js";
 
@@ -124,6 +124,63 @@ describe.skipIf(!TEST_DATABASE_URL)("ledger corrections (audit a5-ingest-transfe
     const accounts = (await t.call({ method: "GET", url: "/api/accounts" })).json() as Array<{ id: string; externalId: string | null }>;
     expect(accounts.find((a) => a.id === manual!.id)!.externalId).toBe("CU");
     expect(accounts.find((a) => a.id === feed.id)).toBeUndefined();
+  });
+
+  it("a5-ingest-transfers-02 (second round): GET /api/accounts says which accounts the Bridge no longer lists, and link-feed folds a re-issued one on the same connection", async () => {
+    const [conn] = await t.db.db.insert(connection).values({ type: "simplefin", name: "Credit Union" }).returning({ id: connection.id });
+    let clock = Date.parse("2026-10-19T18:00:00Z");
+    const stored = async (accounts: SfAccount[], windowStart: IsoDate) => {
+      const accountSet: SimplefinAccountSet = { errors: [], errlist: [], accounts };
+      clock += 60_000;
+      const [log] = await t.db.db.insert(importLog).values({ connectionId: conn!.id, kind: "simplefin.sync", status: "ok", startedAt: new Date(clock), rawPayload: accountSet }).returning({ id: importLog.id });
+      await applyAccountSet(t.db.db, { connectionId: conn!.id, importLogId: log!.id, accountSet, windowStart, now: new Date(clock) });
+    };
+    await stored([sfAccount("CU-OLD", "Share Savings", [posted("O1", "2026-10-05", "-10.00", "NETFLIX.COM")])], "2026-10-01");
+    // The Bridge re-links the credit union: the same account under a new id.
+    await stored([sfAccount("CU-NEW", "Share Savings", [posted("N1", "2026-10-05", "-10.00", "NETFLIX.COM")])], "2026-10-01");
+    const accounts = (await t.call({ method: "GET", url: "/api/accounts" })).json() as Array<{ id: string; externalId: string | null; inFeed: boolean | null }>;
+    const oldOne = accounts.find((a) => a.externalId === "CU-OLD")!;
+    const newOne = accounts.find((a) => a.externalId === "CU-NEW")!;
+    expect([oldOne.inFeed, newOne.inFeed]).toEqual([false, true]);
+    // A connection with no stored response says nothing either way; an account without a connection has no feed.
+    expect(accounts.find((a) => a.externalId === "CHK")!.inFeed).toBeNull();
+    expect(accounts.find((a) => a.externalId === null)!.inFeed).toBeNull();
+
+    expect((await t.call({ method: "POST", url: `/api/accounts/${newOne.id}/link-feed`, payload: { feedAccountId: oldOne.id } })).json()).toMatchObject({ code: "account_still_listed" });
+    expect((await t.call({ method: "POST", url: `/api/accounts/${checkingId}/link-feed`, payload: { feedAccountId: newOne.id } })).json()).toMatchObject({ code: "account_connected" });
+    const linked = await t.call({ method: "POST", url: `/api/accounts/${oldOne.id}/link-feed`, payload: { feedAccountId: newOne.id } });
+    expect(linked.statusCode).toBe(200);
+    expect(linked.json()).toMatchObject({ merged: 1, moved: 0 });
+    const after = (await t.call({ method: "GET", url: "/api/accounts" })).json() as Array<{ id: string; externalId: string | null; inFeed: boolean | null }>;
+    expect(after.find((a) => a.id === oldOne.id)).toMatchObject({ externalId: "CU-NEW", inFeed: true });
+    expect(after.find((a) => a.id === newOne.id)).toBeUndefined();
+    expect((await t.call({ method: "GET", url: `/api/transactions?accountId=${oldOne.id}` })).json().items.map((r: { amountCents: string }) => r.amountCents)).toEqual(["-1000"]);
+  });
+
+  it("a5-ingest-transfers (second round): GET /api/import/csv/history lists past bank imports with their account, and one is undone from the list", async () => {
+    const [box] = await t.db.db.insert(account).values({ name: "Cash box", type: "checking", taxTreatment: "none" }).returning({ id: account.id });
+    const fileA = ["Date,Description,Amount", "2026-09-02,FARMERS MARKET,-23.00", "2026-09-03,BAKERY,-7.50"].join("\n");
+    const fileB = ["Date,Description,Amount", "2026-09-10,HARDWARE STORE,-41.20"].join("\n");
+    const a = await t.call({ method: "POST", url: "/api/import/csv/commit", payload: { csvText: fileA, mapping, accountId: box!.id } });
+    const b = await t.call({ method: "POST", url: "/api/import/csv/commit", payload: { csvText: fileB, mapping, accountId: box!.id, saveProfile: { name: "Cash box export" } } });
+    expect([a.statusCode, b.statusCode]).toEqual([200, 200]);
+    // An import recorded before imports named their account is found by its rows.
+    await t.db.db.update(importLog).set({ rawPayload: { csvText: fileA, mapping } }).where(eq(importLog.id, a.json().importLogId));
+
+    const history = await t.call({ method: "GET", url: "/api/import/csv/history" });
+    expect(history.statusCode).toBe(200);
+    const mine = (history.json() as Array<{ id: string }>).filter((h) => h.id === a.json().importLogId || h.id === b.json().importLogId);
+    expect(mine).toMatchObject([
+      { id: b.json().importLogId, accountId: box!.id, accountName: "Cash box", profileName: "Cash box export", created: 1, duplicates: 0, rowsHeld: 1, undoneAt: null, canUndo: true },
+      { id: a.json().importLogId, accountId: box!.id, accountName: "Cash box", profileName: null, created: 2, duplicates: 0, rowsHeld: 2, undoneAt: null, canUndo: true },
+    ]);
+    // The earlier import, undone from the list after another one was made.
+    expect((await t.call({ method: "POST", url: `/api/import/csv/${a.json().importLogId}/undo` })).json()).toEqual({ removed: 2, forgotten: 0 });
+    const later = (await t.call({ method: "GET", url: "/api/import/csv/history" })).json() as Array<{ id: string; undoneAt: string | null; rowsHeld: number; canUndo: boolean }>;
+    expect(later.find((h) => h.id === a.json().importLogId)).toMatchObject({ accountName: "Cash box", rowsHeld: 0, canUndo: false });
+    expect(typeof later.find((h) => h.id === a.json().importLogId)!.undoneAt).toBe("string");
+    expect(later.find((h) => h.id === b.json().importLogId)).toMatchObject({ rowsHeld: 1, canUndo: true });
+    expect((await t.call({ method: "GET", url: `/api/transactions?accountId=${box!.id}` })).json().items.map((r: { amountCents: string }) => r.amountCents)).toEqual(["-4120"]);
   });
 
   it("a5-ingest-transfers-13: POST /api/connections/:id/reprocess-transactions queues the replay", async () => {

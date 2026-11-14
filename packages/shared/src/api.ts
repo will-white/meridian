@@ -341,9 +341,16 @@ export const AccountView = z.object({
   investmentIncomeFeed: InvestmentIncomeFeed,
   /** Phase 3: null for non-investment account types. */
   investment: AccountInvestmentView.nullable(),
+  /**
+   * Audit a5-ingest-transfers-02, second round: for an account of a bank connection, whether the
+   * connection's latest stored response listed it (false: the Bridge no longer sends it, as after
+   * a re-link that gave the account a new id, so it may take over that feed account); null for an
+   * account without a connection, or a connection with no stored response.
+   */
+  inFeed: z.boolean().nullable(),
 });
 export type AccountView = z.infer<typeof AccountView>;
-/** Audit a5-ingest-transfers-02: this account (without a connection) takes over a feed account (`POST /api/accounts/:id/link-feed`). */
+/** Audit a5-ingest-transfers-02: this account (without a connection, or one the Bridge no longer lists) takes over a feed account (`POST /api/accounts/:id/link-feed`). */
 export const LinkFeedAccountBody = z.object({ feedAccountId: z.string().uuid() });
 export const LinkFeedAccountResult = z.object({ merged: z.number().int(), moved: z.number().int(), dropped: z.number().int(), transfersPaired: z.number().int() });
 export type LinkFeedAccountResult = z.infer<typeof LinkFeedAccountResult>;
@@ -629,6 +636,28 @@ export const ImportResult = z.object({
 export type ImportResult = z.infer<typeof ImportResult>;
 /** `POST /api/import/csv/:id/undo`: the rows the import created, removed; the ids it recorded for rows the ledger had, forgotten. */
 export const UndoImportResult = z.object({ removed: z.number().int(), forgotten: z.number().int() });
+/**
+ * Audit a5-ingest-transfers, second round: a bank CSV import as the Import page lists it
+ * (`GET /api/import/csv/history`, newest first), so one can be undone after the page that made
+ * it is gone. `rowsHeld` is what an undo would remove: the rows it created that are still CSV
+ * rows (one the feed took over since is the feed's).
+ */
+export const CsvImportHistoryItem = z.object({
+  id: z.string().uuid(),
+  startedAt: z.string(),
+  status: z.string(),
+  accountId: z.string().uuid().nullable(),
+  accountName: z.string().nullable(),
+  /** The saved mapping it was made with, if any. */
+  profileName: z.string().nullable(),
+  rowsRead: z.number().int(),
+  created: z.number().int(),
+  duplicates: z.number().int(),
+  rowsHeld: z.number().int(),
+  undoneAt: z.string().nullable(),
+  canUndo: z.boolean(),
+});
+export type CsvImportHistoryItem = z.infer<typeof CsvImportHistoryItem>;
 export type UndoImportResult = z.infer<typeof UndoImportResult>;
 
 // ---- Jobs ----

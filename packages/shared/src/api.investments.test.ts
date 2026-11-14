@@ -985,6 +985,7 @@ describe("Phase 1/2 contracts extended for Phase 3", () => {
       cashInference: "auto",
       investmentIncomeFeed: "off",
       investment,
+      inFeed: null,
     };
     roundTrip(AccountView, account);
     roundTrip(AccountView, { ...account, type: "checking", taxTreatment: "none", investment: null });

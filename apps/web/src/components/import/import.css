@@ -20,3 +20,7 @@
 .imp-commit .imp-total { width: 9rem; }
 .imp-skipped { margin: 0.5rem 0; }
 .imp-skipped ul { margin: 0.25rem 0 0; padding-left: 1.2rem; }
+/* Audit a5-ingest-transfers, second round: the Import page's recent bank imports. */
+.imp-history { list-style: none; margin: 0; padding: 0; }
+.imp-history li { padding: 0.3rem 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.imp-history li:last-child { border-bottom: 0; }
