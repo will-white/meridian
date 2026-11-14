@@ -10,13 +10,15 @@ import { createTestApp, OWNER_PASSWORD, TEST_DATABASE_URL, type TestApp } from "
  * The production shape: the API serves the built web app from WEB_DIST_DIR. The shell (HTML,
  * scripts, styles, service worker, manifest, icon) carries no household data and must load for
  * a browser with no session, or the setup and sign-in screens can never render. Only /api is guarded.
+ *
+ * The files are those `pnpm --filter @meridian/web build` writes (hashed names aside). There is no
+ * registerSW.js: the page registers the service worker itself (vite.config.ts, injectRegister false).
  */
 const FILES: Record<string, string> = {
   "index.html": '<!doctype html><html><head><script type="module" src="/assets/index-abc123.js"></script></head><body><div id="root"></div></body></html>',
   "assets/index-abc123.js": "console.log('meridian');",
   "assets/index-abc123.css": "body{margin:0}",
   "sw.js": "self.addEventListener('install',()=>{});",
-  "registerSW.js": "navigator.serviceWorker.register('/sw.js');",
   "workbox-1a2b3c4d.js": "/* workbox */",
   "manifest.webmanifest": '{"name":"Meridian"}',
   "icon.svg": '<svg xmlns="http://www.w3.org/2000/svg"/>',
@@ -49,7 +51,10 @@ describe("serving the built web app while the database is down", () => {
         const res = await app.inject({ method: "GET", url, cookies: { meridian_session: "anything" } });
         expect(res.statusCode, url).toBe(200);
       }
-      expect((await app.inject({ method: "GET", url: "/api/nope" })).statusCode).toBe(404);
+      expect((await app.inject({ method: "HEAD", url: "/plan", cookies: { meridian_session: "anything" } })).statusCode).toBe(200);
+      for (const url of ["/api/nope", "/api", "/assets/index-OLDHASH.js", "/registerSW.js"]) {
+        expect((await app.inject({ method: "GET", url })).statusCode, url).toBe(404);
+      }
       // The API itself does need the database.
       expect((await app.inject({ method: "GET", url: "/api/accounts" })).statusCode).toBe(500);
     } finally {
@@ -122,6 +127,60 @@ describe.skipIf(!TEST_DATABASE_URL)("serving the built web app", () => {
     const post = await t.app.inject({ method: "POST", url: "/assets/index-abc123.js" });
     expect(post.statusCode).toBe(404);
     expect(post.json().code).toBe("not_found");
+  });
+
+  async function expectJson404(method: "GET" | "HEAD", url: string) {
+    const res = await t.app.inject({ method, url });
+    expect(res.statusCode, `${method} ${url}`).toBe(404);
+    expect(res.headers["content-type"], `${method} ${url}`).toMatch(/^application\/json/);
+    // (inject hands back what Fastify wrote even for HEAD; Node's server sends no body for HEAD.)
+    expect(res.json(), `${method} ${url}`).toEqual({ error: "Not found", code: "not_found" });
+  }
+
+  it("answers a build file that does not exist with a JSON 404, never the shell (a stale chunk, a file this build has not got)", async () => {
+    // After an update an open tab may still ask for the previous build's hashed files. HTML
+    // under a script's URL fails under nosniff with a MIME-type error that hides the cause; a
+    // 404 says what happened.
+    for (const url of [
+      "/assets/index-OLDHASH.js",
+      "/assets/index-OLDHASH.css",
+      "/assets/index-OLDHASH.js?v=1",
+      "/assets/chunk",
+      "/assets/",
+      "/registerSW.js",
+      "/workbox-00000000.js",
+      "/favicon.ico",
+      "/manifest.json",
+      "/plan/report.pdf",
+    ]) {
+      await expectJson404("GET", url);
+      await expectJson404("HEAD", url);
+    }
+  });
+
+  it("treats /api itself, with or without a query, as an API path, and gives the shell to no method but GET and HEAD", async () => {
+    for (const url of ["/api", "/api?x=1", "/api/", "/api/?x=1", "/api/nope?x=1", "/%61pi/nope"]) {
+      await expectJson404("GET", url);
+      await expectJson404("HEAD", url);
+    }
+    for (const method of ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"] as const) {
+      const res = await t.app.inject({ method, url: "/plan", headers: { "content-type": "application/json", "sec-fetch-site": "same-origin" }, payload: "{}" });
+      expect(res.statusCode, `${method} /plan`).toBeGreaterThanOrEqual(400);
+      expect(res.body, `${method} /plan`).not.toBe(FILES["index.html"]);
+    }
+  });
+
+  it("answers HEAD of an app route as it answers GET: 200 with the shell's headers and no body", async () => {
+    for (const url of ["/", "/plan", "/investments/holdings?account=1", "/investments/accounts/12", "/plan?month=2026.11"]) {
+      const get = await t.app.inject({ method: "GET", url });
+      expect(get.statusCode, `GET ${url}`).toBe(200);
+      expect(get.body, `GET ${url}`).toBe(FILES["index.html"]);
+      const head = await t.app.inject({ method: "HEAD", url });
+      expect(head.statusCode, `HEAD ${url}`).toBe(200);
+      expect(head.headers["content-type"], `HEAD ${url}`).toMatch(/^text\/html/);
+      expect(head.headers["content-type"], `HEAD ${url}`).toBe(get.headers["content-type"]);
+      expect(head.body, `HEAD ${url}`).toBe("");
+    }
   });
 
   it("does not serve dotfiles or anything outside the build directory", async () => {

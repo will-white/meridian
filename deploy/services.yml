@@ -49,11 +49,12 @@ services:
       # binds loopback). The port is never published: only the internal network reaches it.
       - API_HOST=0.0.0.0
       - API_PORT=3000
-      # Whose X-Forwarded-For / X-Forwarded-Host the API believes: peers on a private network,
-      # which here means Caddy (it replaces whatever a client sent). The sign-in rate limits
-      # count the client address Caddy reports. If you publish this port or put the container
-      # on another network, name your proxy's address or range here instead.
-      - TRUST_PROXY=uniquelocal
+      # Whose X-Forwarded-For / X-Forwarded-Host the API believes: TRUST_PROXY from .env, or
+      # (unset or empty) peers on a private network, which here means Caddy (it replaces
+      # whatever a client sent). The sign-in rate limits count the client address the proxy
+      # reports. If you publish this port or put another proxy in front, set TRUST_PROXY in .env
+      # to that proxy's address or range.
+      - TRUST_PROXY=${TRUST_PROXY:-uniquelocal}
       - POSTGRES_USER
       - POSTGRES_PASSWORD
       - POSTGRES_DB
