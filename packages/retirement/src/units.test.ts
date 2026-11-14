@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EngineInputError, EngineInvariantError } from "./errors.js";
-import { centsToDollars, dollarsToCents, dollarsToCentsBigInt } from "./units.js";
+import { PriceLevel } from "@meridian/shared";
+import { centsToDollars, dollarsToCents, dollarsToCentsBigInt, priceLevelString } from "./units.js";
 
 describe("T39 cents boundary (engine-and-returns §7)", () => {
   it("T39 centsToDollars", () => {
@@ -69,5 +70,39 @@ describe("guards", () => {
     for (const bad of ["", "1.5", "1e3", " 12", "--1", "abc"]) {
       expect(() => centsToDollars(bad)).toThrow(EngineInputError);
     }
+  });
+});
+
+describe("engine-02: priceLevelString writes every finite level exactly, half away from zero at the ninth decimal (seams C43)", () => {
+  // Expected strings: the exact binary value of each double, rounded half up at the ninth decimal
+  // (Python decimal with 400 digits, scratch). Below 9,007,199 the float form of before is kept.
+  it("the documented and the large levels", () => {
+    expect(priceLevelString(1)).toBe("1.000000000");
+    expect(priceLevelString(1.025)).toBe("1.025000000");
+    expect(priceLevelString(1.0768906249999999)).toBe("1.076890625");
+    expect(priceLevelString(9051906.318045665)).toBe("9051906.318045665");
+    expect(priceLevelString(9007199.254740993)).toBe("9007199.254740993");
+    expect(priceLevelString(14348907)).toBe("14348907.000000000");
+    expect(priceLevelString(123456789012.5)).toBe("123456789012.500000000");
+    expect(priceLevelString(3 ** 60)).toBe("42391158275216203520420085760.000000000");
+    const top = priceLevelString(Number.MAX_VALUE);
+    expect(top.split(".")[0]!).toHaveLength(309);
+    expect(top.startsWith("17976931348623157081452742373170435679807056752584499659891747680315726078")).toBe(true);
+    for (const level of [9051906.318045665, 14348907, 3 ** 60, 1e300, Number.MAX_VALUE]) expect(PriceLevel.safeParse(priceLevelString(level)).success, `${level}`).toBe(true);
+  });
+
+  it("a level below the nine-decimal floor is held at 0.000000001, the smallest positive level the stored form has", () => {
+    expect(priceLevelString(1.5e-9)).toBe("0.000000002");
+    // The 1e-7 guard of the cents rule (C38) applies at the ninth decimal too: 1.4999999999 + 0.5
+    // + 1e-7 ≥ 2, so it rounds up; 1.4999 does not.
+    expect(priceLevelString(1.4999999999e-9)).toBe("0.000000002");
+    expect(priceLevelString(1.4999e-9)).toBe("0.000000001");
+    expect(priceLevelString(9.313225746154785e-10)).toBe("0.000000001");
+    expect(priceLevelString(4.656612873077393e-10)).toBe("0.000000001");
+    expect(priceLevelString(Number.MIN_VALUE)).toBe("0.000000001");
+  });
+
+  it("a level that is not finite or not above 0 is an engine fault", () => {
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) expect(() => priceLevelString(bad), `${bad}`).toThrow(EngineInvariantError);
   });
 });

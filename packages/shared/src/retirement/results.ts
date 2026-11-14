@@ -21,8 +21,12 @@ const Cents = CentsString;
 export const PRICE_LEVEL_DECIMALS = 9;
 /** The price level at the plan start (today's dollars). */
 export const PRICE_LEVEL_ONE = "1.000000000";
-/** A price level relative to the plan start as a fixed-point decimal string with nine decimals, e.g. "1.025000000". */
-export const PriceLevel = z.string().regex(/^\d{1,12}\.\d{9}$/, "a price level with nine decimals");
+/**
+ * A price level relative to the plan start as a fixed-point decimal string with nine decimals, e.g.
+ * "1.025000000". Up to 309 integer digits: the range of a float64, so every level the engine
+ * computes has a stored form (seams C13; the engine writes it exactly, `priceLevelString`).
+ */
+export const PriceLevel = z.string().regex(/^\d{1,309}\.\d{9}$/, "a price level with nine decimals");
 export type PriceLevel = z.infer<typeof PriceLevel>;
 
 /** Which life table a run used (engine design §2.6). */

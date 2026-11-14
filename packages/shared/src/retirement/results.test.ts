@@ -106,6 +106,10 @@ describe("YearRow and YearTable (seams C37, C43, C45)", () => {
     expect(ok(PriceLevel, PRICE_LEVEL_ONE)).toBe(true);
     for (const level of ["1.025000000", "0.987654321", "13780.612339822"]) expect(ok(PriceLevel, level), level).toBe(true);
     for (const level of ["1", "1.025", "1.0250000000", "-1.000000000", "1e3", "1.025000000 ", ""]) expect(ok(PriceLevel, level), level).toBe(false);
+    // engine-02: every finite float64 level has a stored form (13 to 309 integer digits), and it deflates in bigint.
+    for (const level of ["14348907.000000000", "1234567890123.000000000", `${"9".repeat(309)}.000000000`]) expect(ok(PriceLevel, level), level).toBe(true);
+    expect(ok(PriceLevel, `${"9".repeat(310)}.000000000`)).toBe(false);
+    expect(deflateCents(28697814n, "14348907.000000000")).toBe(2n);
     expect(ok(YearRow, { ...exampleYearRow(), cpiEnd: 1.025 })).toBe(false);
     expect(ok(YearRow, { ...exampleYearRow(), cpiEnd: "1.025" })).toBe(false);
   });
