@@ -1,5 +1,5 @@
 import { and, asc, eq, gt, isNotNull, or } from "drizzle-orm";
-import { connection, importLog, replayAccountSetTransactions, type JobRow } from "@meridian/db";
+import { connection, errorMessageOf, importLog, replayAccountSetTransactions, type JobRow } from "@meridian/db";
 import { readSimplefinAccountSet, sanitizeText } from "@meridian/shared";
 import type { JobContext } from "./context.js";
 
@@ -95,7 +95,7 @@ export async function runReprocessTransactionsJob(ctx: JobContext, job: JobRow):
       .where(eq(importLog.id, summaryId));
     return outcome;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = errorMessageOf(err);
     await ctx.db.update(importLog).set({ status: "error", finishedAt: ctx.now(), message: sanitizeText(message, 300) }).where(eq(importLog.id, summaryId));
     throw err;
   }

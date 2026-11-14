@@ -10,6 +10,7 @@ import {
   createSecurity,
   csvDuplicateIds,
   enqueueJob,
+  errorMessageOf,
   getSnapshot,
   HOLDING_SOURCE_RANK,
   importCsvRows,
@@ -457,7 +458,7 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
         .where(eq(importLog.id, log!.id));
       if (profileId) await app.db.update(connection).set({ lastSyncAt: new Date(), status: "ok" }).where(eq(connection.id, profileId));
     } catch (err) {
-      await app.db.update(importLog).set({ status: "error", finishedAt: new Date(), message: (err as Error).message }).where(eq(importLog.id, log!.id));
+      await app.db.update(importLog).set({ status: "error", finishedAt: new Date(), message: errorMessageOf(err) }).where(eq(importLog.id, log!.id));
       throw err;
     }
     // The "match recurring" pipeline step runs for every ingest path (design C5); one queued job covers any number of commits.
@@ -508,7 +509,7 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
   }
 
   async function failLog(logId: string, err: unknown): Promise<void> {
-    await app.db.update(importLog).set({ status: "error", finishedAt: new Date(), message: (err as Error).message }).where(eq(importLog.id, logId));
+    await app.db.update(importLog).set({ status: "error", finishedAt: new Date(), message: errorMessageOf(err) }).where(eq(importLog.id, logId));
   }
 
   r.post("/import/positions/preview", { bodyLimit: BODY_LIMIT.csvImport, schema: { body: PositionsPreviewBody, response: { 200: PositionsPreviewResponse } } }, async (request) => {

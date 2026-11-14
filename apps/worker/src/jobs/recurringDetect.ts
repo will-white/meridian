@@ -1,4 +1,4 @@
-import { getHouseholdSetting, householdToday, runRecurringDetection, type DetectionRunStats, type JobRow } from "@meridian/db";
+import { errorMessageOf, getHouseholdSetting, householdToday, runRecurringDetection, type DetectionRunStats, type JobRow } from "@meridian/db";
 import type { IsoDate } from "@meridian/shared";
 import type { JobContext } from "./context.js";
 
@@ -22,7 +22,7 @@ export async function runRecurringDetectJob(ctx: JobContext, job: JobRow): Promi
   const stats = await runRecurringDetection(ctx.db, {
     today,
     now,
-    onGroupError: (payeeId, error) => ctx.log.error(`[recurring.detect] payee ${payeeId} skipped: ${error instanceof Error ? error.message : String(error)}`),
+    onGroupError: (payeeId, error) => ctx.log.error(`[recurring.detect] payee ${payeeId} skipped: ${errorMessageOf(error)}`),
   });
   return { reason, today, ...stats };
 }

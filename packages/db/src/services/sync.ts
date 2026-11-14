@@ -21,6 +21,7 @@ import type { Db } from "../index.js";
 import { account, type ConnectionError } from "../schema/index.js";
 import { upsertSimplefinAccount } from "./accounts.js";
 import { PlanError } from "./audit.js";
+import { errorMessageOf } from "./driverError.js";
 import { rebuildImpliedPrices, replaceHoldingSnapshot, type SnapshotPosition } from "./holdings.js";
 import { ingestTransactions, type IncomingTransaction, type IngestStats } from "./ingest.js";
 import { linkUnlinkedInvestmentTxns } from "./investmentTxns.js";
@@ -401,7 +402,7 @@ export async function applyAccountSet(db: Db, options: ApplyAccountSetOptions): 
       mergeHoldingsStats(holdings, applied.stats);
       holdingErrors.push(...applied.errors);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorMessageOf(err);
       holdingErrors.push({ code: "holdings.parse_error", message: sanitizeText(`${accountName}: ${message}`, 300), accountId: sanitizeText(sf.id, 100) });
     }
 

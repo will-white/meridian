@@ -17,6 +17,7 @@ import {
   securityAllocation,
   transaction,
 } from "../schema/index.js";
+import { driverError } from "../services/driverError.js";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "./db.js";
 
 /**
@@ -24,6 +25,12 @@ import { createTestDb, TEST_DATABASE_URL, type TestDb } from "./db.js";
  * CHECKs, partial unique indexes and expression indexes refuse what they must, and one
  * valid row per table is accepted.
  */
+
+/** A refused query rejects with Postgres's own error, which names the constraint (drizzle-orm wraps it, see driverError). */
+const refused = (query: PromiseLike<unknown>): Promise<unknown> =>
+  Promise.resolve(query).catch((error: unknown) => {
+    throw driverError(error);
+  });
 
 const PHASE3_TABLES = [
   "security",
@@ -89,11 +96,11 @@ describe.skipIf(!TEST_DATABASE_URL)("migration 0002_phase3_investments", () => {
     const [conn] = await t.db.insert(connection).values({ type: "csv", name: "Statement CSV" }).returning();
     expect(conn!.csvKind).toBe("bank");
 
-    await expect(t.db.execute(sql`update "account" set "lot_method" = 'average' where "id" = ${accountId}`)).rejects.toThrow(/account_lot_method_check/);
-    await expect(t.db.execute(sql`update "account" set "cash_inference" = 'on' where "id" = ${accountId}`)).rejects.toThrow(/account_cash_inference_check/);
-    await expect(t.db.execute(sql`update "account" set "investment_income_feed" = 'sync' where "id" = ${accountId}`)).rejects.toThrow(/account_income_feed_check/);
-    await expect(t.db.update(householdSetting).set({ rebalanceBandBp: 5001 })).rejects.toThrow(/household_setting_rebalance_band_check/);
-    await expect(t.db.update(householdSetting).set({ rebalanceMinTradeCents: -1n })).rejects.toThrow(/household_setting_min_trade_check/);
+    await expect(refused(t.db.execute(sql`update "account" set "lot_method" = 'average' where "id" = ${accountId}`))).rejects.toThrow(/account_lot_method_check/);
+    await expect(refused(t.db.execute(sql`update "account" set "cash_inference" = 'on' where "id" = ${accountId}`))).rejects.toThrow(/account_cash_inference_check/);
+    await expect(refused(t.db.execute(sql`update "account" set "investment_income_feed" = 'sync' where "id" = ${accountId}`))).rejects.toThrow(/account_income_feed_check/);
+    await expect(refused(t.db.update(householdSetting).set({ rebalanceBandBp: 5001 }))).rejects.toThrow(/household_setting_rebalance_band_check/);
+    await expect(refused(t.db.update(householdSetting).set({ rebalanceMinTradeCents: -1n }))).rejects.toThrow(/household_setting_min_trade_check/);
   });
 
   it("accepts one valid row per table", async () => {
@@ -220,49 +227,49 @@ describe.skipIf(!TEST_DATABASE_URL)("migration 0002_phase3_investments", () => {
   it("refuses rows that violate the named constraints", async () => {
     // itx_buy: a buy is a cash outflow.
     await expect(
-      t.db.insert(investmentTxn).values({ accountId, securityId: vtiId, date: "2026-02-01", type: "buy", quantity: "1", price: "300", amountCents: 30000n, source: "manual" }),
+      refused(t.db.insert(investmentTxn).values({ accountId, securityId: vtiId, date: "2026-02-01", type: "buy", quantity: "1", price: "300", amountCents: 30000n, source: "manual" })),
     ).rejects.toThrow(/itx_buy/);
     // itx_transfer: a cash transfer in is a positive amount.
     await expect(
-      t.db.insert(investmentTxn).values({ accountId, date: "2026-02-01", type: "transfer", transferDirection: "in", amountCents: -50000n, source: "manual" }),
+      refused(t.db.insert(investmentTxn).values({ accountId, date: "2026-02-01", type: "transfer", transferDirection: "in", amountCents: -50000n, source: "manual" })),
     ).rejects.toThrow(/itx_transfer/);
     // itx_basis_only_in: carried basis belongs to transfers in only.
     await expect(
-      t.db.insert(investmentTxn).values({ accountId, securityId: vtiId, date: "2026-02-01", type: "buy", quantity: "1", amountCents: -30000n, costBasisCents: 1n, source: "manual" }),
+      refused(t.db.insert(investmentTxn).values({ accountId, securityId: vtiId, date: "2026-02-01", type: "buy", quantity: "1", amountCents: -30000n, costBasisCents: 1n, source: "manual" })),
     ).rejects.toThrow(/itx_basis_only_in/);
 
-    await expect(t.db.insert(lotPick).values({ sellTxnId: sellId, lotId, quantity: "0" })).rejects.toThrow(/lot_pick_quantity_pos/);
+    await expect(refused(t.db.insert(lotPick).values({ sellTxnId: sellId, lotId, quantity: "0" }))).rejects.toThrow(/lot_pick_quantity_pos/);
 
-    await expect(t.db.insert(price).values({ securityId: vtiId, date: "2026-10-14", close: "301", source: "provider" })).rejects.toThrow(/price_provider_shape/);
-    await expect(t.db.insert(price).values({ securityId: vtiId, date: "2026-10-14", close: "-1", source: "manual" })).rejects.toThrow(/price_close_nonneg/);
+    await expect(refused(t.db.insert(price).values({ securityId: vtiId, date: "2026-10-14", close: "301", source: "provider" }))).rejects.toThrow(/price_provider_shape/);
+    await expect(refused(t.db.insert(price).values({ securityId: vtiId, date: "2026-10-14", close: "-1", source: "manual" }))).rejects.toThrow(/price_close_nonneg/);
 
     // One cash security per currency (partial unique index).
-    await expect(t.db.insert(security).values({ name: "Cash again", type: "cash", assetClass: "cash", priceMode: "manual" })).rejects.toThrow(/security_cash_currency_idx/);
+    await expect(refused(t.db.insert(security).values({ name: "Cash again", type: "cash", assetClass: "cash", priceMode: "manual" }))).rejects.toThrow(/security_cash_currency_idx/);
     await expect(t.db.insert(security).values({ name: "Cash (EUR)", type: "cash", assetClass: "cash", currency: "EUR", priceMode: "manual" })).resolves.toBeDefined();
     // security_cash_shape: cash has no ticker and is class cash.
-    await expect(t.db.insert(security).values({ ticker: "CASHX", name: "Sweep", type: "cash", assetClass: "cash", currency: "GBP", priceMode: "manual" })).rejects.toThrow(
+    await expect(refused(t.db.insert(security).values({ ticker: "CASHX", name: "Sweep", type: "cash", assetClass: "cash", currency: "GBP", priceMode: "manual" }))).rejects.toThrow(
       /security_cash_shape/,
     );
-    await expect(t.db.insert(security).values({ ticker: "vti", name: "lower case", type: "etf", priceMode: "provider" })).rejects.toThrow(/security_ticker_shape/);
-    await expect(t.db.insert(security).values({ ticker: "VTI", name: "Duplicate ticker", type: "etf", priceMode: "provider" })).rejects.toThrow(/security_ticker_idx/);
+    await expect(refused(t.db.insert(security).values({ ticker: "vti", name: "lower case", type: "etf", priceMode: "provider" }))).rejects.toThrow(/security_ticker_shape/);
+    await expect(refused(t.db.insert(security).values({ ticker: "VTI", name: "Duplicate ticker", type: "etf", priceMode: "provider" }))).rejects.toThrow(/security_ticker_idx/);
 
-    await expect(t.db.insert(securityAllocation).values({ securityId: vtiId, assetClass: "bonds", weightBp: 0 })).rejects.toThrow(/security_allocation_weight_check/);
+    await expect(refused(t.db.insert(securityAllocation).values({ securityId: vtiId, assetClass: "bonds", weightBp: 0 }))).rejects.toThrow(/security_allocation_weight_check/);
 
     await expect(
-      t.db.execute(
+      refused(t.db.execute(
         sql`insert into "account_reconciliation" ("account_id", "statement_date", "statement_total_cents", "app_basis", "cash_inference", "reconciled", "accepted")
             values (${accountId}, '2026-10-13', 100, 'guess', 'auto', false, false)`,
-      ),
+      )),
     ).rejects.toThrow(/account_reconciliation_app_basis_check/);
 
-    await expect(t.db.insert(holdingSnapshot).values({ accountId, securityId: vtiId, date: "2026-10-14", price: "300", valueCents: 1n, source: "manual" })).rejects.toThrow(
+    await expect(refused(t.db.insert(holdingSnapshot).values({ accountId, securityId: vtiId, date: "2026-10-14", price: "300", valueCents: 1n, source: "manual" }))).rejects.toThrow(
       /hs_price_needs_quantity/,
     );
-    await expect(t.db.insert(allocationTarget).values({ assetClass: "bonds", targetBp: 10001 })).rejects.toThrow(/allocation_target_bp_range/);
+    await expect(refused(t.db.insert(allocationTarget).values({ assetClass: "bonds", targetBp: 10001 }))).rejects.toThrow(/allocation_target_bp_range/);
 
     // Lot identity is (opened_by_txn_id, ordinal).
     await expect(
-      t.db.insert(lot).values({
+      refused(t.db.insert(lot).values({
         accountId,
         securityId: vtiId,
         openedByTxnId: buyId,
@@ -273,7 +280,7 @@ describe.skipIf(!TEST_DATABASE_URL)("migration 0002_phase3_investments", () => {
         quantity: "1",
         originalCostBasisCents: 1n,
         costBasisCents: 1n,
-      }),
+      })),
     ).rejects.toThrow(/lot_opened_by_ordinal_idx/);
   });
 
@@ -293,7 +300,7 @@ describe.skipIf(!TEST_DATABASE_URL)("migration 0002_phase3_investments", () => {
       basisKnown: false,
     };
     await expect(t.db.insert(lotDisposal).values(unmatched)).resolves.toBeDefined();
-    await expect(t.db.insert(lotDisposal).values(unmatched)).rejects.toThrow(/lot_disposal_close_lot_idx/);
+    await expect(refused(t.db.insert(lotDisposal).values(unmatched))).rejects.toThrow(/lot_disposal_close_lot_idx/);
   });
 
   it("the partial unique index on investment_txn.ledger_transaction_id permits many nulls and one link per ledger row", async () => {
@@ -309,6 +316,6 @@ describe.skipIf(!TEST_DATABASE_URL)("migration 0002_phase3_investments", () => {
       .values({ accountId, source: "manual", date: "2026-03-15", amountCents: 1234n, rawDescription: "VTI DIVIDEND" })
       .returning();
     await expect(t.db.insert(investmentTxn).values({ ...dividend, sequence: 10, ledgerTransactionId: ledger!.id })).resolves.toBeDefined();
-    await expect(t.db.insert(investmentTxn).values({ ...dividend, sequence: 11, ledgerTransactionId: ledger!.id })).rejects.toThrow(/investment_txn_ledger_idx/);
+    await expect(refused(t.db.insert(investmentTxn).values({ ...dividend, sequence: 11, ledgerTransactionId: ledger!.id }))).rejects.toThrow(/investment_txn_ledger_idx/);
   });
 });

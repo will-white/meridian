@@ -1,5 +1,5 @@
 import { writeFileSync } from "node:fs";
-import { claimNextJob, completeJob, failJob, requeueStaleJobs } from "@meridian/db";
+import { claimNextJob, completeJob, driverError, errorMessageOf, failJob, requeueStaleJobs } from "@meridian/db";
 import { errorMessageText } from "@meridian/shared";
 import { dispatchJob } from "./jobs/index.js";
 import type { JobContext } from "./jobs/context.js";
@@ -41,7 +41,7 @@ export async function drainQueue(ctx: JobContext, beat?: () => void): Promise<nu
       ctx.log.info(`[job] ${job.type} ${job.id} done in ${Date.now() - started}ms ${result ? JSON.stringify(result, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v)) : ""}`);
     } catch (err) {
       // Shown on the Connections page: sanitized and bounded, since an error can quote what a server sent.
-      const message = errorMessageText(err);
+      const message = errorMessageText(driverError(err));
       // Plan decision 18: retry unless the error says retrying cannot help.
       const retry = !isPermanentError(err);
       await failJob(ctx.db, job, message, { retry });
@@ -66,7 +66,7 @@ export function startRunner(ctx: JobContext, heartbeat: (() => void) | undefined
       await drainQueue(ctx, heartbeat);
       heartbeat?.();
     } catch (err) {
-      ctx.log.error(`[runner] ${(err as Error).message}`);
+      ctx.log.error(`[runner] ${errorMessageOf(err)}`);
     } finally {
       if (!stopped) setTimeout(() => void tick(), ctx.config.pollIntervalMs);
     }

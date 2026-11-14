@@ -3,7 +3,7 @@
  * Phase 1: SimpleFIN claim and sync jobs (every SYNC_INTERVAL_HOURS), rules re-runs.
  * Later: price fetch, recurring detection, retirement simulations.
  */
-import { createDb, verifySecretsKey } from "@meridian/db";
+import { createDb, errorMessageOf, verifySecretsKey } from "@meridian/db";
 import { loadConfig } from "./env.js";
 import type { JobContext } from "./jobs/context.js";
 import { startRunner } from "./runner.js";
@@ -28,7 +28,7 @@ try {
   const warning = await verifySecretsKey(db, config.secretsKey);
   if (warning) console.warn(`[worker] ${warning}`);
 } catch (err) {
-  console.error(`[worker] not starting: ${err instanceof Error ? err.message : String(err)}`);
+  console.error(`[worker] not starting: ${errorMessageOf(err)}`);
   await client.end({ timeout: 5 });
   process.exit(1);
 }
