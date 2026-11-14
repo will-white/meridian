@@ -12,7 +12,7 @@
 .inv-picker { display: flex; flex-direction: column; gap: 0.3rem; min-width: 14rem; }
 .inv-picker-new .inv-picker-ticker { width: 6rem; }
 .inv-row-error td { background: color-mix(in srgb, var(--bad) 8%, transparent); }
-.inv-positions-editor, .inv-trade-form, .inv-lot-picks { display: flex; flex-direction: column; gap: 0.75rem; padding: 0.25rem 0; }
+.inv-positions-editor, .inv-trade-form, .inv-lot-picks, .inv-lots { display: flex; flex-direction: column; gap: 0.75rem; padding: 0.25rem 0; }
 .inv-positions-total { width: 9rem; }
 .inv-trade-form label { min-width: 10rem; }
 .inv-ratio-input { width: 5rem; }

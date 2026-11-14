@@ -820,6 +820,16 @@ export const UpdateGoalBody = z.object({
 // ---- Audit ----
 export const AuditQuery = z.object({
   entity: AuditEntity.optional(),
+  /**
+   * `?entities=month_plan,category,…`: entries of any of these entities, one keyset-paginated list
+   * (the Plan page's history, audit decision A30). Combined with `entity` both must hold.
+   */
+  entities: z
+    .string()
+    .max(400)
+    .transform((s) => s.split(",").map((v) => v.trim()).filter((v) => v.length > 0))
+    .pipe(z.array(AuditEntity).min(1).max(AuditEntity.options.length))
+    .optional(),
   entityId: z.string().max(200).optional(),
   batchId: z.string().uuid().optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -1023,7 +1033,13 @@ export const CashFlowAccountSeriesView = CashFlowSeriesView.extend({
   accountId: z.string().uuid(),
   name: z.string(),
   type: AccountType,
+  /** The date of the known balance the opening starts from. */
   balanceDate: IsoDateString.nullable(),
+  /** An account without a bank feed: the posted rows after `balanceDate` added to the opening (audit decision A29); "0" and 0 otherwise. */
+  rolledForwardCents: CentsString,
+  rolledForwardRows: z.number().int(),
+  /** The latest day the opening covers (`balanceDate`, or the last row rolled forward). */
+  dataThrough: IsoDateString.nullable(),
 });
 export const CashFlowSpreadView = z.object({
   month: MonthString,
@@ -1073,6 +1089,8 @@ export const DashboardView = z.object({
     points: z.array(z.object({ date: IsoDateString, cents: CentsString })),
     lowPoint: z.object({ date: IsoDateString, cents: CentsString }),
     firstBelow: IsoDateString.nullable(),
+    /** The oldest day the projected accounts' opening balances cover; null without a known balance. */
+    balancesAsOf: IsoDateString.nullable(),
     warnings: z.array(z.string()),
   }),
   billsDue: z.array(

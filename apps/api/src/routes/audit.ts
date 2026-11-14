@@ -15,6 +15,7 @@ export async function auditRoutes(app: FastifyInstance): Promise<void> {
     const result = await listAudit(app.db, {
       limit: q.limit,
       ...(q.entity !== undefined ? { entity: q.entity } : {}),
+      ...(q.entities !== undefined ? { entities: q.entities } : {}),
       ...(q.entityId !== undefined ? { entityId: q.entityId } : {}),
       ...(q.batchId !== undefined ? { batchId: q.batchId } : {}),
       ...(q.cursor !== undefined ? { cursor: q.cursor } : {}),

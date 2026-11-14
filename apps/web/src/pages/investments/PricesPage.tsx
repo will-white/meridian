@@ -91,7 +91,7 @@ export function PricesPage() {
                 <span className="v">
                   {s.provider ?? "none"} <Badge tone={s.configured ? "ok" : "neutral"}>{s.configured ? "configured" : "not configured"}</Badge>
                 </span>
-                <span className="sub">{s.configured ? scheduleText(s.fetchHourLocal, s.catchupHourLocal, s.timezone) : "values use statement, implied and manual prices"}</span>
+                <span className="sub">{s.configured ? scheduleText(s.fetchHourLocal, s.catchupHourLocal, s.timezone) : "values use statement, implied, manual and trade prices"}</span>
               </div>
               <div className="inv-stat">
                 <span className="k">Expected close</span>

@@ -1,4 +1,4 @@
-import { and, desc, eq, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import type { AuditAction, AuditEntity } from "@meridian/shared";
 import type { DbOrTx } from "../index.js";
 import { auditLog, user } from "../schema/index.js";
@@ -53,6 +53,8 @@ export interface AuditRow {
 
 export interface ListAuditQuery {
   entity?: AuditEntity;
+  /** Any of these entities (the Plan page's history: plan cells, categories, groups, goals, recurring items, settings). */
+  entities?: readonly AuditEntity[];
   entityId?: string;
   batchId?: string;
   limit: number;
@@ -142,6 +144,7 @@ export async function listAudit(db: DbOrTx, query: ListAuditQuery): Promise<{ it
     .where(
       and(
         query.entity ? eq(auditLog.entity, query.entity) : undefined,
+        query.entities && query.entities.length > 0 ? inArray(auditLog.entity, [...query.entities]) : undefined,
         query.entityId ? eq(auditLog.entityId, query.entityId) : undefined,
         query.batchId ? eq(auditLog.batchId, query.batchId) : undefined,
         cursor

@@ -260,6 +260,8 @@ export interface InvestmentContextQuery {
   includeClosed?: boolean;
   /** Widen the chain's window back to this date (period changes and series read the same input). */
   from?: IsoDate;
+  /** False when no price provider is configured: provider-mode prices are then never "behind" (audit decision A18). */
+  priceFeed?: boolean;
 }
 
 function key(accountId: string, securityId: string): string {
@@ -292,7 +294,7 @@ export async function investmentContext(db: DbOrTx, q: InvestmentContextQuery): 
   const ids = accounts.map((a) => a.id);
   const fidelities = await accountFidelities(db, ids);
   const from = q.from !== undefined && q.from < asOf ? q.from : asOf;
-  const input = await loadValuationInput(db, { accountIds: ids, from, to: asOf, now: q.now, fidelities });
+  const input = await loadValuationInput(db, { accountIds: ids, from, to: asOf, now: q.now, fidelities, ...(q.priceFeed === false ? { priceFeed: false } : {}) });
   const valuations = new Map(ids.map((id) => [id, valueAccountOn(input, id, asOf)]));
 
   // The latest snapshot set on or before asOf (its date, highest-ranked source and reported cost basis) per account.
@@ -421,7 +423,10 @@ export async function investmentContext(db: DbOrTx, q: InvestmentContextQuery): 
     if (v.basis === "none") warn("no_value", `${a.name} has no value: sync it or import a statement`);
     else if (valuationStale && valuationDate !== null) warn("valuation_stale", `${a.name} has no value newer than ${shortDate(valuationDate)}`);
     if (positionsStale && positionsDate !== null) warn("positions_stale", `Positions are ${dayDiff(positionsDate, asOf)} days old; import a statement`);
-    if (v.priceStatus === "stale" && v.stalest) warn("price_stale", `Prices are ${v.stalest.tradingDaysBehind} trading days behind (latest ${shortDate(v.stalest.priceDate)})`);
+    if (v.priceStatus === "stale" && v.stalest) {
+      const n = v.stalest.tradingDaysBehind;
+      warn("price_stale", `Prices are ${n} trading day${n === 1 ? "" : "s"} behind (latest ${shortDate(v.stalest.priceDate)})`);
+    }
     if (v.missing.length > 0) warn("unpriced", `${v.missing.length} position${v.missing.length === 1 ? "" : "s"} in ${a.name} ${v.missing.length === 1 ? "has" : "have"} no price`);
     if (f?.positionsMatch === false) warn("lots_mismatch", f.fidelityNote ?? "the lots do not explain the latest statement");
     for (const l of lines) if (l.dollarOnly) warn("dollar_only", `${l.ticker ?? l.name}: value only, this position reports no share count`);
@@ -543,6 +548,12 @@ export interface AllocationQueryInput {
   now: Date;
   asOf?: IsoDate;
   includeClosed?: boolean;
+  priceFeed?: boolean;
+}
+
+/** The context query's optional price-feed flag, passed on only when it is false. */
+function feedOption(q: { priceFeed?: boolean }): { priceFeed?: boolean } {
+  return q.priceFeed === false ? { priceFeed: false } : {};
 }
 
 function nonZeroClasses(m: ReadonlyMap<AssetClass, bigint>): Array<{ assetClass: AssetClass; cents: bigint }> {
@@ -551,7 +562,7 @@ function nonZeroClasses(m: ReadonlyMap<AssetClass, bigint>): Array<{ assetClass:
 
 /** `GET /api/investments/allocation` (views design §3.6–§3.7). */
 export async function getAllocation(db: DbOrTx, q: AllocationQueryInput): Promise<AllocationRecord> {
-  const ctx = await investmentContext(db, { today: q.today, now: q.now, ...(q.asOf ? { asOf: q.asOf } : {}), ...(q.includeClosed ? { includeClosed: true } : {}) });
+  const ctx = await investmentContext(db, { today: q.today, now: q.now, ...(q.asOf ? { asOf: q.asOf } : {}), ...(q.includeClosed ? { includeClosed: true } : {}), ...feedOption(q) });
   return allocationOf(ctx);
 }
 
@@ -1149,6 +1160,7 @@ export interface HoldingsQueryInput {
   asOf?: IsoDate;
   accountId?: string;
   includeClosed?: boolean;
+  priceFeed?: boolean;
 }
 
 export const CONCENTRATION_WARN_BP = 1000;
@@ -1157,7 +1169,7 @@ export const CONCENTRATION_FUND_BP = 6000;
 
 /** `GET /api/investments/holdings`: `accountId` restricts the rows and the weights' total. */
 export async function getHoldings(db: DbOrTx, q: HoldingsQueryInput): Promise<HoldingsRecord> {
-  const ctx = await investmentContext(db, { today: q.today, now: q.now, ...(q.asOf ? { asOf: q.asOf } : {}), ...(q.includeClosed ? { includeClosed: true } : {}) });
+  const ctx = await investmentContext(db, { today: q.today, now: q.now, ...(q.asOf ? { asOf: q.asOf } : {}), ...(q.includeClosed ? { includeClosed: true } : {}), ...feedOption(q) });
   if (q.accountId !== undefined && !ctx.accounts.some((a) => a.id === q.accountId)) throw new PlanError(404, "not_found", "Account not found among the investment accounts");
   return holdingsOf(ctx, q.accountId !== undefined ? new Set([q.accountId]) : undefined);
 }
@@ -1377,6 +1389,7 @@ export interface PortfolioQueryInput {
   to?: IsoDate;
   accountIds?: readonly string[];
   includeClosed?: boolean;
+  priceFeed?: boolean;
 }
 
 /** `GET /api/investments/portfolio`: the chain's values, day and period change, the value series. */
@@ -1401,6 +1414,7 @@ export async function getPortfolio(db: DbOrTx, q: PortfolioQueryInput): Promise<
     ...(q.accountIds ? { accountIds: q.accountIds } : {}),
     ...(q.includeClosed ? { includeClosed: true } : {}),
     ...(bounds ? { from: bounds.from } : {}),
+    ...feedOption(q),
   });
   const day = dayChange(ctx.input, ids, asOf);
   const change = bounds ? periodChange(ctx.input, ids, { period, end: asOf, from: bounds.from }) : null;
@@ -1667,7 +1681,7 @@ export interface DashboardInvestmentsBlock {
 
 /** The dashboard's investments block; null without open investment accounts. */
 export async function dashboardInvestments(db: DbOrTx, q: { today: IsoDate; now: Date; priceProvider: PriceProviderId | null }): Promise<DashboardInvestmentsBlock | null> {
-  const ctx = await investmentContext(db, { today: q.today, now: q.now });
+  const ctx = await investmentContext(db, { today: q.today, now: q.now, ...(q.priceProvider === null ? { priceFeed: false } : {}) });
   if (ctx.accounts.length === 0) return null;
   const day = dayChange(ctx.input, ctx.accounts.map((a) => a.id), ctx.asOf);
   const fidelityCounts: Record<InvestmentFidelity, number> = { balance_only: 0, positions: 0, full_history: 0 };

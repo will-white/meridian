@@ -51,6 +51,45 @@ export function resolveRange(fromParam: string | null, toParam: string | null, t
   return { from, to };
 }
 
+/** The earliest month the server serves (its 400 below 2000-01). */
+export const MIN_RANGE_MONTH = "2000-01";
+/** The latest month a request may name (the wire's months end in 2199). */
+export const MAX_RANGE_MONTH = "2199-12";
+
+/** The window `[from, from + span − 1]` kept inside 2000-01 … 2199-12. */
+function clampWindow(from: string, span: number): { from: string; to: string } {
+  let start = from < MIN_RANGE_MONTH ? MIN_RANGE_MONTH : from;
+  const latestStart = addMonths(MAX_RANGE_MONTH, -(span - 1));
+  if (start > latestStart) start = latestStart;
+  return { from: start, to: addMonths(start, span - 1) };
+}
+
+/**
+ * The window moved by `delta` months, keeping its size (the toolbar's ‹ and ›). It never starts
+ * before 2000-01 or ends after 2199-12, so shifting past either end keeps the window at it.
+ */
+export function shiftRange(range: { from: string; to: string }, delta: number): { from: string; to: string } {
+  return clampWindow(addMonths(range.from, delta), monthDiff(range.from, range.to) + 1);
+}
+
+/**
+ * The window resized to `months` columns (1 to 24, the toolbar's month count). When the current
+ * month is shown it stays shown, at the same relative place (the default's last 2, current,
+ * next 3 becomes the current month alone at 1 column, last 1, current, next 1 at 3, and last 4,
+ * current, next 7 at 12); otherwise the window keeps its first month.
+ */
+export function resizeRange(range: { from: string; to: string }, months: number, currentMonth: string): { from: string; to: string } {
+  const n = Math.min(MAX_RANGE_MONTHS, Math.max(1, Math.trunc(months)));
+  const span = monthDiff(range.from, range.to) + 1;
+  let from = range.from;
+  if (currentMonth >= range.from && currentMonth <= range.to) {
+    const offset = monthDiff(range.from, currentMonth);
+    const at = span <= 1 ? 0 : Math.round((offset * (n - 1)) / (span - 1));
+    from = addMonths(currentMonth, -at);
+  }
+  return clampWindow(from, n);
+}
+
 export type ParsedAmount = { ok: true; cents: bigint | null } | { ok: false; error: string };
 
 /** The largest amount a request may carry: the wire's cents are at most 15 digits (9,999,999,999,999.99). */

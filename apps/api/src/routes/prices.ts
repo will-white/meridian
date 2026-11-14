@@ -61,7 +61,7 @@ export async function priceRoutes(app: FastifyInstance): Promise<void> {
 
   r.get("/prices/:securityId", { schema: { params: SecurityIdParams, querystring: PriceHistoryQuery, response: { 200: PriceHistoryResponse } } }, async (request, reply) => {
     const q = request.query;
-    const status = await securityPriceStatus(app.db, request.params.securityId, app.now());
+    const status = await securityPriceStatus(app.db, request.params.securityId, app.now(), priceProviderConfigured(app));
     const query: ListPricesQuery = { limit: q.limit, ...(q.from !== undefined ? { from: q.from } : {}), ...(q.to !== undefined ? { to: q.to } : {}) };
     const items = await listPrices(app.db, request.params.securityId, query);
     reply.header("Cache-Control", "no-store");

@@ -342,11 +342,12 @@ export async function loadPlanInput(db: DbOrTx, q: PlanRangeQuery): Promise<Comp
   };
 }
 
-/** The range rules every grid read shares: valid month keys, at most 24 months, from 2000-01 on. */
+/** The range rules every grid read shares: valid month keys, from ≤ to, at most 24 months, from 2000-01 on. */
 export function assertPlanRange(from: MonthKey, to: MonthKey): void {
   assertMonth(from, "from");
   assertMonth(to, "to");
-  if (from <= to && monthDiff(from, to) + 1 > MAX_PLAN_MONTHS) throw new PlanError(400, "validation", `At most ${MAX_PLAN_MONTHS} months`);
+  if (from > to) throw new PlanError(400, "validation", "from must not be after to");
+  if (monthDiff(from, to) + 1 > MAX_PLAN_MONTHS) throw new PlanError(400, "validation", `At most ${MAX_PLAN_MONTHS} months`);
   if (from < "2000-01") throw new PlanError(400, "validation", "from must be 2000-01 or later");
 }
 

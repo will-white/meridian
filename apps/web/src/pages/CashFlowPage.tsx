@@ -12,6 +12,7 @@ import { cashFlowChartOption, seriesColor, type CashFlowChartSeries } from "../c
 import { EventsTable } from "../components/cashflow/EventsTable.js";
 import { WhatIfDrawer } from "../components/cashflow/WhatIfDrawer.js";
 import { unscheduledRows } from "../components/cashflow/unscheduled.js";
+import { openingNote } from "../components/cashflow/opening.js";
 import {
   addMove,
   HORIZONS,
@@ -181,6 +182,20 @@ export function CashFlowPage() {
                   <span className="v">{money(endCents)}</span>
                 </div>
               </div>
+              <table className="table small cf-openings" aria-label="Where each account starts">
+                <tbody>
+                  {p.accounts.map((a) => {
+                    const note = openingNote(a, p.today);
+                    return (
+                      <tr key={a.accountId}>
+                        <td>{a.name}</td>
+                        <td className="num nowrap">{money(a.openingCents)}</td>
+                        <td className={note.stale ? "tone-warn" : "muted"}>{note.text}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
               {p.warnings.length > 0 && (
                 <ul className="dash-warnings">
                   {p.warnings.map((w) => (

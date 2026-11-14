@@ -46,3 +46,6 @@
   .cf-events td.actions { white-space: normal; }
   .cf-events .muted.small { display: none; }
 }
+.cf-openings { width: auto; margin: 0.25rem 0 0.5rem; }
+.cf-openings td { padding: 0.15rem 0.75rem 0.15rem 0; }
+.cf-openings .tone-warn { color: var(--warn); }

@@ -43,30 +43,44 @@ export function methodTone(method: ReturnMethod | null): BadgeTone {
 export interface RateCell {
   /** "+8.62%", or "—" when the figure failed. */
   text: string;
-  /** The second line: "+9.10% annualized", "not annualized (period under a year)", or null. */
+  /** The second line: "+9.10% annualized", "not annualized (under a year of returns)", or null. */
   caption: string | null;
   /** The engine's reason, when the figure is null. */
   failed: boolean;
 }
 
-/** The time-weighted return: the period rate, with the annualized rate when the engine returned one (ranges ≥ 365 days). */
+/** The time-weighted return: the period rate, with the annualized rate when the engine returned one (a year or more of returns: the range, or the account's own span when it entered later, audit decision A19). */
 export function twrCell(figure: ReturnFigureView): RateCell {
   if (figure.rate === null) return { text: "—", caption: null, failed: true };
   return {
     text: formatRate(figure.rate, true),
-    caption: figure.annualized === null ? "not annualized (period under a year)" : `${formatRate(figure.annualized, true)} annualized`,
+    caption: figure.annualized === null ? "not annualized (under a year of returns)" : `${formatRate(figure.annualized, true)} annualized`,
     failed: false,
   };
 }
 
 /**
- * The money-weighted return: `period` for ranges under a year (XIRR is
- * annualized by definition and exaggerates short periods), `annualized`
- * otherwise.
+ * Whether the money-weighted return is shown as its period figure: the range is under a year, or
+ * the money was invested for under a year of it (an account that entered a 1-year range 31 days
+ * before its end has 31 days of return, which is not annualized: audit decision A19).
+ */
+export function mwrShowsPeriod(xirr: Pick<XirrFigureView, "investedDays">, days: number): boolean {
+  return Math.min(days, xirr.investedDays) < 365;
+}
+
+/** The figure `mwrCell` shows, for its colour. */
+export function mwrShownRate(xirr: Pick<XirrFigureView, "investedDays" | "period" | "annualized">, days: number): number | null {
+  return mwrShowsPeriod(xirr, days) ? (xirr.period ?? null) : (xirr.annualized ?? null);
+}
+
+/**
+ * The money-weighted return: `period` for ranges, or money invested, under a
+ * year (XIRR is annualized by definition and exaggerates short periods),
+ * `annualized` otherwise.
  */
 export function mwrCell(xirr: XirrFigureView, days: number): RateCell {
   if (xirr.annualized === null && xirr.period === null) return { text: "—", caption: null, failed: true };
-  if (days < 365) {
+  if (mwrShowsPeriod(xirr, days)) {
     return { text: formatRate(xirr.period, true), caption: `over ${xirr.investedDays} days, not annualized (XIRR ${formatRate(xirr.annualized, true)} would exaggerate a short period)`, failed: false };
   }
   return { text: formatRate(xirr.annualized, true), caption: "annualized (XIRR)", failed: false };

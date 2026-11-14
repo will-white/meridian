@@ -99,7 +99,7 @@ describe("investments block (Phase 3)", () => {
   });
 
   it("describes the price feed's health", () => {
-    expect(priceFeedText({ configured: false, expectedDate: "2026-10-13", stale: 0, notFound: 0, error: 0 })).toEqual({ text: "Price feed not configured: values use statement, implied and manual prices", tone: "neutral" });
+    expect(priceFeedText({ configured: false, expectedDate: "2026-10-13", stale: 0, notFound: 0, error: 0 })).toEqual({ text: "Price feed not configured: values use statement, implied, manual and trade prices", tone: "neutral" });
     expect(priceFeedText({ configured: true, expectedDate: "2026-10-13", stale: 0, notFound: 0, error: 0 })).toEqual({ text: "Price feed current through 10/13/26", tone: "ok" });
     expect(priceFeedText({ configured: true, expectedDate: "2026-10-13", stale: 2, notFound: 1, error: 0 })).toEqual({ text: "Price feed behind 10/13/26: 2 stale, 1 not found", tone: "bad" });
   });

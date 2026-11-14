@@ -157,9 +157,9 @@ describe.skipIf(!TEST_DATABASE_URL)("cash-flow loader on the grid-and-api seed",
     expect(input.today).toBe(today);
     expect(input.horizonDays).toBe(30);
     expect(input.accounts).toEqual([
-      { id: S.accounts.checking, name: "Checking", type: "checking", openingCents: 320000n, balanceDate: today, lowBalanceThresholdCents: null },
-      { id: S.accounts.savings, name: "Savings", type: "savings", openingCents: 300000n, balanceDate: today, lowBalanceThresholdCents: null },
-      { id: S.accounts.visa, name: "Visa", type: "credit", openingCents: -47500n, balanceDate: today, lowBalanceThresholdCents: null },
+      { id: S.accounts.checking, name: "Checking", type: "checking", openingCents: 320000n, balanceDate: today, rolledForwardCents: 0n, rolledForwardRows: 0, dataThrough: today, lowBalanceThresholdCents: null },
+      { id: S.accounts.savings, name: "Savings", type: "savings", openingCents: 300000n, balanceDate: today, rolledForwardCents: 0n, rolledForwardRows: 0, dataThrough: today, lowBalanceThresholdCents: null },
+      { id: S.accounts.visa, name: "Visa", type: "credit", openingCents: -47500n, balanceDate: today, rolledForwardCents: 0n, rolledForwardRows: 0, dataThrough: today, lowBalanceThresholdCents: null },
     ]);
 
     const byName = new Map(input.recurring.map((r) => [r.name, r]));

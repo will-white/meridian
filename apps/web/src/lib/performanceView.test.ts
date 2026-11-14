@@ -19,6 +19,8 @@ import {
   methodTone,
   monthAxisLabel,
   mwrCell,
+  mwrShownRate,
+  mwrShowsPeriod,
   openingValueText,
   subPeriodFlags,
   subPeriodFlowParts,
@@ -36,7 +38,7 @@ describe("return figures", () => {
     expect(methodTone(null)).toBe("neutral");
   });
   it("shows the TWR period rate with the annualized rate only when the engine returned one", () => {
-    expect(twrCell({ rate: 0.0862, annualized: null, reason: null, reasonDate: null })).toEqual({ text: "+8.62%", caption: "not annualized (period under a year)", failed: false });
+    expect(twrCell({ rate: 0.0862, annualized: null, reason: null, reasonDate: null })).toEqual({ text: "+8.62%", caption: "not annualized (under a year of returns)", failed: false });
     expect(twrCell({ rate: 0.0862, annualized: 0.091, reason: null, reasonDate: null })).toEqual({ text: "+8.62%", caption: "+9.10% annualized", failed: false });
     expect(twrCell({ rate: -0.0125, annualized: null, reason: null, reasonDate: null }).text).toBe("-1.25%");
     expect(twrCell({ rate: null, annualized: null, reason: "no_valuations", reasonDate: "2026-10-13" })).toEqual({ text: "—", caption: null, failed: true });
@@ -47,8 +49,21 @@ describe("return figures", () => {
     expect(short.text).toBe("+5.00%");
     expect(short.caption).toBe("over 200 days, not annualized (XIRR +9.23% would exaggerate a short period)");
     expect(short.failed).toBe(false);
-    expect(mwrCell(xirr, 400)).toEqual({ text: "+9.23%", caption: "annualized (XIRR)", failed: false });
+    expect(mwrCell({ ...xirr, investedDays: 400 }, 400)).toEqual({ text: "+9.23%", caption: "annualized (XIRR)", failed: false });
     expect(mwrCell({ ...xirr, annualized: null, period: null, reason: "no_sign_change" }, 400)).toEqual({ text: "—", caption: null, failed: true });
+  });
+  it("b9-06: an account that entered 31 days before the end of a 1-year range shows its TWR not annualized", () => {
+    // The engine returns annualized null for the Roth (32 days of returns from the 10-12 close), so the cell says why.
+    expect(twrCell({ rate: 0.0395, annualized: null, reason: null, reasonDate: null })).toEqual({ text: "+3.95%", caption: "not annualized (under a year of returns)", failed: false });
+  });
+  it("b9-06: money invested for 31 days of a 1-year range shows the 31-day figure, not an annualized XIRR", () => {
+    // The Roth entered a 365-day range 31 days before its end: XIRR +57.88% a year is +3.95% over the 31 days.
+    const roth = { annualized: 0.5788, period: 0.0395, investedDays: 31, reason: null, warnings: [], investorFlows: [] };
+    expect(mwrCell(roth, 365)).toEqual({ text: "+3.95%", caption: "over 31 days, not annualized (XIRR +57.88% would exaggerate a short period)", failed: false });
+    expect(mwrShownRate(roth, 365)).toBe(0.0395);
+    expect(mwrShowsPeriod(roth, 365)).toBe(true);
+    expect(mwrShowsPeriod({ investedDays: 365 }, 365)).toBe(false);
+    expect(mwrShownRate({ ...roth, investedDays: 365 }, 365)).toBe(0.5788);
   });
   it("formats the excess and the benchmark note", () => {
     expect(excessText(0.012)).toBe("+1.20%");

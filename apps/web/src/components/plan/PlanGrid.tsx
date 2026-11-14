@@ -24,6 +24,8 @@ export interface PlanGridProps {
   onDropTransaction: (transactionId: string, categoryId: string) => void;
   /** Open the drill-down panel (an actual, the cell menu, the strip's uncategorized badge). */
   onDrill: (target: DrillTarget) => void;
+  /** Open one cell's edit history (the cell menu's "History of this cell"). */
+  onCellHistory?: (row: PlanCategoryRow, month: string) => void;
 }
 
 interface MenuState {
@@ -87,7 +89,7 @@ function RowName({ row }: { row: PlanRow }) {
  * covered by the next row.
  */
 export function PlanGrid(props: PlanGridProps) {
-  const { plan, rows, compact, zeroBased, busy, readOnly, onEdits, onPlanFromAverage, onRollover, onDropTransaction, onDrill } = props;
+  const { plan, rows, compact, zeroBased, busy, readOnly, onEdits, onPlanFromAverage, onRollover, onDropTransaction, onDrill, onCellHistory } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
   const [stripHeight, setStripHeight] = useState(96);
@@ -330,6 +332,14 @@ export function PlanGrid(props: PlanGridProps) {
             closeMenu();
             onDrill({ kind: "category", row: menuRow, month: menuMonth });
           }}
+          onHistory={
+            onCellHistory
+              ? () => {
+                  closeMenu();
+                  onCellHistory(menuRow, menuMonth);
+                }
+              : undefined
+          }
         />
       )}
     </div>

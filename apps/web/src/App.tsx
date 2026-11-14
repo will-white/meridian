@@ -24,6 +24,7 @@ import { InvestmentsLayout } from "./pages/investments/InvestmentsLayout.js";
 import { PerformancePage } from "./pages/investments/PerformancePage.js";
 import { PortfolioPage } from "./pages/investments/PortfolioPage.js";
 import { PricesPage } from "./pages/investments/PricesPage.js";
+import { RealizedPage } from "./pages/investments/RealizedPage.js";
 import { ReconcilePage } from "./pages/investments/ReconcilePage.js";
 import { SecuritiesPage } from "./pages/investments/SecuritiesPage.js";
 
@@ -80,6 +81,7 @@ export function App() {
           <Route path="allocation" element={<AllocationPage />} />
           <Route path="holdings" element={<HoldingsPage />} />
           <Route path="performance" element={<PerformancePage />} />
+          <Route path="realized" element={<RealizedPage />} />
           <Route path="income" element={<IncomePage />} />
           <Route path="prices" element={<PricesPage />} />
           <Route path="reconcile" element={<ReconcilePage />} />

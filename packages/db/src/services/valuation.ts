@@ -9,6 +9,7 @@ import {
   MAX_SERIES_DAYS,
   periodChange,
   periodStart,
+  sortInvestmentTxns,
   valueAccountOn,
   valueSeries,
   type AccountDayChange,
@@ -35,6 +36,7 @@ import {
   type ValuationSecurity,
   type ValuationSnapshotLine,
   type ValuationTradePosition,
+  type ValuationTradePrice,
 } from "@meridian/shared";
 import type { DbOrTx } from "../index.js";
 import { account, balanceSnapshot, holdingSnapshot, householdSetting, investmentTxn, price, security, transaction } from "../schema/index.js";
@@ -201,6 +203,8 @@ export interface LoadValuationInputQuery {
   now: Date;
   /** Reuse an `accountFidelities` result (the position check runs the lot engine per account). */
   fidelities?: ReadonlyMap<string, AccountFidelityRecord>;
+  /** Whether a price provider is configured (`ValuationInput.priceFeed`); absent = true. */
+  priceFeed?: boolean;
 }
 
 export interface LoadedValuationInput extends ValuationInput {
@@ -242,8 +246,9 @@ export async function loadValuationInput(db: DbOrTx, q: LoadValuationInputQuery)
     cashInference: r.cashInference,
   }));
   const expectedThrough = expectedPriceDate(q.now);
+  const feed = q.priceFeed === false ? { priceFeed: false } : {};
   if (ids.length === 0) {
-    return { expectedThrough, accounts, securities: [], prices: [], snapshots: [], balances: [], flows: [], tradePositions: [], cashEffects: [], fidelities, firstDataDates: new Map() };
+    return { expectedThrough, ...feed, accounts, securities: [], prices: [], snapshots: [], balances: [], flows: [], tradePositions: [], cashEffects: [], fidelities, firstDataDates: new Map() };
   }
 
   // The anchors on or before `from`: the latest reported balance and the latest snapshot set per account.
@@ -293,9 +298,12 @@ export async function loadValuationInput(db: DbOrTx, q: LoadValuationInputQuery)
   }));
   const securityIds = new Set<string>(snapshotRows.map((r) => r.securityId));
 
-  // Full-history accounts: the lot engine's checkpoints (complete) and the trades' cash legs.
+  // Full-history accounts: the lot engine's checkpoints (complete), the trades' cash legs and the
+  // trades' own prices, which price a position that has no close yet (audit decision A20; the
+  // performance engine's `txn` quote over the same rows, in stream order).
   const tradePositions: ValuationTradePosition[] = [];
   const cashEffects: ValuationCashEffect[] = [];
+  const tradePrices: ValuationTradePrice[] = [];
   for (const a of accounts) {
     if (a.fidelity !== "full_history") continue;
     const build = await buildAccountLots(db, a.id);
@@ -304,6 +312,10 @@ export async function loadValuationInput(db: DbOrTx, q: LoadValuationInputQuery)
       for (const [securityId, quantity] of p.quantityBySecurity) if (quantity !== 0n) securityIds.add(securityId);
     }
     for (const e of build.result.cashEffects) cashEffects.push({ accountId: a.id, date: e.date, cents: e.cents });
+    for (const t of sortInvestmentTxns(build.txns)) {
+      if (t.securityId === null || t.price === null || t.date > q.to) continue;
+      tradePrices.push({ accountId: a.id, securityId: t.securityId, date: t.date, price: t.price });
+    }
   }
 
   const securityRows =
@@ -345,7 +357,7 @@ export async function loadValuationInput(db: DbOrTx, q: LoadValuationInputQuery)
   const flows: ValuationFlow[] = flowRows.map((f) => ({ accountId: f.accountId, date: f.date, amountCents: f.amountCents, kind: f.kind }));
 
   const firsts = await firstDataDates(db, ids, fidelities);
-  return { expectedThrough, accounts, securities, prices, snapshots, balances, flows, tradePositions, cashEffects, fidelities, firstDataDates: firsts };
+  return { expectedThrough, ...feed, accounts, securities, prices, snapshots, balances, flows, tradePositions, cashEffects, tradePrices, fidelities, firstDataDates: firsts };
 }
 
 /** The chain on one date for several accounts (the reconcile preview, the views' context, the valuation job). */
@@ -431,6 +443,8 @@ export interface ValuationSummaryQueryInput {
   period?: InvestmentPeriod;
   /** The start of a `custom` period. */
   from?: IsoDate | null;
+  /** False when no price provider is configured: provider-mode prices are then never "behind" (audit decision A18). */
+  priceFeed?: boolean;
 }
 
 /** The engine's period change plus the two ledger-derived figures (bigint twin of `PeriodChangeView`). */
@@ -487,7 +501,7 @@ export async function valuationSummary(db: DbOrTx, q: ValuationSummaryQueryInput
   const firsts = await firstDataDates(db, ids, fidelities);
   const start = periodStart(period, asOf, { earliest: earliestDataDate(firsts), from });
   const loadFrom = start !== null && start < asOf ? start : asOf;
-  const input = await loadValuationInput(db, { accountIds: ids, from: loadFrom, to: asOf, now: q.now, fidelities });
+  const input = await loadValuationInput(db, { accountIds: ids, from: loadFrom, to: asOf, now: q.now, fidelities, ...(q.priceFeed === false ? { priceFeed: false } : {}) });
 
   const valuations = ids.map((id) => valueAccountOn(input, id, asOf));
   const day = dayChange(input, ids, asOf);
@@ -537,6 +551,8 @@ export interface ValuationSeriesQueryInput {
   /** Closed accounts too (views design D21); without it a closed account in `accountIds` is 400. */
   includeClosed?: boolean;
   step?: SeriesStep;
+  /** False when no price provider is configured (`ValuationInput.priceFeed`). */
+  priceFeed?: boolean;
 }
 
 /** Bigint twin of `ValuationSeriesResponse`. */
@@ -555,7 +571,7 @@ export async function valuationSeries(db: DbOrTx, q: ValuationSeriesQueryInput):
   if (q.to > q.today) throw new PlanError(400, "validation", `to ${q.to} is after today ${q.today}`);
   if (dayDiff(q.from, q.to) > MAX_SERIES_DAYS) throw new PlanError(400, "validation", `A series covers at most ${MAX_SERIES_DAYS} days`);
   const ids = await investmentAccountIds(db, q.accountIds, q.includeClosed ? { includeClosed: true } : {});
-  const input = await loadValuationInput(db, { accountIds: ids, from: q.from, to: q.to, now: q.now });
+  const input = await loadValuationInput(db, { accountIds: ids, from: q.from, to: q.to, now: q.now, ...(q.priceFeed === false ? { priceFeed: false } : {}) });
   let series;
   try {
     series = valueSeries(input, ids, q.from, q.to, q.step ?? "day");

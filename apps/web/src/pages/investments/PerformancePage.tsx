@@ -7,7 +7,7 @@ import { api, query } from "../../lib/api.js";
 import { money, shortDate } from "../../lib/format.js";
 import { localToday } from "../../lib/plan.js";
 import { asOfFromParams, changeTone, formatRate, periodFromParams, periodQuery, signedMoney } from "../../lib/investments.js";
-import { benchmarkFromParams, benchmarkNote, detailRequestBody, excessText, growthEndText, mwrCell, twrCell } from "../../lib/performanceView.js";
+import { benchmarkFromParams, benchmarkNote, detailRequestBody, excessText, growthEndText, mwrCell, mwrShownRate, twrCell } from "../../lib/performanceView.js";
 import { Badge, Card, Empty, ErrorText } from "../../components/ui.js";
 import { useChartTheme } from "../../components/charts/EChart.js";
 import { seriesColor } from "../../components/charts/chartOptions.js";
@@ -184,7 +184,7 @@ export function PerformancePage() {
               </div>
               <div className="inv-stat">
                 <span className="k">Money-weighted return</span>
-                <span className={`v ${totalMwr?.failed ? "muted" : changeTone(days < 365 ? (total.xirr.period ?? null) : (total.xirr.annualized ?? null))}`}>{totalMwr?.text}</span>
+                <span className={`v ${totalMwr?.failed ? "muted" : changeTone(mwrShownRate(total.xirr, days))}`}>{totalMwr?.text}</span>
                 {totalMwr?.caption && <span className="sub">{totalMwr.caption}</span>}
               </div>
               <div className="inv-stat">
