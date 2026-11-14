@@ -83,7 +83,7 @@ Each implementer reports what was built, the tests added and their result, anyth
 
 The table of `seams.md` §8 (D1 to D18) is binding: paths, formats, sources, SHA-256 values and validation figures. `manifest.json` starts at `dataVersion: "2026.11.0"`. Every external figure in a data file names its source document, section and retrieval date in the file's `source` block or its meta file. `data.test.ts` recomputes every hash and asserts every validation figure of the table. D4 (the SSA life table) is absent at first commit (decision 11).
 
-Checked against primary documents during design: the 2026 and 2027 brackets, standard and age deductions and capital gains thresholds (Rev. Proc. 2025-32 and 2026-35), the 2026 plan and IRA limits (Notice 2025-67), the 2026 and 2027 HSA limits (Rev. Proc. 2025-19 and 2026-24), the Uniform Lifetime and Joint and Last Survivor tables (Pub. 590-B, 2025), the basis rules at death (Pub. 551), the historical return series (the NYU Stern workbook, sheet "Returns by year") and the IRS Table 2010CM.
+Checked against primary documents during design: the 2026 and 2027 brackets, standard and age deductions and capital gains thresholds (Rev. Proc. 2025-32 and 2026-35), the 2026 plan and IRA limits (Notice 2025-67) and, since 2026-11-14, the 2027 ones (Notice 2026-66), the 2026 and 2027 HSA limits (Rev. Proc. 2025-19 and 2026-24), the Uniform Lifetime and Joint and Last Survivor tables (Pub. 590-B, 2025), the basis rules at death (Pub. 551), the historical return series (the NYU Stern workbook, sheet "Returns by year") and the IRS Table 2010CM.
 
 ## Deviations from the spec (flagged)
 
@@ -102,7 +102,7 @@ Checked against primary documents during design: the 2026 and 2027 brackets, sta
 
 ## Unverified figures
 
-`seams.md` §9 is the list. Items 1, 2, 6, 8 and 17 (Social Security and the SSA life table) cannot be checked from the build environment and go to the owner in `docs/phase-4-gate.md`. Items 3 (2027 plan limits, not yet published), 4 (RMD ages 73 and 75), 5 (rounding steps), 7 (yield assumptions), 9 to 16 (presets and published study figures) are recorded in the data files' `source` blocks as assumptions or pending values. Items 18 to 20 (performance, golden digests, JSON imports under the toolchain) are measured or settled during implementation and recorded below. Item 21 is closed by step 5.
+`seams.md` §9 is the list. Items 1, 2, 6, 8 and 17 (Social Security and the SSA life table) cannot be checked from the build environment and go to the owner in `docs/phase-4-gate.md`. Items 3 (2027 plan limits; closed on 2026-11-14 by Notice 2026-66, see "Stage A, consolidated" below), 4 (RMD ages 73 and 75), 5 (rounding steps), 7 (yield assumptions), 9 to 16 (presets and published study figures) are recorded in the data files' `source` blocks as assumptions or pending values. Items 18 to 20 (performance, golden digests, JSON imports under the toolchain) are measured or settled during implementation and recorded below. Item 21 is closed by step 5.
 
 ## Recorded during implementation
 
@@ -139,4 +139,229 @@ Checked against primary documents during design: the 2026 and 2027 brackets, sta
 
 - **Step 22b, the reference fixtures through the engine and the gate suite (2026-11-14).** `reference/fixtures/r1.input.json` to `r4.input.json` (D14) are the reference builders' documents (`referenceR1Input` to `referenceR4Input` in `@meridian/retirement/testing`, from §1 of each sheet; R3's file is the 50% run, its 75% run changes only the Roth account's allocation; R3 requests 100 paths, the schema's least, and runs the 69 cohorts); a test asserts each file parses unchanged, equals its builder and carries the sheet's §1 inputs. `src/reference.test.ts` runs the engine (`runSimulation` inline, `simulatePath`) on each fixture against the independent calculator's files, with `src/referenceKit.ts` reading the path's `PathDetail` into the calculator's CSV columns. **R1 and R2:** every cell of `r1.expected.csv` and `r2.expected.csv` agrees within 0.01, money as the engine's float64 figure rounded once (the sheets' rule): all 1,596 and 2,400 money cells to the cent (largest difference 0.00, R1 2030's three half-cent cells included), every price level as the same double, every basis-point, age and filing cell equal; the sheets' §4 tables against the engine directly, the same; R2 2034's basis before the first death's reset is the detail's after-reset basis undone by the run's joint share. The stored year table differs from once-rounded cells only as strategies-outputs-web §3.11 says (totals rounded once, parts by `addUp`, bucket sums after it, `core` and `growth` in cents), and its largest difference from the CSVs is 0.02 (R2 2040, `pre_tax_1`'s ending balance, the residue of seven accounts' cents), inside the design's gate tolerance of 1.00; the design expected it under 0.02. The §5 summary figures through `runSimulation`; at most 5 and 6 `assess` calls a year. **R3:** the same 69 start years (1928 to 1996, complete cohorts), 64 and 65 funded, the same failing start years and indexes, every ending wealth (nominal and real) equal to the cent, every lifetime shortfall within 0.01 (tolerance 1.00; the table deflated row by row), the 10th, 50th and 90th percentile paths and their start years, the other mixes (64, 51, 27 of 69), HC-E1's 1966 path row by row within 0.01, and 92.8% and 94.2% within 5 points of the study's 95% and 98% (`published.json`, unverified). **R4:** 7,040 of 10,000 paths (70.40% against 69.94%, tolerance 1.5 points) and a median ending wealth of 337,269.91 against 337,269.43 (tolerance 8%; the near equality is chance: seeds 2 to 8 give 325,198 to 349,411); the 10th and 25th percentiles 0; the engine's lognormal parameters equal r4.md §2's formulas to 1e−15; two threads give the same output as inline. No disagreement was found, so no engine, sheet or calculator change was needed. `src/gate.test.ts` is the gate in one file: it imports the hand-calculated suites of the four areas (the tax area's, the engine's with T41 and T43, the strategies', withdrawals' and outputs', shared's step-3 helpers and OUT cases) and both halves of R1 to R4's three-way agreement (`reference/reference-sheets.test.ts`, `src/reference.test.ts`), and checks that every case id strategies-outputs-web §7.5 requires names a test in an imported suite; HC-D1 (the resolver's cases 7 and 11) is a todo for step 23, and T44 to T47 (harness, properties, source scan, performance) stay in their own files. Measured: the gate runs 1,099 tests in about 45 s on one worker and makes the package suite about 60 s instead of 32 s. Built differently: the five heap checks of the zero-allocation rule (ST-17's, the withdrawal planner's, the flows', the tax record's and Social Security's) run only in their own files (`src/testIsolation.ts`, `runsInOwnFile`), because inside the gate one module graph runs every suite and the hot call sites, having seen test objects of other shapes, box doubles they do not box in the loop alone (ST-17 measured 32 bytes a call there, the planner's 16, none in their own files); the gate skips them and keeps every value check.
 
-(Filled in as steps land: measured run time and storage, the golden digest, anything built differently from the design and why.)
+### Stage A, consolidated after the review (2026-11-14)
+
+Three reviewers checked Stage A (steps 1 to 22). Every finding was reproduced before it was fixed, and all twelve held; each fix landed test-first (a failing test, the fix, the test passing) in commits `e826eac`, `72dfafb`, `2383fe6` and `b206294`. This subsection is the record of Stage A as built. Where it differs from a step entry above, this subsection is current: the 2027 limits are no longer pending, T43 runs on seed 20261110, the bracket rates use `ratioToBp`, and `runsInOwnFile` takes the test path from its caller.
+
+**The review's findings and what was done**
+
+- **tax-01 (high), the 2027 plan limits.** Real: IR-2026-136 and Notice 2026-66 (`https://www.irs.gov/pub/irs-drop/n-26-66.pdf`, fetched 2026-11-14, SHA-256 `d36060fae77e49760073db883f048abb3076ac5d9cf73772977b4cd4aca46aba`, the reviewer's hash) were out on 2026-11-12. `tax/federal-2027.json` now holds deferral 25,500, catch-up 8,500, at 60 to 63 11,750, § 415(c) 75,000, IRA 7,500 and IRA catch-up 1,100, with `pending` empty and both documents as sources. `dataVersion` is **2026.11.1** and `DATA_CHECKSUM` is `fa6a47029ac14255a654e0e72523b55589a570bf9ce62522693f1c94a8e343b9`, added to `RELEASED_CHECKSUMS`. The shared fixture's and the reference inputs' data version followed. D6, A7, I5 and J2 are re-derived in their comments: in 2028 to 2030 at F = 1.03, 1.05575 and 1.0451925, the deferral is 26,000 / 26,500 / 26,500, the 60-to-63 catch-up 11,750 / 12,250 / 12,250 and the annual additions 77,000 / 79,000 / 78,000. `limits_pending` no longer appears with the bundled data, so it is now tested on a fixture year file. Seams §9 item 3 is closed.
+- **tax-02 (medium), the married couple's HSA limit.** Real (Pub. 969, "Rules for married people"). When both spouses contribute to an HSA (so both are eligible individuals) and they file jointly, `capContributions` cuts the parts above each spouse's own age-55 catch-up together, in proportion to the amounts entered, to one family limit for the months either spouse is under 65. The cut is saved after tax. Tests: both spouses 45 at 8,750 each gives deposits of 4,375 + 4,375, wages for tax 191,250 and tax 24,415.00; both 56 gives 5,375 + 5,375 = 10,750 and tax 23,975.00; one spouse alone keeps the whole family limit.
+- **tax-03 (low), SECURE 2.0's Roth catch-up rule.** Real and not modelled: it is the new `NOT_MODELLED` entry `roth_catch_up` (32 entries now). The thresholds are 150,000 (Notice 2025-67) and 155,000 (Notice 2026-66). K8 pins it on the C26 case: tax 25,814.00 as modelled against 28,514.00 under the rule. Reason for not modelling it: the rule needs the prior year's wages from the same employer and a Roth 401(k) account to receive the money, and neither is in `SimInput`; a scheduled Roth account would change the bucket accounting of every employer plan.
+- **engine-01 (high), the first drawdown year.** Real, reproduced with the reviewer's probe: retiring in December 2030 saved 81,957.50, and the inputs fixture saved 60,850 in 2035 at 0% returns. **Ruling** (plan decision 7 and seams C52 applied to C15's month windows): the months of the first drawdown year before `spending.startMonth` are accumulation months. Their stream income and Social Security, the employee contributions and payroll tax that fall in them, and the federal tax on that income alone stay out of the year's net: net = cash income + RMD + w − employee − payroll − need − (tax − pre-start tax) − pre-start take-home. The parts are `preStartOf`, `incomePreStartInto` and `contributionsPreStartInto` in `flows.ts`, step 2b `preStartYear` in `loop.ts` (Social Security for those months is a period of its own, on the state copied before the year's call), `YR.PRE_START_CASH` (`YR_REC` 27) with `YR.TAX_BASELINE`, and the optional shared `YearRow.preStart { takeHome, tax }`, which lets the row's cash identity be shown. With the probe's household, retiring in December, July or January 2030 now withdraws 5,000, 30,000 or 60,000 and saves nothing; the fixture's 2035 saves 2,047. A working spouse's take-home from `startMonth` still counts against spending (seams §4), so the year's withdrawal moves by about a month's take-home from one retirement month to the next (982.50 between July and August in the couple case).
+- **engine-02 (low), price levels.** Real. `priceLevelString` writes every finite level exactly: the float form below 2^53 scaled units, the double's exact binary value (bigint) above it, half away from zero with the 1e-7 guard. Shared `PriceLevel` admits up to 309 integer digits. A level that rounds to 0 (below 0.5 × 10^−9, which only a deflating fixed or custom model reaches over decades) is stored as 0.000000001, the form's smallest positive level. The review's three models run through `simulatePath` (at +200% a year every level is 3^(t+1) exactly).
+- **engine-03 (low), basis-point rounding.** Real. The year row's bracket and next-gain rates, the rules view's data fractions and the Social Security preview's factors go through `units.ts` `ratioToBp` (0.00145 → 15). No bundled output changed.
+- **contracts-01 (low), integer bounds.** Real. `SimInput` bounds its integers to the profile's ranges: stream `realGrowthBp` −500 to 1,000, healthcare growth 0 to 1,000, long-term-care `lastYears` 1 to 10, claim ages 744 to 840 months, and revisions as safe integers. `prepare` / `validateInput` check the same ranges again (`income_invalid`, `spending_invalid`). `aggregate` refuses a per-path figure beyond the int64 series as `EngineInputError("result_out_of_range")` instead of wrapping it; a valid fixed model at +1,000% a year still reaches that error.
+- **contracts-02 (low), phase order.** Real. `SimInputSpending.phases` must run in strictly ascending years (a refinement, and `spending_invalid` in `prepareStrategies`).
+- **contracts-03 (low), leading zeros.** Real. `PlanCents` and the frozen input's `StoredCents` refuse leading zeros (`"0100"`), so equal amounts have one spelling and one hash.
+- **contracts-04 (low), the determinism rule.** Real: `Math.asinh`, `globalThis.Math.random()` and `const M = Math` passed both layers. The root ESLint block and the T46 scan are now an allow-list of the exact `Math` functions (sqrt, floor, ceil, trunc, round, abs, min, max, imul, sign, fround). A computed member, an alias of `Math` and the global object's `Math` or `Date` are refused, and both layers now cover `packages/shared/src/retirement` outside tests. Bigint `**` stays allowed (exact; shared `percentile.ts` and `results.ts` use it).
+- **contracts-05 (low).** Real. T43 now runs on T41's first run (seed 20261110); its equalities held.
+- **contracts-06 (low).** Real. `src/testIsolation.ts` no longer imports vitest (callers pass `expect.getState().testPath`). ESLint refuses vitest in non-test engine sources, and a scan checks that every non-test source imports only relative paths, `@meridian/shared` and `zod` (`src/node` may also import `node:*`, and its boot entries `tsx`).
+- **ENGINE_VERSION is 1.0.1** (tax-02, engine-01 and engine-03 can change numbers). The T41 golden digests, R1 to R4 and every reference comparison are unchanged: those households are retired from the plan's start and make no contributions.
+
+**Deviations from the designs** (each with its reason; the step entries above give the detail)
+
+- *Package, units and determinism.*
+  - The error classes are in `src/errors.ts`, not `prepare.ts`, because the self-test needs them first.
+  - `selfTest(fns?)` takes test doubles (T46).
+  - `DATA_CHECKSUM` is computed in `version.ts` with a pure SHA-256 (`src/sha256.ts`; the core may not use `node:crypto`), not written into the generated module.
+  - The determinism rule is broader than §3.14: an allow-list; `Date` refused everywhere under `src`; `process`, `performance`, `crypto` and Node built-ins refused outside `src/node`; vitest refused in sources; and the shared retirement code is covered. The T46 scan parses with the TypeScript compiler.
+- *Shared contracts.*
+  - `PlanIncomeKind`, not `IncomeKind`, which Phase 3 already exports.
+  - Stored results hold no nulls: the strategies design's nullable fields are optional keys (`failure.firstDepletionYear` and `medianDepletionYear`, C46).
+  - Enumerations are tightened where the designs give the value set (model kind, cohort mode, preset, mortality table, an 8-hex digest).
+  - `SimSummary.dataChecksum` (C11).
+  - `ParametricParams` are integers (C3); `bills.initialBp` and `inflation.initialBp` are optional and mean the data file's last year, because 2025's 0.027351 is not representable in basis points.
+  - A custom preset requires its params (a refinement).
+  - Request bodies are `.strict()`.
+  - Added: `PLAN_LIMITS`, `ExpenseRatioPpm`, `UnsupportedSchemaVersionError`, `upgradeProfileDoc`, `defaultProfileDoc`, `DEFAULT_ASSET_CLASS_MAP`, `SYNTHETIC_CASH_ACCOUNT_ID`, `RETIREMENT_ROUTES`, `RetirementCard`, and `RetirementRulesView.socialSecurityRules`.
+  - After the review: the integer bounds, canonical cents and phase order of `SimInput`, `PriceLevel` of up to 309 digits, and `YearRow.preStart`.
+- *Shared helpers.*
+  - `deflateYearRow(row, options?)` makes growth the roll-forward plug, and `deflateYearTable` threads the previous row's real total.
+  - `addUp` runs only on groups whose nominal parts sum, and never changes a part's sign.
+  - `rankIndex` takes 0 to 100.
+  - `overrideChanges` is sorted and skips no-op leaves.
+  - `pathStory` and `realReturnBp` were built at step 20, in shared `results.ts`.
+- *Data.*
+  - First `dataVersion` 2026.11.0 (C11), now 2026.11.1.
+  - Table II's provenance is in `rmd/joint-life.meta.json`, because the pinned bytes have no sources block.
+  - `tax-drag.json` interest modes are `prior_bill_plus_spread` and `bill_return` (C17, C18).
+  - `ss/rules.json` gains `verification` marks (plan decision 11).
+  - Published figures are asserted in `data.test.ts`, not hard-coded in the loader.
+- *Reference sheets (step 5).*
+  - **R2's person 2 is an `estimate` claiming at full retirement age in 2028-01.** She is born 1961, so "both at full retirement age" (C50) cannot mean receiving in 2027. R2 then fails in 2056 with a 59,264.03 shortfall (28,960.03 in today's dollars); the other reading, already receiving from an earlier claim, succeeds. **The lead should confirm this reading.**
+  - R2's taxable basis is split by value under C18 (b): 204,000 / 136,000.
+  - R1 2030's goal is a half-cent cell, printed .63 where the design printed .62.
+  - Unstated details are fixed in the sheets: January birth months, retirement and spending start 2027-01, state CO.
+  - `socialSecurityParts` and the non-taxable `basisByAccount` are not tabulated.
+  - R1 and R2 have no wages, so payroll tax and the limits are covered by the I cases and step 17 instead.
+- *Return models and mortality.*
+  - T9, T15 and T12's mortality rows are re-derived at f = 2/12 and C28's horizon.
+  - The market path carries the full-year inflation and bill return, and the model carries `billRef0` (C22, C18).
+  - The fixed model has one path when every life is fixed, and `path_count_adjusted` is raised for it.
+  - `historical_wrapped` is raised whenever the mode is wrap.
+  - A table age below 1 is read at 1.
+  - `qScale` exists only for T17.
+  - The models live in `src/models/`.
+  - `bootstrapIndices` takes an `RngKey` (C5).
+- *Tax law and the federal tax.*
+  - §3.4's claim that tax never rises with `QUAL_DIV` alone is false in one band (12% ordinary above the 0% gains maximum); K1 asserts the bounded exception with a hand case (7,252.00 against 7,255.00).
+  - `federalTaxInto` returns nothing (C30).
+  - `CompiledTaxLaw.preStartFrozen` and `colaStep` are added.
+  - Index modes are flags (`MODE_WAGE` 4).
+  - `compileTaxLaw` has extra refusals (value shapes, a taxed 0% band).
+  - `TaxInputError` is new.
+  - `taxYearDetail` makes its parts add up with `addUp`.
+  - Worksheet lines carry only the line numbers the design cites.
+  - `limits_pending` is a compile warning whatever the contributions.
+- *Penalties, Roth basis and RMDs.*
+  - `rothFreeAmount` never exceeds the balance.
+  - `mergeRothAtDeath` empties the decedent's record.
+  - A zero contribution does not start the five-year clock.
+  - `requiredMinimumDistribution` applies × f and the cap itself (C36), superseding the engine design's loop formula.
+  - `rmdStartAge` returns a number.
+  - The penalties use the plan clock's month numbers (`calendar.ts` was removed).
+- *Social Security.*
+  - The COLA rounding is `roundCola` with a 1e-9 guard: H9's 0.05% failed under step 6's code because `1.0005 − 1` is 0.000499999999999945 in float64.
+  - The hot path reads one `SsPlan.table`, because V8 boxed doubles after plans of other shapes.
+  - The SO parts are whole dollars and measured before the earnings test.
+  - A `receiving` PIA is backed out by one rational division.
+  - A statement older than the history is indexed from 2016.
+  - The route-24 mapping lives in `socialSecurity.ts`.
+- *Limits, payroll and tax drag.*
+  - The period rule is inside the payroll and limit functions (C23), and the HSA months are counted inside the period: 812.50, not the design's 2,031.25, for someone turning 65 in a partial first year.
+  - The injectable record holds out-record forms (`PT`, `CL`), because the scalar forms boxed one double a year.
+  - The tax drag is three steps (`compileTaxDrag`, `compileAccountTaxDrag`, `taxableYieldsInto`), and an asset a target leaves keeps the nearest year's rates.
+  - `NOT_MODELLED` drops `loss_step_down` (C19) and `rebalance_lag` (C17), rewords `short_term_sales` and `wash_sales_lots`, and gains `roth_catch_up`.
+  - `TAX_FUNCTIONS` adds `rothFreeAmount` and `taxableYieldsInto`.
+  - There is no `cash_series_missing`.
+  - The bundle test runs from `packages/shared/node_modules/.cache`, where `re2js` resolves.
+- *Trades and strategies.*
+  - Healthcare per person is `healthcare` (the HSA cap) and `healthcareSpend` (C35).
+  - The hook reads `plannedYearOf(view)`, and VPW goes through the record-based `vpwRawPercentageInto`, so that no double is boxed (ST-17).
+  - `fillNeeds` and `settleSpending` are pure functions.
+  - Extra guards: a long-term-care reserve whose years fall before the drawdown sets nothing aside; an overdraw within `CASH_TOL` empties the account exactly; a holding sold whole has basis exactly 0.
+  - ST-2 and ST-4 are asserted in exact form (1.025^n; 927,000 ÷ 686,250).
+- *Prepare and flows.*
+  - `prepare(input)` takes no hooks: seams §2.5 moved them to the tax record.
+  - `src/flows.ts` holds the month-share tables and the allocation-free year functions, with the price level kept as `cpi[t]^a × cpi[t0]^b`.
+  - Extra error codes (`too_many_*`, `data_version_mismatch`, `household_invalid`, `account_invalid`, `income_invalid`, `contribution_invalid`, `conversion_invalid`, `conversion_no_roth`, `surplus_account_missing`, `glide_order`, `start_year_unsupported`, `plan_invalid`, and since the review `result_out_of_range`). `validateInput` reports the limit issues plus the first other error.
+  - Open decisions made: limit groups by account type; an inflation-scaled contribution stops at its owner's death; a cash account is all bills.
+  - Engine warnings `intl_modelled_as_us`, `other_mapped_to_stocks` and `first_year_lump`.
+- *The year loop.*
+  - A record net in [−`CASH_TOL`, 0) settles as 0, the solver's band.
+  - The C26 caps are applied in the loop. Since the review, the married couple's HSA limit is shared and the first drawdown year is split at `startMonth`.
+  - `WAGES` is floored at 0 per person.
+  - The HSA's qualified spending is shared in proportion to the withdrawals.
+  - The year is split into step functions taking `(ps, t)`, and the penalty shares are per-thread tables built through the record at one dollar (so a stub `preTaxPenaltyBase` must be linear), both to keep doubles from being boxed.
+  - `createPathState(run, hooks, tax)` takes the hooks explicitly.
+  - `WN.ROTH_BASIS_UNKNOWN` notes the whole non-qualified Roth withdrawal, and the unknown-basis flag is per path and passes to a survivor.
+  - E3, E4 and J3 are set in plan years the plan can reach.
+  - T45's "COLA never falls" is the price-level identity instead (C20).
+- *The withdrawal order.*
+  - A target year with nothing available takes one call.
+  - WD-13's `topped_up` is checked as a condition.
+  - WD-19 measured at most 12 calls in a year where the design measured 10 (the contract limit is 24).
+  - The HSA keeps tiers 2 and 9 whatever the owner's age, with its 20% charged in `assess`.
+- *Aggregation and results.*
+  - T36's second example is re-derived without the shortfall key (p25 is path 6).
+  - `toYearTable(detail, run)` takes the run.
+  - `EngineResult` is internal, with bigint cents.
+  - `simulateChunk`, `simulateRun` and `simulatePathDetail` were built at step 20.
+  - A path's end figures are its last year's own.
+  - Wilson's bounds are exact at 0 and n.
+  - `realizedGains` includes gain distributions.
+  - `essentialCoverageBp` is given only in drawdown years.
+  - Funded spending is allotted healthcare, care, goals, then core.
+  - A death year's basis is shown after the reset.
+  - `pathStory` has a one-cent below-plan tolerance.
+  - OUT-9's R1 coverage is re-derived as 5308.
+- *The pool and the facade.*
+  - T41's digests are re-pinned from this implementation; the design's prototype is lost.
+  - The loop's `simulatePath` is exported as `simulatePathInto`.
+  - `runThreadMain(options?)` exists for T44's stub threads.
+  - Added: `RunOptions.chunkPaths`, `SimPool.liveWorkers`, and F9's series in `SimOutput`.
+  - Threads are clamped to 64 and started lazily.
+  - With no `threadEntry`, the pool uses the dev entry.
+  - `maxRunMs` counts from the run's start.
+  - The bench workload's amounts are the bench's own.
+- *Reference and gate (steps 22a, 22b).*
+  - The calculator implements only what the sheets exercise.
+  - `tsx` is a devDependency for its scripts.
+  - The expected CSVs carry the columns §2.11 states as 0 or equal.
+  - R4 keeps the calculator's own run (69.94%, median 337,269.43).
+  - R1 and R2 are compared on the engine's float figures rounded once; the stored table is within 0.02 of them.
+  - The five heap checks are skipped inside the gate (their V8 measurement means something only in its own file).
+  - T44 to T47 run outside the gate.
+  - `r3.input.json` is the 50% run with 100 requested paths.
+  - `reference.test.ts` lives in `src/`.
+- *Review rulings recorded here.*
+  - `tax-03` is listed, not modelled.
+  - `contracts-01` uses the profile's ranges, not the reviewer's 1..120 for `lastYears`, and `result_out_of_range` is an `EngineInputError`, because the input produced the figure.
+  - `engine-02` floors the stored level.
+  - No reference scenario has a mid-year retirement: engine-01's rule is pinned by hand cases in `loop.real.test.ts`, which the gate imports, because the independent calculator refuses rules the sheets do not state.
+
+**Measured** (one 4-vCPU Xeon VM, Node 22.23; real tax functions; wall times vary by about ±20%)
+
+- Engine, reference workload (engine-and-returns §3.15), one thread: 2.9 to 3.3 µs per path-year (10,000 paths × 60 years in 1.8 to 2.0 s), aggregation 116 to 120 ms. On three threads with the bundled entry: 1.4 to 2.0 s cold, 1.0 to 1.6 s on a started pool. `assess`: 1.64 / 1.73 calls per path-year (at most 8 / 10 in a year) and 2.98 / 3.06 tax evaluations. All are inside T47's limits except the GC row (below, under "Not done").
+- The inputs fixture (10,000 paths × 47 years, bootstrap): 1.5 to 1.6 s inline at step 21, and 1.9 s inline in this session after the review fixes (tsx, unbundled). On three threads: 1.3 s cold and 0.76 to 0.94 s on a started pool with the bundled entry; 2.1 s cold through the dev `tsx` entry. The seven stored percentiles are re-simulated with `simulatePath` in 81 ms.
+- Stored sizes for the fixture run (C48; JSON text before Postgres compresses it): the seven percentile year tables 678,852 bytes in all, the largest 97,529 (the 2 MB guard per table holds); the four per-path series 260,000 bytes (`i64le` × 3 and `i16le` for 10,000 paths); `SimSummary` 792 bytes, `FanSeries` 8,826, the frozen input 6,863. About 0.95 MB a run, mostly the tables, against seams §9 item 18's estimates of 0.3 MB a run and 0.6 MB for the seven tables. Database storage itself is measured at step 31.
+- Pieces: `federalTaxInto` 1,000,000 calls in 135 to 165 ms; `fillPathTables` 0.42 µs per path-year; `socialSecurityYear` 0.25 µs per annual call; the solver 2.73 `assess` calls per household-year in WD-19's sweep (99th percentile 7, maximum 12).
+
+**Golden digests** (T41, seed 20261110, `src/node/golden.test.ts`; pinned at ENGINE_VERSION 1.0.0 / DATA_VERSION 2026.11.0 and unchanged at 1.0.1 / 2026.11.1)
+
+- Bootstrap, mean block 10, 2,000 paths: 1,848 succeed; Wilson [9116, 9348] bp; digest `d35dba24`; path 0 ends at 1,599,167.000970203 (bits `413866bf003f954e`).
+- Bootstrap, mean block 5: 1,857 succeed; digest `ad40b925`.
+- Parametric historical, 2,000 paths: 1,766 succeed; digest `93f5ee99`. With 10,000 paths: 8,753 succeed; digest `c45a84b8`.
+- Conservative, 10,000 paths: 6,858 succeed; digest `a473e8ba`.
+- Historical, complete cohorts: 65 of 69 succeed; digest `886d0ed8`.
+- The design's digests (`c2b4dbe3` …) came from a lost prototype and differ only in the last bits of some ending values; every count, bound, percentile and path-0 bit pattern equals the design. The inputs fixture's run gives digest `7971c15e` (10,000 paths).
+
+**Figures still unverified**
+
+- Social Security (seams §9 items 1, 2, 6, 8 and 17): `www.ssa.gov` refuses automated requests, so no figure is primary.
+  - Secondary (two named sources each): the claim window, the reduction and credit fractions, the spousal and survivor constants, the earnings-test shares and amounts (2027's 67,920 is the weakest), the COLA step and the history 2017 to 2025, and the 2.8% and 3.6% COLAs.
+  - Unverified: the full-retirement-age rows 1939 to 1942 and the survivor table's two-year shift.
+  - Coded without a data figure: the January rule for delayed credits, deemed filing, the order "reduce for age, then cap", the deceased's factor, the credit-back in whole months, and SSA's truncation steps.
+  - The SSA life table is not installed (D4).
+  - These go to the owner in `docs/phase-4-gate.md` (step 31).
+- RMD start ages 73 (born 1951 to 1959) and 75 (1960 and later): secondary, the 2024 proposed regulations (item 4).
+- The statutory rounding steps after 2027: the Code text was not fetched; the published tables of 2023 to 2027 are consistent with them (item 5).
+- Every yield, qualified share and the 1% spread in `tax-drag.json`, and the year-0 bill reference of 4.21%: assumptions (item 7).
+- Rev. Proc. 2026-35's "[Release Date, 2026]" placeholder (item 9).
+- The chained-CPI wedge (item 10).
+- The conservative preset's means and the mean block of 10: assumptions (item 11).
+- The 2025 S&P 500 return, 17.72% in the workbook against 17.78% on the page (item 12).
+- The Bengen, Guyton and Klinger and VPW parameters: VPW is reproduced from nine table values; the Bogleheads table was not fetched (items 13 to 15).
+- Trinity's 95% and 98% (secondary; `published.json` says `verified: false`) (item 16).
+- The performance figures above, from one machine; whether `os.availableParallelism()` reflects a container quota was not tested (item 18).
+- The design's T41 digests, lost and re-pinned (item 19).
+- Also unverified:
+  - The AS241 coefficients were compared with CPython's only.
+  - The Threefry constants were not fetched (the known-answer vectors reproduce).
+  - mulberry32 has no published known-answer vector.
+  - The calculator's 2027 law was transcribed from the sheets; a scratch cross-check against the data file agreed.
+  - R2's Social Security reading needs the lead's confirmation (above).
+- Closed: item 3, by Notice 2026-66; item 20 (static JSON imports work under tsc, Vitest, esbuild and tsx); item 21, by step 5.
+
+**Not done in Stage A**
+
+- **The zero-GC budget of engine-and-returns §3.15 is not met.** T47's opt-in GC row (`PERF=1`) fails: parametric runs make 2 to 4 GCs over 2,000 paths, bootstrap runs 0 or 1. The sources are:
+  - the year loop, about 118 bytes per path-year;
+  - `fillPathTables`, about 42 bytes per path-year;
+  - the parametric `fillPath`, about 158 bytes per path-year (`uniformAt`, `invNorm` and `detExp` return doubles V8 does not always inline);
+  - the scalar-returning `requiredMinimumDistribution`, `rothFreeAmount` and `preTaxPenaltyBase`.
+
+  Results are unaffected; each minor GC costs about 1 ms. The fix is an allocation hunt with T41's digests as the bit-identity check.
+- `federalTax.bench.ts` and the `--expose-gc` heap check of tax-rmd-ss §3.5 are not added (the speed was measured with scratch benches).
+- No reference scenario with a mid-year retirement month (above).
+- SECURE 2.0's Roth catch-up rule is listed, not modelled.
+- Left to Stage B:
+  - The `JobType` and `AuditEntity` additions with their db mirrors.
+  - `DashboardView.retirement` as `RetirementCard.nullable()`.
+  - `resolvePlan` (step 23) and HC-D1 (an `it.todo` in `gate.test.ts`).
+  - `baselineHash` and `diffBaselines`.
+  - The workspace wiring into `apps/api` and `apps/worker`, `simThread.ts` and the bundles (step 27).
+  - The storage measured in Postgres, `apps/api/src/retirementGate.test.ts` and `docs/phase-4-gate.md` (step 31).
+
+(Stage B entries follow as its steps land: the measured run time and storage in Postgres, anything built differently from the design and why.)
