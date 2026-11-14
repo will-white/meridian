@@ -25,13 +25,23 @@ import {
 import { type Assessment, type AssessFn, type EngineHooks, type TaxFunctions, type YearView, TAX_FUNCTIONS, createAssessment } from "./hooks.js";
 import { CL_REC, HW, HW_REC, PROG_REC, PT_REC, RB_REC, RW_REC, SO_REC, SS_REC, TAX_IN, TAX_OUT, TAX_REC, TYI_REC, TY_REC, WN_REC } from "./tax/layout.js";
 import { IY_REC } from "./flows.js";
-import { CARRY_REC, PP_COLUMNS, PP_REC, createAssessFn } from "./assess.js";
+import { CARRY, CARRY_REC, PP_COLUMNS, PP_REC, createAssessFn } from "./assess.js";
 
 export { CARRY, CARRY_REC } from "./assess.js";
 import { type TradeResult, createTradeResult } from "./trades.js";
 import { periodMonths, periodStart } from "./clock.js";
 import { type NumberKey, doubleFields } from "./doubleFields.js";
 import { earlyFractionBefore59Half, earlyFractionBefore65, separatedAt55 } from "./tax/penalties.js";
+import { seedRothFrom } from "./tax/rothBasis.js";
+
+/**
+ * Slots of `PathState.pathScalars`: the path's ending and lifetime sums as the loop's `endYear`
+ * leaves them after each year, which `recordPath` (aggregate.ts) copies into its chunk with
+ * `TypedArray.prototype.set` from one-slot views (`pathScalarViews`): it runs once per path, mostly
+ * unoptimized, where reading a double field or an array element boxes the double.
+ */
+export const PATH_SCALAR = { END_REAL: 0, END_NOMINAL: 1, SHORTFALL_REAL: 2, TAXES_REAL: 3, SPEND_REAL: 4 } as const;
+export const PATH_SCALAR_REC = 5;
 
 /** The mutable implementation of `YearView` the loop writes. */
 export type MutableYearView = { -readonly [K in keyof YearView]: YearView[K] };
@@ -62,6 +72,13 @@ export interface PathState {
   readonly owner: Int8Array;
   /** The tax area's Roth ordering records (`RB`), one per person at `i × RB_REC` (seams C32). */
   readonly roth: Float64Array;
+  /**
+   * The Roth records and the carry at the start of every path (`seedRoth` of the prepared seeds;
+   * the carried loss), copied whole by the loop: work done once per path runs unoptimized for most
+   * of a run, where every double moved one at a time is boxed.
+   */
+  readonly rothStart: Float64Array;
+  readonly carryStart: Float64Array;
   /** The Social Security state (`SS`) and the year's output (`SO`). */
   readonly ss: Float64Array;
   readonly so: Float64Array;
@@ -271,6 +288,9 @@ export interface PathState {
   conversionsSkipped: number;
   /** Years of the path whose gross-up stopped with a surplus beyond the tolerance (warning `grossup_not_converged`, a count of path-years). */
   notConvergedYears: number;
+  /** `endReal`, `endNominal`, `shortfallReal`, `taxesReal` and `spendReal` as of the last year simulated (`PATH_SCALAR`), and a one-slot view of each. */
+  readonly pathScalars: Float64Array;
+  readonly pathScalarViews: readonly Float64Array[];
   /** End-of-year portfolio, nominal and in today's dollars, and funded spending in today's dollars (NaN in accumulation years and after the path's end). */
   readonly totalNominal: Float64Array;
   readonly totalReal: Float64Array;
@@ -308,11 +328,13 @@ const PathStateObject = function PathStateObject(this: PathStateFields, run: Pre
   this.basis = new Float64Array(A * 3);
   this.owner = new Int8Array(A);
   this.roth = new Float64Array(2 * RB_REC);
+  this.rothStart = new Float64Array(2 * RB_REC);
   this.ss = new Float64Array(SS_REC);
   this.so = new Float64Array(SO_REC);
   this.taxTable = new Float64Array(Y * 2 * TAX_REC);
   this.progTable = new Float64Array(Y * PROG_REC);
   this.carry = new Float64Array(CARRY_REC);
+  this.carryStart = new Float64Array(CARRY_REC);
   this.strategy = new Float64Array(STRATEGY_STATE_LENGTH);
   this.wn = new Float64Array(WN_REC);
   this.rothBasisUnknown = new Uint8Array(2);
@@ -441,6 +463,8 @@ const PathStateObject = function PathStateObject(this: PathStateFields, run: Pre
   this.spendReal = 0;
   this.conversionsSkipped = 0;
   this.notConvergedYears = 0;
+  this.pathScalars = new Float64Array(PATH_SCALAR_REC);
+  this.pathScalarViews = Array.from({ length: PATH_SCALAR_REC }, (_, k) => this.pathScalars.subarray(k, k + 1));
   this.totalNominal = new Float64Array(Y);
   this.totalReal = new Float64Array(Y);
   this.spendingReal = new Float64Array(Y);
@@ -517,6 +541,8 @@ export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFu
   view.rothFree = ps.rothFree;
   view.hsaPenaltyShare = ps.hsaShare;
   ps.assess = createAssessFn(ps);
+  for (let i = 0; i < P; i++) seedRothFrom(ps.rothStart, i * RB_REC, run.rothBasis0, i, run.rothFunded[i] === 1, run.startYear);
+  ps.carryStart[CARRY.LOSS] = run.lossCarryIn;
   // The penalty fractions and shares by person and plan year (tax-rmd-ss §3.7.1, seams C33).
   const hw = new Float64Array(HW_REC);
   const oneDollar = Float64Array.of(1);

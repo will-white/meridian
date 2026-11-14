@@ -24,9 +24,14 @@ export function resetPathWarnings(wn: Float64Array): void {
   wn.fill(0, 0, WN_REC);
 }
 
-/** `wn[slot] = max(wn[slot], amount)`: the largest amount of one year on the path. Allocates nothing. */
+/**
+ * `wn[slot] = max(wn[slot], amount)`: the largest amount of one year on the path. Allocates nothing.
+ * The store is made every time (the old value when it stays): the amounts are mostly 0, and a
+ * store first reached in an optimized year deoptimizes the function that inlined this one.
+ */
 export function noteWarning(wn: Float64Array, slot: number, amount: number): void {
-  if (amount > wn[slot]!) wn[slot] = amount;
+  const prev = wn[slot]!;
+  wn[slot] = amount > prev ? amount : prev;
 }
 
 /** A chunk's (or the run's) merged path warnings (seams C41's `ChunkSummary.warnMax` and `warnPaths`). */

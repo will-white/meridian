@@ -88,7 +88,13 @@ export function settleSpending(decision: SpendDecision, f: number, drawdown: boo
   settleSpendingFor(decision, SCALAR, out);
 }
 
-/** `settleSpending` with its inputs from the record `s`. */
+/**
+ * `settleSpending` with its inputs from the record `s`. Every case's figures are computed and the
+ * results chosen among them (the module comment's three cases): an operation first reached in a
+ * case the warm-up never saw (the first shortfall of a run) deoptimizes the loop's function that
+ * inlined this one, which then runs unoptimized and allocates until it is compiled again. In a
+ * target year the gross-year figures are NaN and not chosen.
+ */
 export function settleSpendingFor(decision: SpendDecision, s: SettleInput, out: SpendingOutcome): void {
   const f = s.yearFraction;
   const drawdown = s.drawdown;
@@ -96,23 +102,23 @@ export function settleSpendingFor(decision: SpendDecision, s: SettleInput, out: 
   const rmdTotal = s.rmdTotal;
   fillNeedsFor(decision, s, out);
   const need = out.need;
-  if (net < 0) {
-    const shortfall = -net < need ? -net : need;
-    out.shortfall = shortfall;
-    out.funded = need - shortfall;
-    out.surplus = 0;
-  } else if (Number.isNaN(decision.gross)) {
-    out.shortfall = 0;
-    out.funded = need;
-    out.surplus = net;
-  } else {
-    const released = decision.gross * f + decision.lump;
-    const excess = rmdTotal > released ? rmdTotal - released : 0;
-    const extra = net > excess ? net - excess : 0;
-    out.shortfall = 0;
-    out.funded = need + extra;
-    out.surplus = net - extra;
-  }
+  const short = net < 0;
+  const target = Number.isNaN(decision.gross);
+  // net < 0: the shortfall, at most the need.
+  const unfunded = -net;
+  const shortfall = unfunded < need ? unfunded : need;
+  const fundedShort = need - shortfall;
+  // A gross year: only the RMDs the rule did not call for are saved.
+  const released = decision.gross * f + decision.lump;
+  const overRule = rmdTotal - released;
+  const excess = rmdTotal > released ? overRule : 0;
+  const spendable = net - excess;
+  const extra = net > excess ? spendable : 0;
+  const fundedGross = need + extra;
+  const surplusGross = net - extra;
+  out.shortfall = short ? shortfall : 0;
+  out.funded = short ? fundedShort : target ? need : fundedGross;
+  out.surplus = short ? 0 : target ? net : surplusGross;
   out.failed = drawdown && out.funded + CASH_TOL < out.floorNeed;
   out.belowPlan = drawdown && out.funded + CASH_TOL < out.plannedNeed;
 }

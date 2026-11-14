@@ -388,6 +388,8 @@ export interface SsPlan {
   readonly warnings: readonly SsCompileWarning[];
   /** What the hot path reads: the rules record (RU), the plan's switches (PL) and two person records (SP). */
   readonly table: Float64Array;
+  /** The state (`SS`) at the start of every path, which `resetSsState` copies. */
+  readonly initialState: Float64Array;
 }
 
 /** The plan's switches in `SsPlan.table`, after the rules record. */
@@ -409,12 +411,19 @@ const SP = {
   CREDITS: 9,
   PIA_AT_START: 10,
   /**
+   * The factor of the person's spousal excess (`spousalFactor` at the age the later of the two
+   * claims makes them), a constant of the plan: the hot path copies it into the state when the
+   * excess starts instead of computing it once per path (a function called once per path runs
+   * unoptimized for most of a run and allocates for each double it computes). 0 without a partner.
+   */
+  SPOUSAL_FACTOR: 11,
+  /**
    * `retirementFactor(c, fra)` for every claim month `c` from the earliest (744) to the latest (840),
    * at `FACTOR0 + c − 744`: the own factor in pay is always one of them (an early claim credited
    * back is a later claim; a delayed claim with k credits is a claim at `fra + k`), so the hot path
    * reads it instead of computing it.
    */
-  FACTOR0: 11,
+  FACTOR0: 12,
 } as const;
 
 function planTable(rules: SsRules, people: readonly SsPerson[], spousal: boolean, survivor: boolean, startYear: number): Float64Array {
@@ -442,6 +451,17 @@ function planTable(rules: SsRules, people: readonly SsPerson[], spousal: boolean
       storeRetirementFactor(t, o + SP.FACTOR0 + c - rules.earliestRetirementMonths, rules.table, c, p.fra);
     }
   });
+  // The spousal excess starts at the later of the two claims (deemed filing), at the person's age then.
+  if (people.length === 2) {
+    for (let i = 0; i < 2; i++) {
+      const o = PERSON0 + i * rec;
+      const oj = PERSON0 + (1 - i) * rec;
+      const claimIndex = t[o + SP.CLAIM_INDEX]!;
+      const claimJ = t[oj + SP.CLAIM_INDEX]!;
+      const start = claimIndex > claimJ ? claimIndex : claimJ;
+      storeSpousalFactor(t, o + SP.SPOUSAL_FACTOR, rules.table, start - t[o + SP.BIRTH]!, t[o + SP.FRA]!);
+    }
+  }
   return t;
 }
 
@@ -559,6 +579,7 @@ export function compileSsPlan(
       piaAtStart: pia,
     });
   });
+  const table = planTable(rules, compiled, o.spousal, o.survivor, o.startYear);
   return Object.freeze({
     people: Object.freeze(compiled),
     spousal: o.spousal,
@@ -566,7 +587,8 @@ export function compileSsPlan(
     startYear: o.startYear,
     rules,
     warnings: Object.freeze(warnings),
-    table: planTable(rules, compiled, o.spousal, o.survivor, o.startYear),
+    table,
+    initialState: initialSsState(table),
   });
 }
 
@@ -610,9 +632,18 @@ export function ssPersonInputs(input: SimInput): SsPersonInput[] {
 // State (§3.9.5) and the month's payment (§3.9.7). Everything below reads the plan through its
 // table `tb` (rules at 0, switches at PL, person i at PERSON0 + i × PL.PERSON_REC).
 
-/** The start of each path: `PIA_i = piaAtStart_i`, no months withheld, the three fixed factors −1. */
+/**
+ * The start of each path: `PIA_i = piaAtStart_i`, no months withheld, the three fixed factors −1
+ * (`plan.initialState`, copied whole: the loop calls this once per path, and a function called
+ * once per path runs unoptimized for most of a run, where every double it moves is boxed).
+ */
 export function resetSsState(plan: SsPlan, st: Float64Array): void {
-  const tb = plan.table;
+  st.set(plan.initialState);
+}
+
+/** The state `resetSsState` copies. */
+function initialSsState(tb: Float64Array): Float64Array {
+  const st = new Float64Array(SS_REC);
   const rec = tb[PL.PERSON_REC]!;
   for (let i = 0; i < 2; i++) {
     st[SS.PIA + i] = tb[PERSON0 + i * rec + SP.PIA_AT_START]!;
@@ -622,6 +653,7 @@ export function resetSsState(plan: SsPlan, st: Float64Array): void {
     st[SS.DECEASED_FACTOR + i] = -1;
   }
   for (let k = SS.RESERVED0; k < SS_REC; k++) st[k] = 0;
+  return st;
 }
 
 /** Scratch of one month's evaluation: own benefit, spousal part, widow(er)'s benefit (each in dimes). */
@@ -721,8 +753,9 @@ function evaluate(tb: Float64Array, st: Float64Array, i: number, m: number, deat
         const start = claimIndex > claimJ ? claimIndex : claimJ;
         if (m >= start) {
           // Each factor is stored before it is read: a variable joining a call's result and a typed-array
-          // load would be kept boxed, which allocates on every call (see the store* helpers).
-          if (st[SS.SPOUSAL_FACTOR + i]! < 0) storeSpousalFactor(st, SS.SPOUSAL_FACTOR + i, tb, start - birth, tb[o + SP.FRA]!);
+          // load would be kept boxed, which allocates on every call (see the store* helpers). The
+          // spousal factor is the plan's (`SP.SPOUSAL_FACTOR`: spousalFactor at start − birth).
+          if (st[SS.SPOUSAL_FACTOR + i]! < 0) st[SS.SPOUSAL_FACTOR + i] = tb[o + SP.SPOUSAL_FACTOR]!;
           const sf = st[SS.SPOUSAL_FACTOR + i]!;
           const excess = (st[SS.PIA + j]! * tb[RU.SHARE_NUM]!) / tb[RU.SHARE_DEN]! - st[SS.PIA + i]! * (factor > 1 ? factor : 1);
           if (excess > 0) sp = Math.floor(excess * sf * 10 + 1e-9) / 10;
