@@ -701,7 +701,7 @@ describe("T34 the whole year W1 (engine-and-returns §3.10)", () => {
   });
 });
 
-describe("C26 contribution caps (on stub limits; the real limits are step 17's)", () => {
+describe("C26 contribution caps (on stub limits; the real 2026 limits are in loop.real.test.ts)", () => {
   // Born 1975 (52 in 2027), salary 100,000, accumulation (spending from 2035). Contributions indexed
   // to prices: 401(k) employee 30,000 and employer 40,000; Roth IRA employee 8,000; HSA employee
   // 5,000 and employer 2,000. Test limits, not law: deferral 20,000 + catch-up 5,000 from 50,

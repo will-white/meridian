@@ -1,14 +1,24 @@
-import type { ClassWeights, ReturnModelConfigInput, SimInput, SimInputAccount, SimInputContribution, SimInputConversion, SimInputIncome, StrategyConfigInput } from "@meridian/shared";
+import {
+  type ClassWeights,
+  type ReturnModelConfigInput,
+  SimInput,
+  type SimInputAccount,
+  type SimInputContribution,
+  type SimInputConversion,
+  type SimInputIncome,
+  type SimInputSocialSecurityPerson,
+  type StrategyConfigInput,
+} from "@meridian/shared";
 import { describe, expect, it } from "vitest";
 import { CASH_TOL } from "./constants.js";
 import { EngineInvariantError } from "./errors.js";
-import type { EngineHooks } from "./hooks.js";
-import { AC, AC_REC, SP, SP_REC, YEAR_FLAG, YR, YR_REC, createPathDetail, simulatePath } from "./loop.js";
+import { type EngineHooks, TAX_FUNCTIONS } from "./hooks.js";
+import { AC, AC_REC, type PathDetail, SP, SP_REC, YEAR_FLAG, YR, YR_REC, createPathDetail, simulatePath } from "./loop.js";
 import { W, ZERO_YIELDS, ac, afterTrades, fixedModel, runPath, sp, yr } from "./loopTestKit.js";
-import { TREATMENT, prepare, validateInput } from "./prepare.js";
+import { type PreparedRun, TREATMENT, prepare, validateInput } from "./prepare.js";
 import { decideSpending } from "./strategies/decide.js";
-import { PATH_FLAG, createPathState } from "./state.js";
-import { RB_REC } from "./tax/layout.js";
+import { PATH_FLAG, type PathState, createPathState } from "./state.js";
+import { RB_REC, SO, SO_REC, TAX_IN, TAX_OUT, TI, TO } from "./tax/layout.js";
 import { TRADE_FLOWS_ONLY } from "./trades.js";
 import { account, buildSimInput, cashAccount, incomeStream } from "./testing/simInput.js";
 import {
@@ -299,75 +309,99 @@ function household(h: number): Household {
   return { input, tax };
 }
 
+interface Stats {
+  households: number;
+  pathYears: number;
+  drawdownYears: number;
+  taxableFlowsOnlyYears: number;
+  capped: number;
+  failed: number;
+  deaths: number;
+  gross: number;
+}
+
+function createStats(): Stats {
+  return { households: 0, pathYears: 0, drawdownYears: 0, taxableFlowsOnlyYears: 0, capped: 0, failed: 0, deaths: 0, gross: 0 };
+}
+
+/**
+ * Simulates path 0 and one other path of household `h` with detail and checks every path-year:
+ * balances and basis ≥ 0 and finite; the cash identity in drawdown years; returns on the
+ * after-trade balances; totalReal; the price level; success ⇒ no shortfall; flows_only never sells
+ * beyond the flow. `year` is called for every path-year with its row for checks of its own.
+ */
+function checkPaths(h: number, run: PreparedRun, ps: PathState, detail: PathDetail, stats: Stats, year: (t: number, where: string) => void = () => undefined): void {
+  const A = run.accountCount;
+  stats.households++;
+  for (const k of run.paths > 1 ? [0, 1 + (h % (run.paths - 1))] : [0]) {
+    simulatePath(ps, k, detail);
+    const where = (t: number) => `household ${h}, path ${k}, plan year ${t}`;
+    for (let t = 0; t < detail.rows; t++) {
+      stats.pathYears++;
+      const y = (slot: number) => detail.year[t * YR_REC + slot]!;
+      const s = (slot: number) => detail.spending[t * SP_REC + slot]!;
+      const a = (acct: number, slot: number) => detail.account[(t * A + acct) * AC_REC + slot]!;
+      // Finite and non-negative.
+      for (let i = 0; i < A * 3; i++) {
+        const o = t * A * 3 + i;
+        for (const [arr, name] of [[detail.afterTrades, "after trades"], [detail.end, "end"], [detail.endBasis, "basis"]] as const) {
+          const x = arr[o]!;
+          if (!Number.isFinite(x) || x < -1e-6) throw new Error(`${where(t)}: ${name} ${x} at ${i}`);
+        }
+        if (run.treatment[Math.floor(i / 3)] !== TREATMENT.taxable && detail.endBasis[o] !== 0) throw new Error(`${where(t)}: basis outside a taxable account`);
+      }
+      for (const slot of [YR.CASH_INCOME, YR.RMD_TOTAL, YR.WITHDRAWAL_TOTAL, YR.TAX, YR.NET, YR.PAYROLL, YR.EMPLOYEE, YR.EMPLOYER, YR.END_TOTAL, YR.END_TOTAL_REAL]) {
+        if (!Number.isFinite(y(slot))) throw new Error(`${where(t)}: year slot ${slot} is ${y(slot)}`);
+      }
+      // Flows within their bounds; flows_only never sells beyond the net outflow.
+      for (let acct = 0; acct < A; acct++) {
+        if (a(acct, AC.RMD) > a(acct, AC.START) + 1e-9 || a(acct, AC.WITHDRAWAL) > a(acct, AC.AVAILABLE) + 1e-9) throw new Error(`${where(t)}: RMD or withdrawal beyond the account`);
+        if (run.tradeMode === TRADE_FLOWS_ONLY && run.treatment[acct] === TREATMENT.taxable) {
+          stats.taxableFlowsOnlyYears++;
+          const netOut = a(acct, AC.WITHDRAWAL) + a(acct, AC.RMD) + a(acct, AC.CONV_OUT) - a(acct, AC.DEPOSIT) - a(acct, AC.CONV_IN);
+          if (a(acct, AC.SOLD) > Math.max(0, netOut) + 1e-6) throw new Error(`${where(t)}: flows_only sold ${a(acct, AC.SOLD)} for a flow of ${netOut}`);
+          if (netOut > 1e-9 && a(acct, AC.BOUGHT) > 1e-9) throw new Error(`${where(t)}: flows_only bought on an outflow`);
+        }
+      }
+      // The cash identity of a drawdown year (strategies-outputs-web §3.8 with C27's payroll term and F2's other charges).
+      if (y(YR.PHASE) === 1 && (y(YR.FLAGS) & YEAR_FLAG.UNPAID_TAX) === 0) {
+        stats.drawdownYears++;
+        const sources = y(YR.CASH_INCOME) + y(YR.RMD_TOTAL) + y(YR.WITHDRAWAL_TOTAL);
+        const uses = s(SP.FUNDED) + y(YR.TAX) + y(YR.OTHER_CHARGES) + y(YR.EMPLOYEE) + y(YR.PAYROLL) + s(SP.SURPLUS);
+        if (Math.abs(sources - uses) > 0.01) throw new Error(`${where(t)}: sources ${sources} against uses ${uses}`);
+        if (!Number.isNaN(s(SP.GROSS))) stats.gross++;
+      }
+      if (y(YR.CONTRIBUTION_EXCESS) > 0) stats.capped++;
+      // Returns apply to the after-trade balances: Σ end = Σ after × growth × fund cost.
+      let expected = 0;
+      for (let acct = 0; acct < A; acct++) {
+        const fee = t === 0 ? run.feeFirst[acct]! : run.fee[acct]!;
+        for (let j = 0; j < 3; j++) expected += detail.afterTrades[(t * A + acct) * 3 + j]! * detail.growth[t * 3 + j]! * fee;
+      }
+      if (Math.abs(expected - y(YR.END_TOTAL)) > 1e-7 * Math.max(1, expected)) throw new Error(`${where(t)}: end ${y(YR.END_TOTAL)} against ${expected}`);
+      if (y(YR.END_TOTAL_REAL) !== y(YR.END_TOTAL) / y(YR.CPI_END)) throw new Error(`${where(t)}: totalReal`);
+      if (y(YR.CPI_END) !== y(YR.CPI_START) * detail.priceFactor[t]!) throw new Error(`${where(t)}: price level`);
+      if (ps.totalReal[t] !== y(YR.END_TOTAL_REAL) || ps.totalNominal[t] !== y(YR.END_TOTAL)) throw new Error(`${where(t)}: the path arrays`);
+      year(t, where(t));
+    }
+    // Path totals.
+    if (ps.flags & PATH_FLAG.SUCCESS) expect(ps.shortfallReal, `household ${h} path ${k}`).toBe(0);
+    else stats.failed++;
+    if (run.personCount === 2 && ps.deathIdx[0] !== ps.deathIdx[1]) stats.deaths++;
+    for (let k2 = 0; k2 < 2 * RB_REC; k2++) if (!(ps.roth[k2]! >= -1e-6)) throw new Error(`household ${h}: Roth record ${ps.roth[k2]}`);
+    expect(ps.endReal).toBe(ps.endNominal / ps.cpi[ps.endIdx + 1]!);
+  }
+}
+
 describe("T45 invariants over 300 seeded random households (stub hooks)", () => {
   it("T45 every path-year: balances and basis ≥ 0 and finite; the cash identity in drawdown years; returns on the after-trade balances; totalReal; the price level; success ⇒ no shortfall; flows_only never sells beyond the flow", () => {
-    const stats = { households: 0, pathYears: 0, drawdownYears: 0, taxableFlowsOnlyYears: 0, capped: 0, failed: 0, deaths: 0, gross: 0 };
+    const stats = createStats();
     for (let h = 0; h < 300; h++) {
       const { input, tax } = household(h);
       const issues = validateInput(input);
       expect(issues, `household ${h}`).toEqual([]);
       const run = prepare(input);
-      const ps = createPathState(run, stubHooks(), stubTaxFunctions(tax));
-      const detail = createPathDetail(run);
-      const A = run.accountCount;
-      stats.households++;
-      for (const k of run.paths > 1 ? [0, 1 + (h % (run.paths - 1))] : [0]) {
-        simulatePath(ps, k, detail);
-        const where = (t: number) => `household ${h}, path ${k}, plan year ${t}`;
-        for (let t = 0; t < detail.rows; t++) {
-          stats.pathYears++;
-          const y = (slot: number) => detail.year[t * YR_REC + slot]!;
-          const s = (slot: number) => detail.spending[t * SP_REC + slot]!;
-          const a = (acct: number, slot: number) => detail.account[(t * A + acct) * AC_REC + slot]!;
-          // Finite and non-negative.
-          for (let i = 0; i < A * 3; i++) {
-            const o = t * A * 3 + i;
-            for (const [arr, name] of [[detail.afterTrades, "after trades"], [detail.end, "end"], [detail.endBasis, "basis"]] as const) {
-              const x = arr[o]!;
-              if (!Number.isFinite(x) || x < -1e-6) throw new Error(`${where(t)}: ${name} ${x} at ${i}`);
-            }
-            if (run.treatment[Math.floor(i / 3)] !== TREATMENT.taxable && detail.endBasis[o] !== 0) throw new Error(`${where(t)}: basis outside a taxable account`);
-          }
-          for (const slot of [YR.CASH_INCOME, YR.RMD_TOTAL, YR.WITHDRAWAL_TOTAL, YR.TAX, YR.NET, YR.PAYROLL, YR.EMPLOYEE, YR.EMPLOYER, YR.END_TOTAL, YR.END_TOTAL_REAL]) {
-            if (!Number.isFinite(y(slot))) throw new Error(`${where(t)}: year slot ${slot} is ${y(slot)}`);
-          }
-          // Flows within their bounds; flows_only never sells beyond the net outflow.
-          for (let acct = 0; acct < A; acct++) {
-            if (a(acct, AC.RMD) > a(acct, AC.START) + 1e-9 || a(acct, AC.WITHDRAWAL) > a(acct, AC.AVAILABLE) + 1e-9) throw new Error(`${where(t)}: RMD or withdrawal beyond the account`);
-            if (run.tradeMode === TRADE_FLOWS_ONLY && run.treatment[acct] === TREATMENT.taxable) {
-              stats.taxableFlowsOnlyYears++;
-              const netOut = a(acct, AC.WITHDRAWAL) + a(acct, AC.RMD) + a(acct, AC.CONV_OUT) - a(acct, AC.DEPOSIT) - a(acct, AC.CONV_IN);
-              if (a(acct, AC.SOLD) > Math.max(0, netOut) + 1e-6) throw new Error(`${where(t)}: flows_only sold ${a(acct, AC.SOLD)} for a flow of ${netOut}`);
-              if (netOut > 1e-9 && a(acct, AC.BOUGHT) > 1e-9) throw new Error(`${where(t)}: flows_only bought on an outflow`);
-            }
-          }
-          // The cash identity of a drawdown year (strategies-outputs-web §3.8 with C27's payroll term and F2's other charges).
-          if (y(YR.PHASE) === 1 && (y(YR.FLAGS) & YEAR_FLAG.UNPAID_TAX) === 0) {
-            stats.drawdownYears++;
-            const sources = y(YR.CASH_INCOME) + y(YR.RMD_TOTAL) + y(YR.WITHDRAWAL_TOTAL);
-            const uses = s(SP.FUNDED) + y(YR.TAX) + y(YR.OTHER_CHARGES) + y(YR.EMPLOYEE) + y(YR.PAYROLL) + s(SP.SURPLUS);
-            if (Math.abs(sources - uses) > 0.01) throw new Error(`${where(t)}: sources ${sources} against uses ${uses}`);
-            if (!Number.isNaN(s(SP.GROSS))) stats.gross++;
-          }
-          if (y(YR.CONTRIBUTION_EXCESS) > 0) stats.capped++;
-          // Returns apply to the after-trade balances: Σ end = Σ after × growth × fund cost.
-          let expected = 0;
-          for (let acct = 0; acct < A; acct++) {
-            const fee = t === 0 ? run.feeFirst[acct]! : run.fee[acct]!;
-            for (let j = 0; j < 3; j++) expected += detail.afterTrades[(t * A + acct) * 3 + j]! * detail.growth[t * 3 + j]! * fee;
-          }
-          if (Math.abs(expected - y(YR.END_TOTAL)) > 1e-7 * Math.max(1, expected)) throw new Error(`${where(t)}: end ${y(YR.END_TOTAL)} against ${expected}`);
-          if (y(YR.END_TOTAL_REAL) !== y(YR.END_TOTAL) / y(YR.CPI_END)) throw new Error(`${where(t)}: totalReal`);
-          if (y(YR.CPI_END) !== y(YR.CPI_START) * detail.priceFactor[t]!) throw new Error(`${where(t)}: price level`);
-          if (ps.totalReal[t] !== y(YR.END_TOTAL_REAL) || ps.totalNominal[t] !== y(YR.END_TOTAL)) throw new Error(`${where(t)}: the path arrays`);
-        }
-        // Path totals.
-        if (ps.flags & PATH_FLAG.SUCCESS) expect(ps.shortfallReal, `household ${h} path ${k}`).toBe(0);
-        else stats.failed++;
-        if (run.personCount === 2 && ps.deathIdx[0] !== ps.deathIdx[1]) stats.deaths++;
-        for (let k2 = 0; k2 < 2 * RB_REC; k2++) if (!(ps.roth[k2]! >= -1e-6)) throw new Error(`household ${h}: Roth record ${ps.roth[k2]}`);
-        expect(ps.endReal).toBe(ps.endNominal / ps.cpi[ps.endIdx + 1]!);
-      }
+      checkPaths(h, run, createPathState(run, stubHooks(), stubTaxFunctions(tax)), createPathDetail(run), stats);
     }
     // The households exercise what the invariants are about.
     expect(stats.households).toBe(300);
@@ -377,5 +411,88 @@ describe("T45 invariants over 300 seeded random households (stub hooks)", () => 
     expect(stats.failed).toBeGreaterThan(10);
     expect(stats.deaths).toBeGreaterThan(50);
     expect(stats.gross).toBeGreaterThan(500);
+  });
+});
+
+/**
+ * Random Social Security entries for `input`'s people (build step 17): none, an estimate claimed
+ * at 62 to 70, or a benefit already in pay since an age of 62 or more before the plan starts.
+ * A separate generator, so the households' own draws are unchanged.
+ */
+function withSocialSecurity(input: SimInput, h: number): SimInput {
+  const rnd = generator(0x55000000 + h);
+  const int = (a: number, b: number) => a + Math.floor(rnd() * (b - a + 1));
+  const startIndex = input.plan.startYear * 12 + (Number(input.plan.startMonth.slice(5, 7)) - 1);
+  const people: SimInputSocialSecurityPerson[] = input.household.people.map((p) => {
+    const birthIndex = p.birthYear * 12 + p.birthMonth - 1;
+    const monthlyCents = String(int(500, 4000) * 100);
+    const at = (index: number) => month(Math.floor(index / 12), (index % 12) + 1);
+    const r = rnd();
+    if (r < 0.15) return { personId: p.id, mode: "none" };
+    if (r < 0.4 && startIndex - birthIndex > 744) {
+      const started = int(birthIndex + 744, Math.min(startIndex - 1, birthIndex + 840));
+      return { personId: p.id, mode: "receiving", monthlyCents, asOfYear: input.plan.startYear, startedMonth: at(started), ...(rnd() < 0.5 ? { monthlyAtFraCents: monthlyCents } : {}) };
+    }
+    const claimAgeMonths = int(744, 840);
+    return { personId: p.id, mode: "estimate", monthlyAtFraCents: monthlyCents, asOfYear: int(2016, input.plan.startYear), claimMonth: at(birthIndex + claimAgeMonths), claimAgeMonths };
+  });
+  return SimInput.parse({ ...input, socialSecurity: { people, spousal: rnd() < 0.8, survivor: rnd() < 0.8 } });
+}
+
+describe("T45 invariants over 300 seeded random households on the real tax functions (build step 17)", () => {
+  it("T45 the same invariants with TAX_FUNCTIONS, random Social Security and the law of each year; the tax input in its bounds; filing status and benefits follow the deaths", () => {
+    const stats = createStats();
+    const real = { benefitYears: 0, rmdYears: 0, penaltyYears: 0, singleAfterDeath: 0, partYears: 0, notConverged: 0 };
+    for (let h = 0; h < 300; h++) {
+      const input = withSocialSecurity(household(h).input, h);
+      expect(validateInput(input), `household ${h}`).toEqual([]);
+      const run = prepare(input);
+      const ps = createPathState(run, stubHooks(), TAX_FUNCTIONS);
+      const detail = createPathDetail(run);
+      const P = run.personCount;
+      checkPaths(h, run, ps, detail, stats, (t, where) => {
+        const x = (slot: number) => detail.taxIn[t * TAX_IN + slot]!;
+        const r = (slot: number) => detail.taxOut[t * TAX_OUT + slot]!;
+        const y = (slot: number) => detail.year[t * YR_REC + slot]!;
+        // The period's amounts and f go in (C23); nothing is negative but the gains.
+        if (x(TI.YEAR_FRACTION) !== y(YR.YEAR_FRACTION)) throw new Error(`${where}: YEAR_FRACTION ${x(TI.YEAR_FRACTION)}`);
+        for (let slot = 0; slot < TI.N_AGED; slot++) {
+          if (slot === TI.ST_GAIN || slot === TI.LT_GAIN) continue;
+          if (!(x(slot) >= 0)) throw new Error(`${where}: tax input ${slot} is ${x(slot)}`);
+        }
+        if (!(r(TO.TOTAL) >= 0) || Math.abs(r(TO.TOTAL) - y(YR.TAX)) > 0) throw new Error(`${where}: tax ${r(TO.TOTAL)} against ${y(YR.TAX)}`);
+        if (x(TI.TRAD_DIST) + 1e-6 < y(YR.RMD_TOTAL)) throw new Error(`${where}: TRAD_DIST below the RMDs`);
+        if (Math.abs(x(TI.ROTH_CONV) - y(YR.CONVERSIONS)) > 1e-6) throw new Error(`${where}: ROTH_CONV ${x(TI.ROTH_CONV)} against ${y(YR.CONVERSIONS)}`);
+        // L2: joint while both are alive, single from the year after a first death; benefits only while alive.
+        let living = 0;
+        for (let i = 0; i < P; i++) {
+          const alive = detail.alive[t * P + i]!;
+          living += alive;
+          const benefit = detail.socialSecurity[t * SO_REC + SO.BENEFIT + i]!;
+          if (!(benefit >= 0) || (alive === 0 && benefit !== 0)) throw new Error(`${where}: benefit ${benefit} of person ${i} (alive ${alive})`);
+          if (benefit > 0) real.benefitYears++;
+        }
+        if (y(YR.FILING_STATUS) !== (living === 2 ? 1 : 0)) throw new Error(`${where}: filing status ${y(YR.FILING_STATUS)} with ${living} living`);
+        if (P === 2 && living === 1) real.singleAfterDeath++;
+        if (Math.abs(x(TI.SS_GROSS) - detail.socialSecurity[t * SO_REC + SO.BENEFIT]! - detail.socialSecurity[t * SO_REC + SO.BENEFIT + 1]!) > 1e-9) throw new Error(`${where}: SS_GROSS`);
+        if (y(YR.RMD_TOTAL) > 0) real.rmdYears++;
+        if (r(TO.PEN10) + r(TO.PEN20) > 0) real.penaltyYears++;
+        if (y(YR.YEAR_FRACTION) < 1) real.partYears++;
+        if ((y(YR.FLAGS) & YEAR_FLAG.NOT_CONVERGED) !== 0) real.notConverged++;
+      });
+    }
+    expect(stats.households).toBe(300);
+    expect(stats.drawdownYears).toBeGreaterThan(5000);
+    expect(stats.failed).toBeGreaterThan(10);
+    expect(stats.deaths).toBeGreaterThan(50);
+    expect(real.benefitYears).toBeGreaterThan(5000);
+    expect(real.rmdYears).toBeGreaterThan(1000);
+    expect(real.penaltyYears).toBeGreaterThan(50);
+    expect(real.singleAfterDeath).toBeGreaterThan(500);
+    expect(real.partYears).toBeGreaterThan(200);
+    // The reference order solver converges within its 24 calls in every year on the real function
+    // (13,606 path-years, 11,601 in drawdown, 5,433 with an RMD, 200 with an additional tax, 1,451
+    // capped, 317 paths with a first death, as measured when the test was written).
+    expect(real.notConverged).toBe(0);
   });
 });

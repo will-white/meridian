@@ -64,6 +64,12 @@ export interface PathState {
   readonly strategy: Float64Array;
   /** The tax area's path warning amounts (`WN`). */
   readonly wn: Float64Array;
+  /**
+   * Per person, 1 while the person's Roth record rests on a contribution basis that was not
+   * entered (`run.rothBasisUnknown` at the path start; a survivor takes on the decedent's flag with
+   * the decedent's record, `mergeRothAtDeath`).
+   */
+  readonly rothBasisUnknown: Uint8Array;
 
   // Per year, per person (length 2).
   readonly alive: Uint8Array;
@@ -282,6 +288,7 @@ export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFu
     carry: new Float64Array(CARRY_REC),
     strategy: new Float64Array(STRATEGY_STATE_LENGTH),
     wn: new Float64Array(WN_REC),
+    rothBasisUnknown: new Uint8Array(2),
     alive: new Uint8Array(P),
     retired: new Uint8Array(P),
     age: new Int16Array(P),

@@ -241,7 +241,10 @@ export function simulatePath(ps: PathState, pathIndex: number, detail: PathDetai
   tax.fillPathTables(run.law, market.inflationFull, run.fillOptions, ps.taxTable, ps.progTable);
   resetSsState(run.ssPlan, ps.ss);
   ps.roth.fill(0);
-  for (let i = 0; i < P; i++) seedRoth(ps.roth, i * RB_REC, run.rothBasis0[i]!, run.rothFunded[i] === 1, run.startYear);
+  for (let i = 0; i < P; i++) {
+    seedRoth(ps.roth, i * RB_REC, run.rothBasis0[i]!, run.rothFunded[i] === 1, run.startYear);
+    ps.rothBasisUnknown[i] = run.rothBasisUnknown[i]!;
+  }
   ps.bal.set(run.bal0);
   ps.basis.set(run.basis0);
   ps.owner.set(run.owner0);
@@ -562,14 +565,20 @@ function applyTrades(ps: PathState, t: number): void {
   }
 }
 
-/** Step 6 continued: the Roth records, the loss carry, the MAGI history and the path warnings. */
+/**
+ * Step 6 continued: the Roth records, the loss carry, the MAGI history and the path warnings. A
+ * Roth withdrawal that is not wholly tax- and penalty-free, by a person whose contribution basis
+ * was not entered, is noted whole under `WN.ROTH_BASIS_UNKNOWN` (tax-rmd-ss §3.7.3: "the caller
+ * notes the withdrawal").
+ */
 function applyTaxState(ps: PathState): void {
   const run = ps.run;
+  const rw = ps.rwScratch;
   for (let i = 0; i < run.personCount; i++) {
     const amount = ps.rothW[i]!;
     if (!(amount > 0)) continue;
-    ps.tax.rothWithdraw(ps.roth, i * RB_REC, amount, ps.early[i]!, ps.year, ps.rwScratch);
-    if (run.rothBasisUnknown[i] === 1) noteWarning(ps.wn, WN.ROTH_BASIS_UNKNOWN, ps.rwScratch[RW.TAXABLE]!);
+    ps.tax.rothWithdraw(ps.roth, i * RB_REC, amount, ps.early[i]!, ps.year, rw);
+    if (ps.rothBasisUnknown[i] === 1 && rw[RW.TAXABLE]! + rw[RW.PENALTY_BASE]! > 0) noteWarning(ps.wn, WN.ROTH_BASIS_UNKNOWN, amount);
   }
   const taxOut = ps.record.taxResult;
   ps.carry[CARRY.LOSS] = taxOut[TO.LOSS_CARRY_OUT]!;
@@ -779,7 +788,7 @@ function capContributions(ps: PathState, po: number): void {
  * basis of every taxable holding moves toward its value, `basis += share × (value − basis)` (1 for
  * the decedent's own account, the joint share of `prepare` for a joint account, 0 for the
  * survivor's own), up or down; every account the decedent owned passes to the survivor; the
- * survivor's Roth record absorbs the decedent's.
+ * survivor's Roth record absorbs the decedent's, and with it an unknown contribution basis.
  */
 function firstDeath(ps: PathState, d: number, s: number): void {
   const run = ps.run;
@@ -800,6 +809,7 @@ function firstDeath(ps: PathState, d: number, s: number): void {
     if (owner[a] === d) owner[a] = s;
   }
   mergeRothAtDeath(ps.roth, s * RB_REC, d * RB_REC);
+  if (ps.rothBasisUnknown[d] === 1) ps.rothBasisUnknown[s] = 1;
 }
 
 function recordFlows(ps: PathState, detail: PathDetail, t: number): void {
