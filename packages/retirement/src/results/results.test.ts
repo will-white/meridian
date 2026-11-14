@@ -542,7 +542,9 @@ describe("run warnings of the aggregate (C41, C39, engine-and-returns §2.6)", (
 
   it("grossup_not_converged counts the path-years whose hook stopped with a surplus; the engine's warnings come before the tax area's", () => {
     // A withdrawal hook that takes everything available leaves net above the tolerance every drawdown year.
+    // The plan starts in 2029, after the last published tax year, so the tax area adds tax_data_stale.
     const input = buildSimInput({
+      startYear: 2029,
       people: [{ birthYear: 1962, longevity: { mode: "fixed", age: 68 } }],
       accounts: [account("brk", "taxable", "100000000", { type: "brokerage", basisCents: "100000000", allocation: W(0, 0, 0, 10000) })],
       spending: { baseAnnualCents: "4000000" },
@@ -557,11 +559,12 @@ describe("run warnings of the aggregate (C41, C39, engine-and-returns §2.6)", (
     });
     const result = aggregate(run, simulateRun(run, ps));
     const w = result.warnings.find((x) => x.code === "grossup_not_converged");
-    // Plan years 2027 to 2030 (fixed age 68): four years, each withdrawing the whole account.
-    expect(w?.message).toBe("In 4 simulated years on 1 of 1 path the withdrawal gross-up stopped before it converged; it kept a withdrawal that paid the year's spending and tax, and saved the extra cash.");
+    // Plan years 2029 and 2030 (fixed age 68): two years, each withdrawing the whole account.
+    expect(w?.message).toBe("In 2 simulated years on 1 of 1 path the withdrawal gross-up stopped before it converged; it kept a withdrawal that paid the year's spending and tax, and saved the extra cash.");
     const codes = result.warnings.map((x) => x.code);
     expect(codes.indexOf("grossup_not_converged")).toBeGreaterThan(codes.indexOf("path_count_adjusted"));
-    expect(codes.indexOf("grossup_not_converged")).toBeLessThan(codes.indexOf("limits_pending"));
+    expect(codes.indexOf("tax_data_stale")).toBeGreaterThan(0);
+    expect(codes.indexOf("grossup_not_converged")).toBeLessThan(codes.indexOf("tax_data_stale"));
   });
 });
 

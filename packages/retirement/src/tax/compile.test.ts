@@ -177,10 +177,16 @@ describe("J1 forward indexing: +3.0% in 2027, +2.5% in 2028, -1.0% in 2029", () 
 describe("J2 limits and program amounts on the J1 factors, from the 2027 file", () => {
   const t = pathTables(data, { startYear: 2027, years: 4, inflation: [0.03, 0.025, -0.01, 0] });
   const cases: Array<[string, number, [number, number, number]]> = [
-    ["deferral (24,500, pending)", PR.DEFERRAL, [25000, 25500, 25500]],
-    ["catch-up at 50 (8,000)", PR.CATCHUP50, [8000, 8000, 8000]],
-    ["catch-up at 60 to 63 (11,250)", PR.CATCHUP6063, [11250, 11750, 11750]],
-    ["annual additions (72,000)", PR.ANNUAL_ADD, [74000, 76000, 75000]],
+    // The 2027 bases are Notice 2026-66's. F = 1.03, 1.05575, 1.0451925; floor increase
+    // v = base + floor(base × (F − 1) / step) × step:
+    // deferral 25,500, step 500: 765 → 1 step, 1,421.6 → 2, 1,152.4 → 2: 26,000 / 26,500 / 26,500.
+    ["deferral (25,500)", PR.DEFERRAL, [26000, 26500, 26500]],
+    // 8,500: 255, 473.9, 384.1 → no step.
+    ["catch-up at 50 (8,500)", PR.CATCHUP50, [8500, 8500, 8500]],
+    // 11,750: 352.5 → 0, 655.1 → 1, 531.0 → 1: 11,750 / 12,250 / 12,250.
+    ["catch-up at 60 to 63 (11,750)", PR.CATCHUP6063, [11750, 12250, 12250]],
+    // 75,000, step 1,000: 2,250 → 2, 4,181.3 → 4, 3,389.4 → 3: 77,000 / 79,000 / 78,000.
+    ["annual additions (75,000)", PR.ANNUAL_ADD, [77000, 79000, 78000]],
     ["IRA (7,500)", PR.IRA, [7500, 7500, 7500]],
     ["IRA catch-up (1,100)", PR.IRA_CATCHUP, [1100, 1100, 1100]],
     ["HSA self-only (4,500), nearest $50", PR.HSA_SELF, [4650, 4750, 4700]],
@@ -214,11 +220,12 @@ describe("J2 limits and program amounts on the J1 factors, from the 2027 file", 
 
   it("J2 realWageGrowth moves the wage-indexed amounts only", () => {
     // W_2028 = 1 + 0.03 + 0.01 = 1.04: wage base 192,300 × 1.04 = 199,992; 199,992 / 300 = 666.64;
-    // floor(666.64 + 0.5) = 667; 667 × 300 = 200,100. The deferral stays on F (25,000).
+    // floor(666.64 + 0.5) = 667; 667 × 300 = 200,100. The deferral stays on F: 25,500 + floor(25,500 ×
+    // 0.03 / 500) × 500 = 25,500 + 1 × 500 = 26,000 (Notice 2026-66's 2027 base).
     const w = pathTables(data, { startYear: 2027, years: 2, inflation: [0.03, 0], fill: { realWageGrowth: 0.01 } });
     expect(prog(w, 2028, PR.WAGE_FACTOR)).toBeCloseTo(1.04, 12);
     expect(prog(w, 2028, PR.WAGE_BASE)).toBe(200100);
-    expect(prog(w, 2028, PR.DEFERRAL)).toBe(25000);
+    expect(prog(w, 2028, PR.DEFERRAL)).toBe(26000);
   });
 });
 
@@ -389,13 +396,20 @@ describe("J5 stale data", () => {
 });
 
 describe("compile warnings (tax-rmd-ss §3.11)", () => {
-  it("limits_pending names 2027 and its six fields whenever the plan reaches 2027", () => {
-    expect(compileTaxLaw(data, { startYear: 2026, years: 1, ruleSetId: "current_law" }).warnings).toEqual([]);
+  it("limits_pending names a year's pending fields whenever the plan reaches that year (a fixture: the bundled 2027 file has none since Notice 2026-66)", () => {
+    for (const [startYear, years] of [[2026, 1], [2026, 2], [2027, 1]] as const) {
+      expect(compileTaxLaw(data, { startYear, years, ruleSetId: "current_law" }).warnings).toEqual([]);
+    }
+    const six = ["employeeDeferral", "catchUp50", "catchUp60to63", "annualAdditions", "ira", "iraCatchUp50"];
+    const raw = structuredClone(rawTaxData());
+    (raw.years["tax/federal-2027.json"] as { contributionLimits: { pending: string[] } }).contributionLimits.pending = [...six];
+    const pending = validateTaxData(raw);
+    expect(compileTaxLaw(pending, { startYear: 2026, years: 1, ruleSetId: "current_law" }).warnings).toEqual([]);
     for (const [startYear, years] of [[2026, 2], [2027, 1], [2030, 3]] as const) {
-      const w = compileTaxLaw(data, { startYear, years, ruleSetId: "current_law" }).warnings.filter((x) => x.code === "limits_pending");
+      const w = compileTaxLaw(pending, { startYear, years, ruleSetId: "current_law" }).warnings.filter((x) => x.code === "limits_pending");
       expect(w).toHaveLength(1);
       expect(w[0]!.message).toContain("2027");
-      for (const field of ["employeeDeferral", "catchUp50", "catchUp60to63", "annualAdditions", "ira", "iraCatchUp50"]) expect(w[0]!.message).toContain(field);
+      for (const field of six) expect(w[0]!.message).toContain(field);
     }
   });
 

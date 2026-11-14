@@ -12,7 +12,12 @@
 import manifestJson from "../data/manifest.json" with { type: "json" };
 import { sha256Hex } from "./sha256.js";
 
-export const ENGINE_VERSION = "1.0.0";
+/**
+ * 1.0.0 at build step 21; 1.0.1 with the Stage A review fixes that change numbers (the married
+ * couple's shared HSA limit, the boundary rounding of the bracket rates). Bump it with any change
+ * that can alter a number the engine produces.
+ */
+export const ENGINE_VERSION = "1.0.1";
 
 export interface DataManifestFile {
   path: string;

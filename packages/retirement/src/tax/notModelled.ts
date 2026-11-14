@@ -7,7 +7,8 @@
  * value at the first death in both directions), `rebalance_lag` is gone (C17: rebalancing gains
  * are taxed in the year of the trade), and `short_term_sales` and `wash_sales_lots` describe the
  * engine's model (three simulated assets per account, average cost, every gain long-term), whose
- * pins replace the area design's taxable-account cases F2.
+ * pins replace the area design's taxable-account cases F2. Added after the Stage A review:
+ * `roth_catch_up` (SECURE 2.0's Roth catch-up rule, absent from §8.2).
  */
 
 export interface NotModelledEntry {
@@ -49,6 +50,12 @@ export const NOT_MODELLED = Object.freeze(
       effect: "Tax is understated for a household that sells within a year of buying.",
     },
     { id: "pretax_basis", label: "After-tax basis in pre-tax accounts (Form 8606)", effect: "Withdrawals are taxed in full." },
+    {
+      id: "roth_catch_up",
+      label:
+        "The Roth catch-up rule (§ 414(v)(7)(A), from 2026): an employee whose prior-year wages exceed the threshold ($150,000 for 2026 catch-ups, $155,000 for 2027) must make 401(k) catch-up contributions as Roth; the planner treats them as pre-tax",
+      effect: "For such an employee aged 50 or over, tax is understated by up to the catch-up times the marginal rate each year, and that money is counted as pre-tax, not Roth.",
+    },
     {
       id: "ira_deduction_limits",
       label: "The income limits on deductible IRA and on Roth IRA contributions",

@@ -39,7 +39,11 @@ import { loadTaxData, type TaxData } from "./taxData.js";
  *   `ira_deduction_limits`);
  * - `HSA`: (`HSA_FAMILY` or `HSA_SELF`, plus `HSA_CATCHUP` from 55) × `hsaMonths / 12`, where
  *   `hsaMonths` counts months of this period before 65 (`hsaMonthsBefore65`). The plan does not
- *   know the coverage tier, so the engine passes `family = true`.
+ *   know the coverage tier, so the engine passes `family = true`. This is one owner's limit; for a
+ *   married couple the family part is one limit for both spouses (Pub. 969, "Rules for married
+ *   people": the family limit "is split equally between the spouses unless you agree on a
+ *   different division"; each spouse's catch-up from 55 is their own, § 223(b)(3), (b)(5)), and
+ *   the loop's `capContributions` shares it between the two HSAs (tax-02 of the Stage A review).
  * Allocates nothing.
  */
 export function contributionLimitsInto(p: Float64Array, o: number, age: number, f: number, family: boolean, hsaMonths: number, out: Float64Array): void {

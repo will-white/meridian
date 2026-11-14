@@ -480,7 +480,7 @@ Still unverified; the implementer checks each before the gate:
 
 1. Every Social Security figure and rule (`www.ssa.gov` answers 403): the 2026 and 2027 COLAs (2.8%, 3.6%), wage bases (184,500; 192,300), earnings-test amounts (24,480 and 65,160; 25,560 and 67,920); the reduction and credit fractions; the full-retirement-age table and the survivor table derived by a two-year shift; deemed filing; the 82.5% widow(er)'s limit and the order "reduce for age, then cap"; the 71.5% rate at 60; the spousal excess net of own delayed credits; the January rule for delayed credits; truncation to the dime and the dollar; the earnings-test credit-back in whole months.
 2. The COLA history 2017 to 2025 in `ss/rules.json` (0.3%, 2.0%, 2.8%, 1.6%, 1.3%, 5.9%, 8.7%, 3.2%, 2.5%): from memory; only 2024 was confirmed.
-3. The 2027 retirement-plan limits: not published on 2026-11-10; the file carries the 2026 amounts as pending. No forecast is stored.
+3. The 2027 retirement-plan limits: not published on 2026-11-10; the file carries the 2026 amounts as pending. No forecast is stored. **Closed 2026-11-14:** Notice 2026-66 (IR-2026-136, 2026-11-12; SHA-256 `d36060fa…6aba`) gives deferral 25,500, catch-up 8,500, at 60 to 63 11,750, § 415(c) 75,000, IRA 7,500 and its catch-up 1,100; `tax/federal-2027.json` carries them with `pending` empty (data 2026.11.1).
 4. RMD age 75 for people born in 1960 or later and 73 for 1959: the 2024 proposed regulations through secondary sources.
 5. The statutory rounding steps (Code text not fetched); the published tables of 2023 to 2027 are consistent with them.
 6. The SSA period life table's age-65 check values and which vintage the page holds.

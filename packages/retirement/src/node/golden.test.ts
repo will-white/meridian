@@ -30,7 +30,10 @@ import { type SimPool, createSimPool, runSimulation } from "./index.js";
 // (for example the default withdrawal order and the stub order already differ there on 202 of the
 // first row's 2,000 paths, with every count, failure year and path 0 equal). As the design
 // prescribes, they are pinned ONCE from this implementation (build step 21, ENGINE_VERSION 1.0.0,
-// DATA_VERSION 2026.11.0) and change only with one of those versions.
+// DATA_VERSION 2026.11.0) and change only with one of those versions. They held unchanged through
+// DATA_VERSION 2026.11.1 (the 2027 plan limits: these households make no contributions) and the
+// review fixes of ENGINE_VERSION 1.0.1 (none of them alters a household that is retired from the
+// plan's start and pays no tax).
 
 const t20 = (returnModel: ReturnModelConfigInput, paths: number): SimInput =>
   buildSimInput({

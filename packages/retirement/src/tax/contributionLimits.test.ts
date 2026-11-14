@@ -122,22 +122,27 @@ describe("I4 contributionLimit (cents, for the resolver)", () => {
   });
 });
 
-describe("I5 pending limits", () => {
-  it("I5 contributionLimit(2027, 45, employer_plan) is 2450000n (the carried 2026 amount) and (2027, 40, hsa_family) 900000n (published)", () => {
-    expect(contributionLimit(2027, 45, "employer_plan")).toBe(2450000n);
+describe("I5 the 2027 limits (published: Notice 2026-66) and the pending rule", () => {
+  it("I5 contributionLimit(2027, 45, employer_plan) is 2550000n, (2027, 61) 3725000n, (2027, 50, ira) 860000n, (2027, 40, hsa_family) 900000n", () => {
+    // Notice 2026-66: deferral 25,500; at 61 (60 to 63) 25,500 + 11,750 = 37,250; IRA 7,500 +
+    // 1,100 = 8,600 from 50; HSA family 9,000 (Rev. Proc. 2026-24).
+    expect(contributionLimit(2027, 45, "employer_plan")).toBe(2550000n);
+    expect(contributionLimit(2027, 61, "employer_plan")).toBe(3725000n);
+    expect(contributionLimit(2027, 52, "employer_plan")).toBe(3400000n);
     expect(contributionLimit(2027, 40, "hsa_family")).toBe(900000n);
     expect(contributionLimit(2027, 50, "ira")).toBe(860000n);
   });
 
-  it("I5 compiling a plan that covers 2027 raises limits_pending naming 2027 and the six fields; with an empty pending it does not", () => {
-    const w = compileTaxLaw(data, { startYear: 2026, years: 3, ruleSetId: "current_law" }).warnings.filter((x) => x.code === "limits_pending");
+  it("I5 with the bundled data no plan raises limits_pending; a year file that lists pending fields raises it, naming the year and the fields", () => {
+    for (const [startYear, years] of [[2026, 3], [2027, 1], [2030, 3]] as const) {
+      expect(compileTaxLaw(data, { startYear, years, ruleSetId: "current_law" }).warnings.map((x) => x.code)).not.toContain("limits_pending");
+    }
+    const raw = structuredClone(rawTaxData());
+    (raw.years["tax/federal-2027.json"] as { contributionLimits: { pending: string[] } }).contributionLimits.pending = ["employeeDeferral", "ira"];
+    const fixture = validateTaxData(raw);
+    const w = compileTaxLaw(fixture, { startYear: 2026, years: 3, ruleSetId: "current_law" }).warnings.filter((x) => x.code === "limits_pending");
     expect(w).toHaveLength(1);
     expect(w[0]!.message).toContain("2027");
-    for (const f of ["employeeDeferral", "catchUp50", "catchUp60to63", "annualAdditions", "ira", "iraCatchUp50"]) expect(w[0]!.message).toContain(f);
-
-    const raw = structuredClone(rawTaxData());
-    (raw.years["tax/federal-2027.json"] as { contributionLimits: { pending: string[] } }).contributionLimits.pending = [];
-    const fixture = validateTaxData(raw);
-    expect(compileTaxLaw(fixture, { startYear: 2026, years: 3, ruleSetId: "current_law" }).warnings.map((x) => x.code)).not.toContain("limits_pending");
+    for (const f of ["employeeDeferral", "ira"]) expect(w[0]!.message).toContain(f);
   });
 });

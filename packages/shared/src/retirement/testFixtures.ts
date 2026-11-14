@@ -258,7 +258,7 @@ export function fixtureSimInput(): SimInput {
         { code: "allocation_assumed", severity: "warning", path: `accounts.${IDS.K}.allocation`, message: "Household targets used", accountId: IDS.K },
       ],
     },
-    data: { version: "2026.11.0" },
+    data: { version: "2026.11.1" },
     plan: { startYear: 2026, startMonth: "2026-10", firstYearMonths: 3, endYear: 2072, stepsPerYear: 1, currency: "USD" },
     household: {
       filingStatus: "married_joint",

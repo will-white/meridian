@@ -27,7 +27,7 @@ const t20 = (paths: number) =>
 describe("the facade's versions and exports (seams §2.4)", () => {
   it("ENGINE_VERSION, DATA_VERSION and DATA_CHECKSUM are exported from the package", () => {
     expect(ENGINE_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(DATA_VERSION).toBe("2026.11.0");
+    expect(DATA_VERSION).toBe("2026.11.1");
     expect(DATA_CHECKSUM).toMatch(/^[0-9a-f]{64}$/);
   });
 

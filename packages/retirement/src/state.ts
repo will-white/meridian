@@ -137,6 +137,11 @@ export interface PathState {
   readonly groupEmployer: Float64Array;
   readonly scaleEmployee: Float64Array;
   readonly scaleEmployer: Float64Array;
+  /** Per person: the HSA limit (after a married couple's sharing), its catch-up part, its family part, the amounts entered (capContributions). */
+  readonly hsaLimit: Float64Array;
+  readonly hsaCatchUp: Float64Array;
+  readonly hsaFamily: Float64Array;
+  readonly hsaWanted: Float64Array;
   readonly payroll: Float64Array;
 
   // Per year, the tax input assembly (assess.ts).
@@ -333,6 +338,10 @@ export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFu
     groupEmployer: new Float64Array(2 * 4),
     scaleEmployee: new Float64Array(2 * 4),
     scaleEmployer: new Float64Array(2 * 4),
+    hsaLimit: new Float64Array(2),
+    hsaCatchUp: new Float64Array(2),
+    hsaFamily: new Float64Array(2),
+    hsaWanted: new Float64Array(2),
     payroll: new Float64Array(PT_REC),
     ppFixed: new Float64Array(PP_COLUMNS * PP_REC),
     pp: new Float64Array(PP_COLUMNS * PP_REC),

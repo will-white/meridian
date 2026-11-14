@@ -59,6 +59,8 @@ afterAll(() => {
 /** The checksum each released data version must keep: an edit without a version bump fails here. */
 const RELEASED_CHECKSUMS: Record<string, string> = {
   "2026.11.0": "dd158592fa7882bb605d0326440ffb5cf5c74d775771703cbe47639ac139fb37",
+  // The 2027 plan and IRA limits of Notice 2026-66 (tax/federal-2027.json), nothing pending.
+  "2026.11.1": "fa6a47029ac14255a654e0e72523b55589a570bf9ce62522693f1c94a8e343b9",
 };
 
 describe("D1 manifest.json (tax-rmd-ss A1)", () => {
@@ -71,15 +73,17 @@ describe("D1 manifest.json (tax-rmd-ss A1)", () => {
 
   it("D1 every entry carries its retrieval date and a description; every data entry its source URL", () => {
     for (const f of DATA_MANIFEST.files) {
-      expect(f.retrieved, f.path).toBe("2026-11-13");
+      // federal-2027.json took the 2027 plan limits of Notice 2026-66, retrieved on 2026-11-14 (2026.11.1).
+      expect(f.retrieved, f.path).toBe(f.path === "tax/federal-2027.json" ? "2026-11-14" : "2026-11-13");
       expect(f.description?.length ?? 0, f.path).toBeGreaterThan(10);
       if (f.path !== "README.md") expect(f.sourceUrl, f.path).toMatch(/^https:\/\//);
     }
   });
 
-  it("A1 D1 dataVersion is 2026.11.0, firstTaxYear 2026, lastPublishedYear 2027", () => {
-    // tax-rmd-ss A1 says 2026.11.1; seams C11 and phase-4-plan "Data files" fix the first version at 2026.11.0.
-    expect(DATA_VERSION).toBe("2026.11.0");
+  it("A1 D1 dataVersion is 2026.11.1, firstTaxYear 2026, lastPublishedYear 2027", () => {
+    // Seams C11 and phase-4-plan "Data files" fix the first version at 2026.11.0; the 2027 plan
+    // limits of Notice 2026-66 (published 2026-11-12) are the first data edit, so 2026.11.1.
+    expect(DATA_VERSION).toBe("2026.11.1");
     expect(DATA_MANIFEST.firstTaxYear).toBe(2026);
     expect(DATA_MANIFEST.lastPublishedYear).toBe(2027);
     expect(TAX_DATA_FIRST_YEAR).toBe(2026);
@@ -381,17 +385,24 @@ describe("D5 and D6 tax/federal-2026.json and tax/federal-2027.json (tax-rmd-ss 
     expect(r.payroll.oasdiWageBase).toBe(184500);
   });
 
-  it("D6 2027: standard deduction 16,600 / 33,200; 0% maximum 51,050 / 102,100; 15% maximum 563,200 / 633,600; six plan fields pending at the 2026 amounts", () => {
+  it("D6 2027: standard deduction 16,600 / 33,200; 0% maximum 51,050 / 102,100; 15% maximum 563,200 / 633,600; the plan limits of Notice 2026-66, nothing pending", () => {
     const r = y(2027);
-    const p = y(2026);
     expect(r.standardDeduction).toEqual({ single: 16600, mfj: 33200 });
     expect(r.additionalAged).toEqual({ single: 2100, mfj: 1700 });
     expect(r.capitalGains.zeroRateMax).toEqual({ single: 51050, mfj: 102100 });
     expect(r.capitalGains.fifteenRateMax).toEqual({ single: 563200, mfj: 633600 });
-    const six = ["employeeDeferral", "catchUp50", "catchUp60to63", "annualAdditions", "ira", "iraCatchUp50"] as const;
-    expect(r.contributionLimits.pending).toEqual([...six]);
-    for (const f of six) expect(r.contributionLimits[f], f).toBe(p.contributionLimits[f]);
-    expect([r.contributionLimits.hsaSelf, r.contributionLimits.hsaFamily]).toEqual([4500, 9000]);
+    // Notice 2026-66 (IR-2026-136, 2026-11-12): § 402(g)(1) 24,500 → 25,500; § 414(v)(2)(B)(i)
+    // 8,000 → 8,500; § 414(v)(2)(E)(i) (60 to 63) 11,250 → 11,750; § 415(c)(1)(A) 72,000 → 75,000;
+    // § 219(b)(5)(A) remains 7,500 and § 219(b)(5)(B)(ii) remains 1,100. tax-rmd-ss decision 42:
+    // the pending list is emptied when the notice is out.
+    const c = r.contributionLimits;
+    expect([c.employeeDeferral, c.catchUp50, c.catchUp60to63, c.annualAdditions, c.ira, c.iraCatchUp50]).toEqual([25500, 8500, 11750, 75000, 7500, 1100]);
+    expect(c.pending).toEqual([]);
+    expect([c.hsaSelf, c.hsaFamily]).toEqual([4500, 9000]);
+    const notice = r.sources.find((s) => s.title === "Notice 2026-66");
+    expect(notice?.url).toBe("https://www.irs.gov/pub/irs-drop/n-26-66.pdf");
+    expect(notice?.sha256).toBe("d36060fae77e49760073db883f048abb3076ac5d9cf73772977b4cd4aca46aba");
+    expect(notice?.retrieved).toBe("2026-11-14");
   });
 
   it("D5 D6 the statutory amounts are the same in both years (tax-rmd-ss decision 8)", () => {
@@ -678,8 +689,11 @@ describe("A7 staleness and pending limits", () => {
     expect(() => taxDataStale("2028-13-01")).toThrow(RangeError);
   });
 
-  it("A7 pendingLimits is one entry for 2027 with the six plan fields", () => {
-    expect(pendingLimits()).toEqual([{ year: 2027, fields: ["employeeDeferral", "catchUp50", "catchUp60to63", "annualAdditions", "ira", "iraCatchUp50"] }]);
+  it("A7 pendingLimits is empty: Notice 2026-66 published the 2027 plan limits (data 2026.11.1)", () => {
+    expect(pendingLimits()).toEqual([]);
+    const raw = structuredClone(rawTaxData());
+    (raw.years["tax/federal-2027.json"] as { contributionLimits: { pending: string[] } }).contributionLimits.pending = ["employeeDeferral"];
+    expect(pendingLimits(validateTaxData(raw))).toEqual([{ year: 2027, fields: ["employeeDeferral"] }]);
   });
 });
 
@@ -709,6 +723,6 @@ describe("seams §9 item 20: static JSON imports under the repository's toolchai
     const out = join(dir, "out.mjs");
     execFileSync(process.execPath, [join(REPO_ROOT, "scripts", "bundle.mjs"), entry, out], { cwd: REPO_ROOT, stdio: "pipe" });
     const printed = execFileSync(process.execPath, [out], { cwd: dir, encoding: "utf8" });
-    expect(JSON.parse(printed)).toEqual(["2026.11.0", 101, 33200, 4, 0.438112]);
+    expect(JSON.parse(printed)).toEqual(["2026.11.1", 101, 33200, 4, 0.438112]);
   });
 });

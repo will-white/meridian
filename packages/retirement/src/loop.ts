@@ -677,7 +677,10 @@ function endYear(ps: PathState, t: number): void {
  *   employee amount without catch-up (catch-up contributions do not count toward it);
  * - IRA: the owner's employee amounts to `ira` and `roth` accounts to the IRA limit, and the
  *   household's to its gross wages of the period (person 0's first);
- * - HSA: employer first, then employee, to the HSA limit.
+ * - HSA: employer first, then employee, to the HSA limit. A married couple whose spouses both
+ *   contribute shares one family limit (Pub. 969, "Rules for married people"; § 223(b)(5)): the
+ *   parts above each spouse's own age-55 catch-up are cut together, in proportion, to the family
+ *   limit for the months either spouse is under 65; each spouse keeps their own catch-up.
  *
  * Within a group every entry is cut in proportion. An employee excess is saved after tax in the
  * surplus account (it is still a cash use and does not reduce wages); an employer excess is
@@ -717,7 +720,17 @@ function capContributions(ps: PathState, po: number): void {
   }
   const lim = ps.limits;
   const base = ps.limitsBase;
+  const hsaLimit = ps.hsaLimit;
+  const hsaCatchUp = ps.hsaCatchUp;
+  const hsaFamily = ps.hsaFamily;
+  const hsaWanted = ps.hsaWanted;
   let wagesLeft = ps.grossWages[0]! + ps.grossWages[1]!;
+  for (let i = 0; i < 2; i++) {
+    hsaLimit[i] = 0;
+    hsaCatchUp[i] = 0;
+    hsaFamily[i] = 0;
+    hsaWanted[i] = 0;
+  }
   for (let i = 0; i < P; i++) {
     let any = false;
     for (let g = 1; g < GROUPS; g++) if (gE[i * GROUPS + g]! > 0 || gR[i * GROUPS + g]! > 0) any = true;
@@ -729,7 +742,7 @@ function capContributions(ps: PathState, po: number): void {
     // Employer plan.
     let k = i * GROUPS + LIMIT.EMPLOYER_PLAN;
     let e = gE[k]!;
-    let r = gR[k]!;
+    const r = gR[k]!;
     const ecap = e < lim[CL.EMPLOYEE_DEFERRAL]! ? e : lim[CL.EMPLOYEE_DEFERRAL]!;
     const counted = ecap < base[CL.EMPLOYEE_DEFERRAL]! ? ecap : base[CL.EMPLOYEE_DEFERRAL]!;
     const room = lim[CL.ANNUAL_ADDITIONS]! - counted;
@@ -745,11 +758,39 @@ function capContributions(ps: PathState, po: number): void {
       sE[k] = cap / e;
       wagesLeft -= cap;
     }
-    // HSA.
+    // HSA: the owner's limit (with the catch-up from 55), and its family part without the catch-up.
     k = i * GROUPS + LIMIT.HSA;
-    e = gE[k]!;
-    r = gR[k]!;
     const hsa = lim[CL.HSA]! > 0 ? lim[CL.HSA]! : 0;
+    const family = base[CL.HSA]! > 0 ? base[CL.HSA]! : 0;
+    hsaLimit[i] = hsa;
+    hsaCatchUp[i] = hsa - family;
+    hsaFamily[i] = family;
+    hsaWanted[i] = gE[k]! + gR[k]!;
+  }
+  // A married couple shares one family limit (Pub. 969, "Rules for married people"; § 223(b)(5)):
+  // while both spouses contribute (both are eligible individuals) and file jointly, the parts of
+  // their HSA amounts above their own catch-ups are cut together to the family limit for the
+  // months either is under 65, in proportion to the amounts entered (the household's division).
+  if (P === 2 && ps.status === 1 && hsaWanted[0]! > 0 && hsaWanted[1]! > 0) {
+    let shared = 0;
+    const family = hsaFamily[0]! > hsaFamily[1]! ? hsaFamily[0]! : hsaFamily[1]!;
+    for (let i = 0; i < 2; i++) {
+      const x = hsaWanted[i]! < hsaLimit[i]! ? hsaWanted[i]! : hsaLimit[i]!;
+      const c = x < hsaCatchUp[i]! ? x : hsaCatchUp[i]!;
+      hsaCatchUp[i] = c;
+      hsaWanted[i] = x - c;
+      shared += x - c;
+    }
+    if (shared > family) {
+      const scale = family / shared;
+      for (let i = 0; i < 2; i++) hsaLimit[i] = hsaCatchUp[i]! + hsaWanted[i]! * scale;
+    }
+  }
+  for (let i = 0; i < P; i++) {
+    const k = i * GROUPS + LIMIT.HSA;
+    const e = gE[k]!;
+    const r = gR[k]!;
+    const hsa = hsaLimit[i]!;
     const hr = r < hsa ? r : hsa;
     const he = e < hsa - hr ? e : hsa - hr;
     if (e > 0) sE[k] = he / e;

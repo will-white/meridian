@@ -27,10 +27,10 @@ const thrown = (fn: () => unknown): unknown => {
 describe("route 22: buildRulesView", () => {
   const view = buildRulesView("2026-11-13");
 
-  it("A7 stale is false on 2027-12-31 and true on 2028-01-01; pendingLimits is one entry for 2027 with the six plan fields", () => {
+  it("A7 stale is false on 2027-12-31 and true on 2028-01-01; pendingLimits is empty (Notice 2026-66 published the 2027 plan limits)", () => {
     expect(buildRulesView("2027-12-31").stale).toBe(false);
     expect(buildRulesView("2028-01-01").stale).toBe(true);
-    expect(view.pendingLimits).toEqual([{ year: 2027, fields: ["employeeDeferral", "catchUp50", "catchUp60to63", "annualAdditions", "ira", "iraCatchUp50"] }]);
+    expect(view.pendingLimits).toEqual([]);
     expect(() => buildRulesView("2026-13-01")).toThrow(RangeError);
   });
 

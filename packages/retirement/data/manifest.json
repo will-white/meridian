@@ -1,5 +1,5 @@
 {
-  "dataVersion": "2026.11.0",
+  "dataVersion": "2026.11.1",
   "firstTaxYear": 2026,
   "lastPublishedYear": 2027,
   "files": [
@@ -46,10 +46,10 @@
     },
     {
       "path": "tax/federal-2027.json",
-      "sha256": "b42acce8121c9b4b94d224b8c62cf8e9634019243699ce6049b917fc1efade15",
+      "sha256": "d89d2b6b4b28ec1309d9cb6474c57aaa70662c2a3b7ec9a040b48c222e8c7398",
       "sourceUrl": "https://www.irs.gov/pub/irs-drop/rp-26-35.pdf",
-      "retrieved": "2026-11-13",
-      "description": "Tax year 2027: Rev. Proc. 2026-35, Rev. Proc. 2026-24; six plan limits pending; SSA program amounts"
+      "retrieved": "2026-11-14",
+      "description": "Tax year 2027: Rev. Proc. 2026-35, Rev. Proc. 2026-24, Notice 2026-66 (plan and IRA limits); SSA program amounts"
     },
     {
       "path": "tax/rules.json",

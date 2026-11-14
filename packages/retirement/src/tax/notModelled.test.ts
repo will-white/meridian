@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createTradeResult, planTrades, TRADE_FULL } from "../trades.js";
-import { iraLimit } from "./contributionLimits.js";
+import { employeeDeferralLimit, iraLimit } from "./contributionLimits.js";
 import { assertTaxInput, TaxInputError } from "./federalTax.js";
 import { HW, HW_REC, progOffset, RB, RB_REC, RW, RW_REC, SO, SO_REC, SS_REC, TI, TO } from "./layout.js";
 import { NOT_MODELLED, type NotModelledId } from "./notModelled.js";
@@ -115,6 +115,18 @@ const PINS: Record<NotModelledId, () => void> = {
     const r = tax(2026, S, { WAGES: 50000, TRAD_DIST: 20000, PEN10_BASE: base });
     expect(r[TO.AGI]).toBe(70000);
     near(r[TO.TOTAL]!, 8570);
+  },
+  roth_catch_up: () => {
+    // The C26 case (loop.real.test.ts): born January 1965 (61 in 2026), salary 200,000, deferral
+    // 24,500 + 11,250 (60 to 63) to a pre-tax 401(k). The limit function takes no wages (no prior-
+    // year wage test), so the whole 35,750 reduces wages: 200,000 − 35,750 − 9,750 (the HSA) =
+    // 154,500; taxable 138,400; 17,966 + 24% × 32,700 = 25,814.00. Under § 414(v)(7)(A) (prior-year
+    // wages above 150,000; Notice 2025-67) the 11,250 would be Roth: wages 165,750, taxable 149,650,
+    // 17,966 + 24% × 43,950 = 28,514.00, so tax is understated by 2,700 = 24% × 11,250 that year.
+    expect(employeeDeferralLimit(t.prog, progOffset(0), 61, 1)).toBe(35750);
+    expect(employeeDeferralLimit.length).toBe(4);
+    near(tax(2026, S, { WAGES: 154500 })[TO.TOTAL]!, 25814);
+    near(tax(2026, S, { WAGES: 165750 })[TO.TOTAL]!, 28514);
   },
   ira_deduction_limits: () => {
     // I3: the IRA limit at 50 is 8,600 whatever the household earns: the function takes no income.

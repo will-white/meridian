@@ -556,7 +556,9 @@ describe("C26 the contribution caps on the real 2026 limits", () => {
   // employee excess, 7,900, is saved after tax in the cash account (C26); wages for tax 200,000 −
   // 35,750 − 9,750 = 154,500 (the Roth IRA and the excess do not reduce them); taxable 138,400;
   // 17,966 + 24% × 32,700 = 25,814.00. Payroll on gross wages: 6.2% × 184,500 + 1.45% × 200,000 =
-  // 14,339.00. With an employer amount of 50,000, 2,500 above the room is dropped.
+  // 14,339.00. With an employer amount of 50,000, 2,500 above the room is dropped. SECURE 2.0's Roth
+  // catch-up rule would make the 11,250 Roth for this 200,000 earner; it is not modelled
+  // (notModelled `roth_catch_up`, pinned in tax/notModelled.test.ts on this case).
   const input = (employerCents: string) =>
     buildSimInput({
       startYear: 2026,
@@ -595,6 +597,71 @@ describe("C26 the contribution caps on the real 2026 limits", () => {
     close(yr(detail, 0, YR.EMPLOYER), 47500);
     close(ac(detail, 0, 3, AC.DEPOSIT), 7900);
     close(ps.wn[WN.CONTRIBUTION_CAPPED]!, 10400);
+  });
+});
+
+describe("tax-02: a married couple shares one family HSA limit; each spouse adds their own catch-up from 55", () => {
+  // Pub. 969 (2025), "Rules for married people": "If either spouse has family HDHP coverage, both
+  // spouses are treated as having family HDHP coverage ... the contribution limit is split equally
+  // between the spouses unless you agree on a different division"; "If both spouses are 55 or older
+  // ... each spouse's contribution limit is increased by the additional contribution" (§ 223(b)(5),
+  // (b)(3)). The planner assumes family coverage (it does not know the tier) and divides the family
+  // limit in proportion to the amounts the household entered, its own division. Two spouses with
+  // HSA contributions are both eligible individuals; a spouse who contributes nothing leaves the
+  // whole family limit to the other.
+  const couple = (birthYear: number, cents: [string, string]) =>
+    buildSimInput({
+      startYear: 2026,
+      people: [
+        { birthYear, retirementMonth: "2030-01", longevity: { mode: "fixed", age: 2031 - birthYear } },
+        { birthYear, retirementMonth: "2030-01", longevity: { mode: "fixed", age: 2031 - birthYear } },
+      ],
+      accounts: [account("hsa1", "hsa", "0", { owner: "p1" }), account("hsa2", "hsa", "0", { owner: "p2" }), cashAccount("cash", "0")],
+      incomes: [
+        incomeStream("s1", "salary", "10000000", "2026-01", { personId: "p1", endMonth: "2030-01" }),
+        incomeStream("s2", "salary", "10000000", "2026-01", { personId: "p2", endMonth: "2030-01" }),
+      ],
+      contributions: [
+        { accountId: "hsa1", employeeAnnualCents: cents[0], employerAnnualCents: "0", scaleWith: "inflation", endMonth: "2030-01" },
+        { accountId: "hsa2", employeeAnnualCents: cents[1], employerAnnualCents: "0", scaleWith: "inflation", endMonth: "2030-01" },
+      ],
+      spending: { startMonth: "2030-01" },
+    });
+
+  it("tax-02 both 45, 8,750 each in 2026: the deposits sum to the family 8,750, the other 8,750 is saved after tax; wages for tax 191,250; tax 24,415.00", () => {
+    // Each 8,750 × 8,750 / 17,500 = 4,375. Wages 200,000 − 8,750 = 191,250; taxable 191,250 − 32,200
+    // = 159,050; 11,600 + 22% × (159,050 − 100,800) = 11,600 + 12,815 = 24,415.00. (Before the fix
+    // each spouse deferred 8,750: wages 182,500, tax 22,490.00.)
+    const { ps, detail } = runRealPath(couple(1981, ["875000", "875000"]));
+    closeAll([0, 1, 2].map((a) => ac(detail, 0, a, AC.DEPOSIT)), [4375, 4375, 8750]);
+    close(yr(detail, 0, YR.CONTRIBUTION_EXCESS), 8750);
+    close(ti(detail, 0, TI.WAGES), 191250);
+    close(yr(detail, 0, YR.TAX), 24415);
+    close(ps.wn[WN.CONTRIBUTION_CAPPED]!, 8750);
+  });
+
+  it("tax-02 both 56, 8,750 each in 2026: 8,750 shared plus 1,000 each, 10,750 in all; wages for tax 189,250; tax 23,975.00", () => {
+    // Each spouse's limit 8,750 + 1,000 = 9,750 holds the 8,750; the parts above the catch-ups,
+    // 7,750 + 7,750 = 15,500, share the family 8,750: 4,375 each, plus 1,000 each = 5,375 each.
+    // Excess 17,500 − 10,750 = 6,750. Wages 200,000 − 10,750 = 189,250; taxable 157,050;
+    // 11,600 + 22% × 56,250 = 23,975.00.
+    const { detail } = runRealPath(couple(1970, ["875000", "875000"]));
+    closeAll([0, 1, 2].map((a) => ac(detail, 0, a, AC.DEPOSIT)), [5375, 5375, 6750]);
+    close(ti(detail, 0, TI.WAGES), 189250);
+    close(yr(detail, 0, YR.TAX), 23975);
+  });
+
+  it("tax-02 a division the household entered is kept: 6,000 and 1,000 at 45 fit the family 8,750 in full", () => {
+    const { detail } = runRealPath(couple(1981, ["600000", "100000"]));
+    closeAll([0, 1, 2].map((a) => ac(detail, 0, a, AC.DEPOSIT)), [6000, 1000, 0]);
+    close(ti(detail, 0, TI.WAGES), 193000);
+  });
+
+  it("tax-02 one spouse contributing alone may use the whole family limit, as before", () => {
+    const { detail } = runRealPath(couple(1981, ["900000", "0"]));
+    // The family 8,750; 250 excess saved after tax.
+    closeAll([0, 1, 2].map((a) => ac(detail, 0, a, AC.DEPOSIT)), [8750, 0, 250]);
+    close(ti(detail, 0, TI.WAGES), 191250);
   });
 });
 

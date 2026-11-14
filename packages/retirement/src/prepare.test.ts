@@ -215,8 +215,8 @@ describe("C12 the compiles inside prepare: tax law, tax drag, Social Security, R
 
   it("C12 the tax law of the rule set, over the plan's years; its compile warnings come separately", () => {
     expect([run.law.startYear, run.law.years, run.law.ruleSetId]).toEqual([2026, 47, "current_law"]);
-    // The 2027 plan limits are still pending (seams §9 item 3).
-    expect(run.compileWarnings.map((w) => w.code)).toEqual(["limits_pending"]);
+    // No compile warning: the 2027 plan limits are published (Notice 2026-66, data 2026.11.1; seams §9 item 3 closed).
+    expect(run.compileWarnings.map((w) => w.code)).toEqual([]);
     expect(run.fillOptions).toEqual({ chainedCpiWedge: 0, realWageGrowth: 0 });
     expect(run.includePayrollTax).toBe(true);
     expect(run.lossCarryIn).toBe(0);
@@ -536,7 +536,7 @@ describe("Test 11: the inputs fixture's frozen input prepared to stated values (
     expect(run.surplusAccount).toBe(B);
     expect(run.tradeMode).toBe(TRADE_FULL);
     expect(run.warnings.map((w) => w.code)).toEqual(["intl_modelled_as_us"]);
-    expect(run.compileWarnings.map((w) => w.code)).toEqual(["limits_pending"]);
+    expect(run.compileWarnings.map((w) => w.code)).toEqual([]);
   });
 
   it("11 a resolver-shaped input with a fixture account of each bucket passes validateInput; a joint Roth would not", () => {

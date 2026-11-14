@@ -8,14 +8,14 @@ const MANIFEST_PATH = new URL("../data/manifest.json", import.meta.url);
 const nodeSha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 
 describe("versions (engine-and-returns decision 31; seams §8 D1)", () => {
-  it("ENGINE_VERSION is 1.0.0", () => {
-    expect(ENGINE_VERSION).toBe("1.0.0");
+  it("ENGINE_VERSION is 1.0.1 (1.0.0 at step 21; the Stage A review fixes change numbers)", () => {
+    expect(ENGINE_VERSION).toBe("1.0.1");
   });
 
-  it("D1 DATA_VERSION equals dataVersion of data/manifest.json, which starts at 2026.11.0", () => {
+  it("D1 DATA_VERSION equals dataVersion of data/manifest.json, which started at 2026.11.0 and is 2026.11.1 since the 2027 plan limits", () => {
     const onDisk = JSON.parse(readFileSync(MANIFEST_PATH, "utf8")) as { dataVersion: string };
     expect(DATA_VERSION).toBe(onDisk.dataVersion);
-    expect(DATA_VERSION).toBe("2026.11.0");
+    expect(DATA_VERSION).toBe("2026.11.1");
   });
 
   it("D1 DATA_CHECKSUM is the SHA-256 of the files' hashes joined by newlines in manifest order", () => {

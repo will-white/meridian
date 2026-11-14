@@ -32,16 +32,16 @@
   },
   "additionalTaxes": { "earlyDistributionRate": 0.10, "hsaNonQualifiedRate": 0.20 },
   "contributionLimits": {
-    "employeeDeferral": 24500,
-    "catchUp50": 8000,
-    "catchUp60to63": 11250,
-    "annualAdditions": 72000,
+    "employeeDeferral": 25500,
+    "catchUp50": 8500,
+    "catchUp60to63": 11750,
+    "annualAdditions": 75000,
     "ira": 7500,
     "iraCatchUp50": 1100,
     "hsaSelf": 4500,
     "hsaFamily": 9000,
     "hsaCatchUp55": 1000,
-    "pending": ["employeeDeferral", "catchUp50", "catchUp60to63", "annualAdditions", "ira", "iraCatchUp50"]
+    "pending": []
   },
   "payroll": {
     "oasdiRate": 0.062,
@@ -68,19 +68,20 @@
       "section": "section 3.01(1): HSA self-only 4,500, family 9,000"
     },
     {
-      "title": "IRS COLA increases for dollar limitations on benefits and contributions",
-      "url": "https://www.irs.gov/retirement-plans/cola-increases-for-dollar-limitations-on-benefits-and-contributions",
-      "retrieved": "2026-11-13",
-      "sha256": null,
-      "section": "2026 is the newest column: the 2027 plan and IRA limits are not published",
-      "note": "Web page, last reviewed 2026-08-24. The six fields under contributionLimits.pending carry the 2026 amounts of Notice 2025-67 until the IRS notice for 2027 appears; no forecast is stored. A web search on 2026-11-13 found only forecasts (Milliman, Marsh: deferral 25,500)."
+      "title": "Notice 2026-66",
+      "url": "https://www.irs.gov/pub/irs-drop/n-26-66.pdf",
+      "retrieved": "2026-11-14",
+      "sha256": "d36060fae77e49760073db883f048abb3076ac5d9cf73772977b4cd4aca46aba",
+      "section": "Cost-of-Living Adjusted Limitations for 2027: § 415(c)(1)(A) 72,000 → 75,000; § 402(g)(1) 24,500 → 25,500; § 414(v)(2)(B)(i) 8,000 → 8,500; § 414(v)(2)(E)(i) (age 60 to 63) 11,250 → 11,750; § 219(b)(5)(A) remains 7,500; § 219(b)(5)(B)(ii) remains 1,100",
+      "note": "PDF created 2026-11-12. The same notice raises the Roth catch-up wage threshold of § 414(v)(7)(A) (2026 wages, for 2027 catch-ups) from 150,000 to 155,000; the planner does not model that rule (notModelled roth_catch_up)."
     },
     {
-      "title": "Notice 2025-67",
-      "url": "https://www.irs.gov/pub/irs-drop/n-25-67.pdf",
-      "retrieved": "2026-11-13",
-      "sha256": "1eea8f141b0cddd182f9f09b3bc8ffad683d27ceb806dfc6da126811dc0a1f8d",
-      "section": "the 2026 amounts carried for the six pending fields"
+      "title": "IR-2026-136, 401(k) limit increases to $25,500 for 2027, IRA limit remains $7,500",
+      "url": "https://www.irs.gov/newsroom/401k-limit-increases-to-25500-for-2027-ira-limit-remains-7500",
+      "retrieved": "2026-11-14",
+      "sha256": null,
+      "section": "Highlights of changes for 2027 (deferral 25,500; IRA 7,500; IRA catch-up 1,100; catch-up 8,500; at 60 to 63 11,750)",
+      "note": "Web page, Nov. 12, 2026; it announces Notice 2026-66."
     },
     {
       "title": "Publication 969 (2025), Health Savings Accounts and Other Tax-Favored Health Plans",
