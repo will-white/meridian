@@ -186,7 +186,7 @@ export async function listBillsDue(db: DbOrTx, q: { today: IsoDate; days?: numbe
 
 // ---- Net worth ----
 
-interface LatestBalance {
+export interface LatestBalance {
   balanceCents: bigint;
   date: IsoDate;
   type: AccountType;
@@ -198,7 +198,7 @@ interface LatestBalance {
  * does not, because closing an account hides it from now on and does not change what the
  * household was worth before (audit a6-text-rules-accounts-07).
  */
-async function latestBalances(db: DbOrTx, asOf: IsoDate, openOnly: boolean): Promise<Map<string, LatestBalance>> {
+export async function latestBalances(db: DbOrTx, asOf: IsoDate, openOnly: boolean): Promise<Map<string, LatestBalance>> {
   const rows = await db
     .selectDistinctOn([balanceSnapshot.accountId], { accountId: balanceSnapshot.accountId, balanceCents: balanceSnapshot.balanceCents, date: balanceSnapshot.date, type: account.type })
     .from(balanceSnapshot)

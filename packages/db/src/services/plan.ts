@@ -127,8 +127,13 @@ async function loadRows(db: DbOrTx, fromMonth: MonthKey, toMonth: MonthKey): Pro
   }));
 }
 
-/** Categorized non-transfer rows (splits replace their parent), signed, per (category, month). [lo, hi) are dates. */
-async function loadActuals(db: DbOrTx, lo: IsoDate, hi: IsoDate): Promise<ActualInput[]> {
+/**
+ * Categorized non-transfer rows (splits replace their parent), signed, per (category, month), in
+ * the plan's scope (on-budget accounts or the feed category, posted and pending). [lo, hi) are
+ * dates. Exported for the retirement baseline (inputs-and-data §3.2 B7), which seeds spending from
+ * the grid's own actuals.
+ */
+export async function loadCategoryActuals(db: DbOrTx, lo: IsoDate, hi: IsoDate): Promise<ActualInput[]> {
   const cat = sql<string>`coalesce(${split.categoryId}, ${transaction.categoryId})`;
   const month = sql<string>`to_char(${transaction.date}, 'YYYY-MM')`;
   const amount = sql`coalesce(${split.amountCents}, ${transaction.amountCents})`;
@@ -320,7 +325,7 @@ export async function loadPlanInput(db: DbOrTx, q: PlanRangeQuery): Promise<Comp
   const hi = monthStart(addMonths(hiMonth, 1));
 
   const rows = await loadRows(db, loMonth, hiMonth);
-  const actuals = await loadActuals(db, lo, hi);
+  const actuals = await loadCategoryActuals(db, lo, hi);
   const goalNets = await loadGoalNets(db, lo, hi, goals);
   const uncategorized = await loadUncategorized(db, monthStart(q.from), monthStart(addMonths(q.to, 1)));
   const autoPlans = await loadAutoPlans(db, { from: loMonth, to: hiMonth, today: q.today, categories, goals });
@@ -513,7 +518,7 @@ export async function planAverages(db: DbOrTx, q: PlanAveragesInput): Promise<Pl
   const categories = await loadCategories(db);
   const lo = monthStart(window.from);
   const hi = monthStart(addMonths(window.to, 1));
-  const actuals = await loadActuals(db, lo, hi);
+  const actuals = await loadCategoryActuals(db, lo, hi);
   const goalNets = await loadGoalNets(db, lo, hi, await loadGoalLinks(db));
 
   const byCategory = new Map<string, Map<MonthKey, bigint>>();
