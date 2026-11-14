@@ -258,7 +258,8 @@ export type DrillTarget = { kind: "category"; row: Pick<PlanCategoryRow, "catego
 
 /**
  * The register query behind a drill-down. `planScope` asks for exactly what the plan counts
- * (on-budget accounts, split transactions by their lines), so the list adds up to the cell.
+ * (on-budget accounts, split transactions by their lines, a goal's transfers into its linked
+ * account whatever that account's budget flag), so the list adds up to the cell.
  * The Plan page's drill-down panel and the register link use the same query.
  */
 export function drillDownQuery(target: DrillTarget): Record<string, string | boolean> {

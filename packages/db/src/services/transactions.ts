@@ -31,8 +31,13 @@ export interface ListTransactionsQuery {
   /** Phase 2: charges linked to one recurring item. */
   recurringId?: string;
   /**
-   * Only what the spending plan reads (`onBudgetOrFeedCategory`): the drill-down behind a plan
-   * cell sets it so the list adds up to the cell's actual.
+   * Only what the spending plan reads, so the drill-down behind a plan cell adds up to the
+   * cell's actual. With `categoryId`, the row's line in that category must be one the plan
+   * counts (on budget, or the category is the feed: `onBudgetOrFeedCategory`), so a split row
+   * of an off-budget account is listed only under its feed line. With `goalId`, the goal's
+   * categorized rows follow the same rule and the transfer legs in its linked account are kept
+   * whatever that account's budget flag, as the goal's cell counts them. With neither, a row
+   * the plan counts anywhere (on budget, or a feed line).
    */
   planScope?: boolean;
   limit: number;
@@ -135,20 +140,33 @@ function inCategory(categoryId: string): SQL {
   return sql`((${transaction.categoryId} = ${categoryId} and not ${hasSplits}) or exists (select 1 from ${split} where ${split.transactionId} = ${transaction.id} and ${split.categoryId} = ${categoryId}))`;
 }
 
+/**
+ * The row counts in the category as the plan counts it: its line there (the row, or a split
+ * line) is on budget or the category is the feed. Every line in the category shares that
+ * category, so the plan's per-line rule (`loadActuals`) reduces to one test on the category.
+ */
+function inCategoryInPlanScope(categoryId: string): SQL {
+  return sql`(${inCategory(categoryId)} and ${onBudgetOrFeedCategory(sql`${categoryId}::uuid`)})`;
+}
+
 /** The plan-scope rule for a whole row: on budget, or (via the row or any of its split lines) in the feed category. */
 function inPlanScope(): SQL {
   return sql`(${onBudgetOrFeedCategory(sql`${transaction.categoryId}`)} or exists (select 1 from ${split} where ${split.transactionId} = ${transaction.id} and ${onBudgetOrFeedCategory(sql`${split.categoryId}`)}))`;
 }
 
-/** A goal's rows; `false` when the goal does not exist. */
-async function goalRowsFilter(db: DbOrTx, goalId: string): Promise<SQL> {
+/**
+ * A goal's rows; `false` when the goal does not exist. In plan scope the categorized rows are
+ * the ones its cell counts (`inCategoryInPlanScope`); the transfer legs in its linked account
+ * count whatever the account's budget flag (`loadGoalNets`), so plan scope never drops them.
+ */
+async function goalRowsFilter(db: DbOrTx, goalId: string, planScope: boolean): Promise<SQL> {
   const goals = await db
     .select({ id: savingsGoal.id, categoryId: savingsGoal.categoryId, linkedAccountId: savingsGoal.linkedAccountId, startMonth: savingsGoal.startMonth, status: savingsGoal.status })
     .from(savingsGoal)
     .orderBy(asc(savingsGoal.createdAt), asc(savingsGoal.id));
   const goal = goals.find((g) => g.id === goalId);
   if (!goal) return sql`false`;
-  const categorized = sql`(${transaction.isTransfer} = false and ${inCategory(goal.categoryId)})`;
+  const categorized = sql`(${transaction.isTransfer} = false and ${planScope ? inCategoryInPlanScope(goal.categoryId) : inCategory(goal.categoryId)})`;
   const ranges = goal.linkedAccountId === null ? [] : goalOwnedMonthRanges(goals, goalId);
   if (goal.linkedAccountId === null || ranges.length === 0) return categorized;
   const owned = ranges.map((r) => {
@@ -166,7 +184,8 @@ export async function listTransactions(db: DbOrTx, query: ListTransactionsQuery)
   const cursor = query.cursor !== undefined ? transactionCursor(query.cursor) : undefined;
   const q = query.q?.trim();
   const pattern = q ? containsPattern(q) : undefined;
-  const goalFilter = query.goalId ? await goalRowsFilter(db, query.goalId) : undefined;
+  const planScope = query.planScope === true;
+  const goalFilter = query.goalId ? await goalRowsFilter(db, query.goalId, planScope) : undefined;
 
   const rows = await db
     .select({
@@ -196,7 +215,7 @@ export async function listTransactions(db: DbOrTx, query: ListTransactionsQuery)
     .where(
       and(
         query.accountId ? eq(transaction.accountId, query.accountId) : undefined,
-        query.categoryId ? inCategory(query.categoryId) : undefined,
+        query.categoryId ? (planScope ? inCategoryInPlanScope(query.categoryId) : inCategory(query.categoryId)) : undefined,
         query.uncategorized ? and(isNull(transaction.categoryId), eq(transaction.isTransfer, false), sql`not ${hasSplits}`) : undefined,
         query.transfers === "exclude" ? eq(transaction.isTransfer, false) : undefined,
         query.transfers === "only" ? eq(transaction.isTransfer, true) : undefined,
@@ -204,7 +223,8 @@ export async function listTransactions(db: DbOrTx, query: ListTransactionsQuery)
         query.to ? lte(transaction.date, query.to) : undefined,
         goalFilter,
         query.recurringId ? eq(transaction.recurringId, query.recurringId) : undefined,
-        query.planScope ? inPlanScope() : undefined,
+        // A category or a goal carries its own plan-scope rule (above).
+        planScope && !query.categoryId && !query.goalId ? inPlanScope() : undefined,
         pattern
           ? or(
               ilike(transaction.rawDescription, pattern),

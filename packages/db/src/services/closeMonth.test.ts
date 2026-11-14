@@ -38,10 +38,10 @@ describe.skipIf(!TEST_DATABASE_URL)("plan.close_month", () => {
   }
 
   it("T19: freezes the auto values once; a re-run inserts nothing; manual rows are never overwritten", async () => {
-    expect(await closeMonth(t.db, "2026-07", { today: PLAN_SEED_TODAY })).toEqual({ inserted: 0, through: "2026-07" });
+    expect(await closeMonth(t.db, "2026-07", { today: PLAN_SEED_TODAY })).toEqual({ inserted: 0, extended: 0, through: "2026-07" });
 
     // Aug has nothing to freeze (bills first seen in Sep, goal starts in Sep); Sep freezes Rent, Netflix, Internet and the goal.
-    expect(await closeMonth(t.db, "2026-09", { today: PLAN_SEED_TODAY })).toEqual({ inserted: 4, through: "2026-09" });
+    expect(await closeMonth(t.db, "2026-09", { today: PLAN_SEED_TODAY })).toEqual({ inserted: 4, extended: 0, through: "2026-09" });
     const C = S.categories;
     const rows = await t.db.select().from(monthPlan).where(eq(monthPlan.month, "2026-09"));
     const byCategory = Object.fromEntries(rows.map((r) => [r.categoryId, [r.plannedCents, r.plannedSource]]));
@@ -54,19 +54,19 @@ describe.skipIf(!TEST_DATABASE_URL)("plan.close_month", () => {
     expect(rows.filter((r) => r.month === "2026-09")).toHaveLength(7);
     expect(await t.db.select().from(monthPlan).where(eq(monthPlan.month, "2026-08"))).toHaveLength(0);
 
-    expect(await closeMonth(t.db, "2026-09", { today: PLAN_SEED_TODAY })).toEqual({ inserted: 0, through: "2026-09" });
+    expect(await closeMonth(t.db, "2026-09", { today: PLAN_SEED_TODAY })).toEqual({ inserted: 0, extended: 0, through: "2026-09" });
 
     // Only completed months freeze: on Oct 13 a request through October stops at September.
-    expect(await closeMonth(t.db, "2026-10", { today: PLAN_SEED_TODAY })).toEqual({ inserted: 0, through: "2026-10" });
+    expect(await closeMonth(t.db, "2026-10", { today: PLAN_SEED_TODAY })).toEqual({ inserted: 0, extended: 0, through: "2026-10" });
     expect(await t.db.select().from(monthPlan).where(eq(monthPlan.plannedSource, "recurring"))).toHaveLength(3);
 
     // A manual override set before the freeze survives it.
     await setPlanCells(t.db, [{ month: "2026-10", categoryId: C.internet, plannedCents: 8500n }], { userId: null, batchId: randomUUID() });
-    expect(await closeMonth(t.db, "2026-10", { today: NOV_2 })).toEqual({ inserted: 3, through: "2026-10" }); // Rent, Netflix (both paid in Oct), goal; Internet is manual
+    expect(await closeMonth(t.db, "2026-10", { today: NOV_2 })).toEqual({ inserted: 3, extended: 0, through: "2026-10" }); // Rent, Netflix (both paid in Oct), goal; Internet is manual
     const oct = await t.db.select().from(monthPlan).where(eq(monthPlan.month, "2026-10"));
     expect(oct.find((r) => r.categoryId === C.internet)).toMatchObject({ plannedCents: 8500n, plannedSource: "manual" });
     expect(oct.find((r) => r.categoryId === C.carInsurance)).toBeUndefined();
-    expect(await closeMonth(t.db, "2026-10", { today: NOV_2 })).toEqual({ inserted: 0, through: "2026-10" });
+    expect(await closeMonth(t.db, "2026-10", { today: NOV_2 })).toEqual({ inserted: 0, extended: 0, through: "2026-10" });
   });
 
   it("a price change moves only months that are not frozen", async () => {
@@ -85,7 +85,7 @@ describe.skipIf(!TEST_DATABASE_URL)("plan.close_month", () => {
     // Clearing a frozen cell deletes the row; the next run re-freezes it at the current auto value.
     await setPlanCells(t.db, [{ month: "2026-10", categoryId: C.rent, plannedCents: null }], { userId: null, batchId: randomUUID() });
     expect(cell(await getPlan(t.db, RANGE), C.rent, "2026-10")).toMatchObject({ plannedCents: 190000n, hasExplicitPlan: false });
-    expect(await closeMonth(t.db, "2026-10", { today: NOV_2 })).toEqual({ inserted: 1, through: "2026-10" });
+    expect(await closeMonth(t.db, "2026-10", { today: NOV_2 })).toEqual({ inserted: 1, extended: 0, through: "2026-10" });
     expect(cell(await getPlan(t.db, RANGE), C.rent, "2026-10")).toMatchObject({ plannedCents: 190000n, source: "recurring", hasExplicitPlan: true });
 
     // A row holding only a note has planned_cents null: the freeze fills it in place.
@@ -93,12 +93,12 @@ describe.skipIf(!TEST_DATABASE_URL)("plan.close_month", () => {
     await setPlanCells(t.db, [{ month: "2026-11", categoryId: C.netflix, note: "price went up" }], { userId: null, batchId: randomUUID() });
     await t.db.insert(transaction).values({ accountId: S.accounts.checking, source: "manual", date: "2026-11-05", amountCents: -1549n, rawDescription: "NETFLIX.COM", categoryId: C.netflix, recurringId: S.recurring.netflix });
     await t.db.update(recurring).set({ nextDueDate: "2026-12-05" }).where(eq(recurring.id, S.recurring.netflix));
-    expect(await closeMonth(t.db, "2026-11", { today: "2026-12-01" })).toEqual({ inserted: 2, through: "2026-11" }); // Netflix (paid) and the goal
+    expect(await closeMonth(t.db, "2026-11", { today: "2026-12-01" })).toEqual({ inserted: 2, extended: 0, through: "2026-11" }); // Netflix (paid) and the goal
     const nov = await t.db.select().from(monthPlan).where(eq(monthPlan.month, "2026-11"));
     expect(nov.find((r) => r.categoryId === C.netflix)).toMatchObject({ plannedCents: 1549n, plannedSource: "recurring", note: "price went up" });
     // Rent was due Nov 1 and Internet Oct 20 and neither was paid: a closed month keeps only what was paid in it.
     expect(nov.find((r) => r.categoryId === C.rent)).toBeUndefined();
     expect(nov.find((r) => r.categoryId === C.internet)).toBeUndefined();
-    expect(await closeMonth(t.db, "2026-11", { today: "2026-12-01" })).toEqual({ inserted: 0, through: "2026-11" });
+    expect(await closeMonth(t.db, "2026-11", { today: "2026-12-01" })).toEqual({ inserted: 0, extended: 0, through: "2026-11" });
   });
 });

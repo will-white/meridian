@@ -70,6 +70,14 @@ export const monthPlan = pgTable(
     /** The spec's "carried-in amount": a pin for this month's carried-in that feeds forward. */
     carriedInOverrideCents: bigint("carried_in_override_cents", { mode: "bigint" }),
     note: text("note"),
+    /**
+     * For a value plan.close_month froze from recurring items (planned_source `recurring`): the
+     * linked charges dated in the month that it counts. A later run adds a charge dated in the
+     * month that is not counted yet (it reached the ledger after the freeze) at its item's
+     * expected amount, so the value keeps the prices it was frozen at and still holds what was
+     * paid. Null for every other row; cleared whenever planned_cents is written by hand.
+     */
+    frozenChargeIds: uuid("frozen_charge_ids").array(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex("month_plan_category_month_idx").on(t.categoryId, t.month), index("month_plan_month_idx").on(t.month)],
