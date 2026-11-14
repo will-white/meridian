@@ -123,7 +123,8 @@ describe("mapCsvRows", () => {
         externalId: { column: "Transaction ID" },
       },
     );
-    expect(mapped[0]!.externalId).toBe("csvid:ABC123");
+    // The id names its column (audit a10-conformance-ledger-02, second round).
+    expect(mapped[0]!.externalId).toBe("csvid2:transaction id:ABC123");
   });
 });
 
