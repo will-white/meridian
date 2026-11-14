@@ -1,7 +1,7 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { SignInEventKind } from "@meridian/shared";
 import type { DbOrTx } from "../index.js";
-import { signInEvent } from "../schema/index.js";
+import { signInEvent, user } from "../schema/index.js";
 
 /**
  * Sign-in activity (Settings > Sign-in activity): completed sign-ins and failed attempts on
@@ -10,7 +10,9 @@ import { signInEvent } from "../schema/index.js";
  */
 
 /** Kinds that count as a failed attempt. */
-export const FAILED_SIGN_IN_KINDS: readonly SignInEventKind[] = ["password_failed", "code_failed", "code_lockout", "passkey_failed"];
+export const FAILED_SIGN_IN_KINDS: readonly SignInEventKind[] = ["password_failed", "reauth_failed", "code_failed", "code_lockout", "passkey_failed"];
+/** Kinds that are a completed sign-in: they also become the member's `last_sign_in_at`. */
+export const SIGNED_IN_KINDS: readonly SignInEventKind[] = ["signed_in", "passkey_signed_in"];
 /** How long sign-in activity is kept. */
 export const SIGN_IN_EVENT_RETENTION_DAYS = 90;
 
@@ -31,8 +33,24 @@ export interface SignInEventRecord {
   userAgent: string | null;
 }
 
+/**
+ * Keeps one event. A completed sign-in is also written to the member's row
+ * (`user.last_sign_in_at`, the same instant), because the activity is kept for 90 days and
+ * "Last sign-in" must not turn into "never" when it goes (audit a2-auth-users N3).
+ */
 export async function recordSignInEvent(db: DbOrTx, event: SignInEventInput): Promise<void> {
-  await db.insert(signInEvent).values({ at: sql`clock_timestamp()`, userId: event.userId, username: event.username, kind: event.kind, ip: event.ip, userAgent: event.userAgent });
+  const values = { at: sql`clock_timestamp()`, userId: event.userId, username: event.username, kind: event.kind, ip: event.ip, userAgent: event.userAgent };
+  if (!SIGNED_IN_KINDS.includes(event.kind)) {
+    await db.insert(signInEvent).values(values);
+    return;
+  }
+  await db.transaction(async (tx) => {
+    const [row] = await tx.insert(signInEvent).values(values).returning({ id: signInEvent.id });
+    await tx
+      .update(user)
+      .set({ lastSignInAt: sql`(select e."at" from "sign_in_event" e where e."id" = ${row!.id})` })
+      .where(eq(user.id, event.userId));
+  });
 }
 
 /** Newest first; one member's events when `userId` is given, everyone's otherwise. */
@@ -55,7 +73,7 @@ export async function countFailedSignIns(db: DbOrTx, query: { userId?: string; d
     .where(
       and(
         query.userId !== undefined ? eq(signInEvent.userId, query.userId) : undefined,
-        sql`${signInEvent.kind} in ('password_failed', 'code_failed', 'code_lockout', 'passkey_failed')`,
+        inArray(signInEvent.kind, [...FAILED_SIGN_IN_KINDS]),
         sql`${signInEvent.at} > now() - make_interval(days => ${days})`,
       ),
     );

@@ -53,7 +53,9 @@ describe("sign-in activity wording", () => {
     expect(signInEventLabel("password_failed")).toBe("Wrong password");
     expect(signInEventLabel("code_failed")).toBe("Wrong authenticator code");
     expect(signInEventLabel("code_lockout")).toBe("Fifth wrong code: sign-in stopped");
-    expect((["signed_in", "password_failed", "code_failed", "code_lockout"] as const).map(isFailedSignIn)).toEqual([false, true, true, true]);
+    // A wrong current password on a signed-in session (a new password, a new authenticator, a passkey): audit a2-auth-users N2.
+    expect(signInEventLabel("reauth_failed")).toBe("Wrong current password while signed in");
+    expect((["signed_in", "password_failed", "reauth_failed", "code_failed", "code_lockout"] as const).map(isFailedSignIn)).toEqual([false, true, true, true, true]);
   });
 
   it("warns only when there were failures, with the count", () => {

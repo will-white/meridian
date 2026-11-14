@@ -42,7 +42,7 @@ const stopScheduler = startScheduler(ctx);
 async function shutdown(signal: string) {
   console.log(`[worker] ${signal} received, stopping`);
   stopRunner();
-  stopScheduler();
+  await stopScheduler();
   await client.end({ timeout: 5 });
   process.exit(0);
 }

@@ -178,10 +178,18 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   const recordEvent = (request: FastifyRequest, who: { id: string; username: string }, kind: SignInEventKind) =>
     recordSignInEvent(app.db, { userId: who.id, username: who.username, kind, ...clientOf(request) });
 
-  async function requirePassword(request: FastifyRequest, reply: FastifyReply, userId: string, password: string): Promise<void> {
+  /**
+   * The current password, asked again on a signed-in session before a new password, a new
+   * authenticator or a passkey: the barrier between a stolen session and lasting access. A wrong
+   * one is kept as sign-in activity (`reauth_failed`, counted as a failed attempt; audit
+   * a2-auth-users N2) as well as against the per-username allowance.
+   */
+  async function requirePassword(request: FastifyRequest, reply: FastifyReply, member: AuthUser, password: string): Promise<void> {
     await enforce(reauthLimit, request, reply);
-    const [row] = await app.db.select({ passwordHash: user.passwordHash }).from(user).where(eq(user.id, userId));
-    if (!row || !(await verifyPassword(row.passwordHash, password))) throw forbidden("That is not your current password", "wrong_password");
+    const [row] = await app.db.select({ passwordHash: user.passwordHash }).from(user).where(eq(user.id, member.id));
+    if (row && (await verifyPassword(row.passwordHash, password))) return;
+    if (row) await recordEvent(request, member, "reauth_failed");
+    throw forbidden("That is not your current password", "wrong_password");
   }
 
   r.get("/auth/status", { config: { auth: "public" }, schema: { response: { 200: AuthStatus } } }, async (request) => statusFor(request.auth));
@@ -311,7 +319,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     { bodyLimit: BODY_LIMIT.signIn, config: { ownAccount: true, rateLimit: SIGN_IN_LIMIT.passwordPerAddress }, schema: { body: ChangePasswordBody, response: { 200: RevokeSessionsResponse } } },
     async (request, reply) => {
       const state = signedIn(request);
-      await requirePassword(request, reply, state.user.id, request.body.currentPassword);
+      await requirePassword(request, reply, state.user, request.body.currentPassword);
       if (request.body.newPassword === request.body.currentPassword) throw badRequest("The new password is the same as the current one", "same_password");
       const passwordHash = await hashPassword(request.body.newPassword);
       const { revoked, issued } = await app.db.transaction(async (tx) => {
@@ -329,7 +337,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     { bodyLimit: BODY_LIMIT.signIn, config: { ownAccount: true, rateLimit: SIGN_IN_LIMIT.passwordPerAddress }, schema: { body: PasswordConfirmBody, response: { 200: TotpSetupResponse } } },
     async (request, reply) => {
       const state = signedIn(request);
-      await requirePassword(request, reply, state.user.id, request.body.password);
+      await requirePassword(request, reply, state.user, request.body.password);
       const secret = newTotpSecret();
       await setPendingTotpSecret(app.db, state.user.id, await encryptSecret(secret, app.config.secretsKey));
       reply.header("Cache-Control", "no-store");
@@ -396,7 +404,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const state = signedIn(request);
       const rp = relyingParty(request);
-      await requirePassword(request, reply, state.user.id, request.body.password);
+      await requirePassword(request, reply, state.user, request.body.password);
       const existing = await listPasskeys(app.db, state.user.id);
       const options = await generateRegistrationOptions({
         rpName: "Meridian",

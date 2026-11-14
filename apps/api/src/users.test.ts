@@ -297,4 +297,30 @@ describe.skipIf(!TEST_DATABASE_URL)("the owner's own sign-in", () => {
     const fresh = await t.app.inject({ method: "POST", url: "/api/auth/totp/verify", remoteAddress: "10.2.0.2", cookies: again.jar, payload: { code: totpCode(next, clock.now()) } });
     expect(fresh.statusCode).toBe(200);
   });
+
+  it("keeps a wrong current password typed on a signed-in session as a failed attempt, on every route that asks for it (audit a2-auth-users N2)", async () => {
+    const firefox = "Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0";
+    const activity = async () => (await t.call({ method: "GET", url: "/api/auth/activity" })).json() as SignInActivity;
+    const before = await activity();
+    // The three ways a stolen session could become lasting access: a new password, a new authenticator, a passkey.
+    const guess = "a guess at the password";
+    const attempts = [
+      { url: "/api/auth/password", payload: { currentPassword: guess, newPassword: "taking this account over" } },
+      { url: "/api/auth/totp/replace", payload: { password: guess } },
+      { url: "/api/auth/passkeys/options", payload: { password: guess } },
+    ];
+    for (const { url, payload } of attempts) {
+      const res = await t.call({ method: "POST", url, payload, headers: { origin: "http://localhost", "user-agent": firefox } });
+      expect([res.statusCode, res.json().code], url).toEqual([403, "wrong_password"]);
+    }
+    const after = await activity();
+    expect(after.failedLast7Days).toBe(before.failedLast7Days + 3);
+    expect(after.items).toHaveLength(before.items.length + 3);
+    expect(after.items.slice(0, 3).map((e) => [e.username, e.kind, e.userAgent])).toEqual(Array.from({ length: 3 }, () => ["owner", "reauth_failed", firefox]));
+
+    // The right password is not an event.
+    const ok = await t.call({ method: "POST", url: "/api/auth/totp/replace", payload: { password: OWNER_PASSWORD } });
+    expect(ok.statusCode).toBe(200);
+    expect((await activity()).items).toHaveLength(after.items.length);
+  });
 });

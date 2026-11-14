@@ -1,12 +1,12 @@
 import { asc, eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { account, connection, createSession, enqueueJob, holdingSnapshot, job, price, security, session, signInEvent, user, type Db } from "@meridian/db";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "@meridian/db/testing";
 import { encryptSecret, generateSecretsKey } from "@meridian/shared";
 import type { WorkerConfig } from "./env.js";
 import type { JobContext } from "./jobs/context.js";
 import { drainQueue } from "./runner.js";
-import { atMostEvery, DAILY_JOB_TYPES, inCatchupWindow, purgeSignInData, scheduleDueSyncs, schedulePriceJobs, SIGN_IN_PURGE_INTERVAL_MS } from "./scheduler.js";
+import { atMostEvery, DAILY_JOB_TYPES, inCatchupWindow, purgeSignInData, scheduleDueSyncs, schedulePriceJobs, SIGN_IN_PURGE_INTERVAL_MS, startScheduler } from "./scheduler.js";
 
 /**
  * The price feed's clock (prices design §3.13, test 24) on the household-local day
@@ -318,5 +318,50 @@ describe.skipIf(!TEST_DATABASE_URL)("scheduleDueSyncs after a sync has failed", 
     await db.update(connection).set({ status: "error", accessUrlEnc: null }).where(eq(connection.id, connectionId));
     await tick(5);
     expect(requests).toBe(0);
+  });
+});
+
+/**
+ * Audit a2-auth-users N4: the hourly sign-in purge ran first, in the same try block as the
+ * scheduling, and a failed purge is retried on the next tick; a purge that kept failing (a
+ * permission, a lock) stopped every bank sync, daily job and price job from being queued.
+ */
+describe.skipIf(!TEST_DATABASE_URL)("startScheduler when the sign-in purge fails", () => {
+  let t: TestDb;
+  const config: WorkerConfig = { databaseUrl: "unused", secretsKey: generateSecretsKey(), workerId: "test-worker", syncIntervalHours: 6, pollIntervalMs: 10, initialWindowDays: 93, overlapDays: 7, requestTimeoutMs: 5000 };
+  const now = new Date("2026-10-13T09:30:00Z"); // after the daily hour (08:00 UTC)
+
+  beforeAll(async () => {
+    t = await createTestDb();
+    await t.db.insert(connection).values({ type: "simplefin", name: "Bank", status: "ok", accessUrlEnc: await encryptSecret("https://alice:s3cret@bridge.example.test/simplefin", config.secretsKey) });
+  });
+  afterAll(async () => {
+    await t?.cleanup();
+  });
+
+  it("logs the failure and still queues the due sync and the daily jobs, every tick", async () => {
+    // Deletes are refused; everything else reaches the database.
+    const db = new Proxy(t.db, {
+      get(target, prop) {
+        if (prop === "delete") return () => { throw new Error("permission denied for table session"); };
+        const value = Reflect.get(target, prop, target) as unknown;
+        return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    const errors: string[] = [];
+    const ctx: JobContext = { db, config, client: {}, now: () => now, log: { info: () => {}, warn: () => {}, error: (m: string) => void errors.push(m) } };
+    const queued = async () => (await t.db.select({ type: job.type }).from(job).orderBy(asc(job.createdAt))).map((j) => j.type);
+
+    const stop = startScheduler(ctx, 5);
+    try {
+      await vi.waitFor(async () => expect(await queued()).toEqual(["simplefin.sync", ...DAILY_JOB_TYPES]), { timeout: 3000, interval: 25 });
+      await vi.waitFor(() => expect(errors.length).toBeGreaterThanOrEqual(2), { timeout: 3000, interval: 10 });
+    } finally {
+      await stop();
+    }
+    // The purge is retried (and logged) on each tick; nothing is queued twice.
+    expect(errors[0]).toBe("[scheduler] sign-in purge failed: permission denied for table session");
+    expect(new Set(errors).size).toBe(1);
+    expect(await queued()).toEqual(["simplefin.sync", ...DAILY_JOB_TYPES]);
   });
 });
