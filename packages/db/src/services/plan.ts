@@ -208,7 +208,7 @@ export interface LoadAutoPlansQuery {
 }
 
 /** Items the user confirmed at some point; suggestions and dismissed series never plan. */
-const PLANNED_RECURRING_STATUSES = ["active", "paused", "cancelled"] as const;
+export const PLANNED_RECURRING_STATUSES = ["active", "paused", "cancelled"] as const;
 
 /**
  * Auto-planned values per (category, month) in [from, to] (docs/phase-2-plan.md decisions 3
@@ -450,7 +450,11 @@ export async function applyPlanCellEdits(tx: DbOrTx, edits: readonly PlanCellEdi
     const before = planCellAuditJson(existing);
     const after = planCellAuditJson(next);
     if (JSON.stringify(before) === JSON.stringify(after)) continue;
-    await tx.update(monthPlan).set({ ...next, updatedAt: new Date() }).where(eq(monthPlan.id, existing.id));
+    // A value written by hand is not close_month's any more: the charges its freeze counted go with it.
+    await tx
+      .update(monthPlan)
+      .set({ ...next, ...(edit.plannedCents !== undefined ? { frozenChargeIds: null } : {}), updatedAt: new Date() })
+      .where(eq(monthPlan.id, existing.id));
     await writeAudit(tx, { ...audit, entity: "month_plan", entityId, action: "update", before, after });
     changed++;
   }
@@ -553,9 +557,11 @@ export interface PlanTransactionsQuery {
 
 /**
  * The register rows behind a cell (category, goal, or the uncategorized badge), in the plan's
- * scope: the same on-budget rule and split handling as the cell's actual. A goal's rows are
- * its category's rows plus the transfer legs in its linked account for the months the goal
- * owns that account (`goalOwnedMonthRanges`).
+ * scope: the same on-budget rule and split handling as the cell's actual (a split row is listed
+ * under a category only when the plan counts its line there). A goal's rows are its
+ * category's rows plus the transfer legs in its linked account for the months the goal owns
+ * that account (`goalOwnedMonthRanges`), whatever that account's budget flag, as `loadGoalNets`
+ * counts them.
  */
 export async function listPlanTransactions(db: DbOrTx, q: PlanTransactionsQuery): Promise<{ items: TransactionListRow[]; nextCursor: string | null }> {
   assertMonth(q.month, "month");

@@ -298,8 +298,8 @@ describe.skipIf(!TEST_DATABASE_URL)("GET /api/plan on the fresh seed", () => {
   it("POST /api/plan/close-month freezes auto values for completed months, idempotently", async () => {
     const first = await t.call({ method: "POST", url: "/api/plan/close-month", payload: {} });
     expect(first.statusCode).toBe(200);
-    expect(first.json()).toEqual({ inserted: 4, through: "2026-09" }); // Rent, Netflix, Internet, Emergency Fund
-    expect((await t.call({ method: "POST", url: "/api/plan/close-month", payload: {} })).json()).toEqual({ inserted: 0, through: "2026-09" });
+    expect(first.json()).toEqual({ inserted: 4, extended: 0, through: "2026-09" }); // Rent, Netflix, Internet, Emergency Fund
+    expect((await t.call({ method: "POST", url: "/api/plan/close-month", payload: {} })).json()).toEqual({ inserted: 0, extended: 0, through: "2026-09" });
     expect((await t.call({ method: "POST", url: "/api/plan/close-month", payload: { through: "2026-10" } })).statusCode).toBe(400);
 
     const plan = await getPlan(t);

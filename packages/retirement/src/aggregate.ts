@@ -34,7 +34,7 @@
 import { type MortalityTableId, NEVER_DEPLETED, type SimSummary, rankPaths } from "@meridian/shared";
 import { EngineInputError } from "./errors.js";
 import type { PreparedRun } from "./prepare.js";
-import { PATH_FLAG, type PathState } from "./state.js";
+import { PATH_FLAG, PATH_SCALAR, type PathState } from "./state.js";
 import { WN_REC } from "./tax/layout.js";
 import { type WarningTotals, addPathWarnings, createWarningTotals, mergeWarningTotals, warningMessages } from "./tax/warnings.js";
 import { dollarsToCentsBigInt } from "./units.js";
@@ -194,15 +194,18 @@ export function createRunSummary(run: PreparedRun): RunSummary {
 export function recordPath(chunk: ChunkSummary, i: number, ps: PathState): void {
   const Y = chunk.years;
   const P = chunk.people;
-  chunk.endReal[i] = ps.endReal;
-  chunk.endNominal[i] = ps.endNominal;
+  // The path's money figures are copied from the state's one-slot views (state.ts PATH_SCALAR):
+  // this runs once per path, mostly unoptimized, where every double read one at a time is boxed.
+  const one = ps.pathScalarViews;
+  chunk.endReal.set(one[PATH_SCALAR.END_REAL]!, i);
+  chunk.endNominal.set(one[PATH_SCALAR.END_NOMINAL]!, i);
   chunk.flags[i] = ps.flags;
   chunk.failIdx[i] = ps.failIdx;
   chunk.endIdx[i] = ps.endIdx;
-  for (let p = 0; p < P; p++) chunk.deathIdx[i * P + p] = ps.deathIdx[p]!;
-  chunk.shortfallReal[i] = ps.shortfallReal;
-  chunk.taxesReal[i] = ps.taxesReal;
-  chunk.spendReal[i] = ps.spendReal;
+  chunk.deathIdx.set(ps.deathIdx, i * P);
+  chunk.shortfallReal.set(one[PATH_SCALAR.SHORTFALL_REAL]!, i);
+  chunk.taxesReal.set(one[PATH_SCALAR.TAXES_REAL]!, i);
+  chunk.spendReal.set(one[PATH_SCALAR.SPEND_REAL]!, i);
   chunk.notConvergedYears[i] = ps.notConvergedYears;
   chunk.conversionsSkipped[i] = ps.conversionsSkipped;
   chunk.totalReal.set(ps.totalReal, i * Y);

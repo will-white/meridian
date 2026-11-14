@@ -14,5 +14,5 @@ export { decideSpending, everyLivingRetired } from "./decide.js";
 export { guardrailsCore, yearsRemaining } from "./guardrails.js";
 export { floorCeilingCore } from "./floorCeiling.js";
 export { fixedPercentageGross, vpwGross, youngerLivingAge } from "./vpw.js";
-export { createSpendingOutcome, fillNeeds, settleSpending } from "./outcome.js";
-export type { SpendingOutcome } from "./outcome.js";
+export { createSettleInput, createSpendingOutcome, fillNeeds, fillNeedsFor, settleSpending, settleSpendingFor } from "./outcome.js";
+export type { SettleInput, SpendingOutcome } from "./outcome.js";

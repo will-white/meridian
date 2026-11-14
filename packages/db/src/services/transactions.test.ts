@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { PlanCategoryRowResult } from "@meridian/shared";
@@ -5,8 +6,10 @@ import type { Db } from "../index.js";
 import { account, category, split, transaction } from "../schema/index.js";
 import { createTestDb, TEST_DATABASE_URL, type TestDb } from "../test/db.js";
 import { seedDefaultCategories } from "./categories.js";
+import { createGoal } from "./goals.js";
 import { ingestTransactions } from "./ingest.js";
 import { getPlan, listPlanTransactions } from "./plan.js";
+import { updateHouseholdSetting } from "./settings.js";
 import { countUncategorized, getTransaction, listTransactions, setTransactionSplits, updateTransaction, type TransactionListRow } from "./transactions.js";
 
 /**
@@ -206,5 +209,102 @@ describe.skipIf(!TEST_DATABASE_URL)("plan drill-down, split lines and the review
     ]);
     await ingestTransactions(db, [{ externalId: "BANK-1", date: "2027-01-24", amountCents: -9200n, description: "BISTRO DENVER", pending: false }], { accountId: checking, source: "simplefin", rules: [] });
     expect((await getTransaction(db, bistro!.id))!.splits.map((s) => s.amountCents)).toEqual([-6200n, -3000n]);
+  });
+});
+
+/**
+ * Plan scope where the cell's rule is not "the row is on budget" (audit b1-plan-math, second
+ * round). January 2027, today the 20th; Checking is on budget, the Roth IRA is not (investment
+ * accounts start off budget); the feed (investment income category) is Interest & Dividends.
+ * - Goal "Retirement" (category Roth contributions) is linked to the IRA. Its cell counts the
+ *   transfer legs in the IRA whatever the IRA's budget flag: +500.00 on Jan 5. It also counts
+ *   the categorized rows the plan reads: −100.00 from Checking on Jan 12 → +100.00 (savings
+ *   is bucket-natural −1). Not counted: the Checking leg of the transfer (not the linked
+ *   account), a −15.00 IRA fee categorized to the goal (off budget, not the feed) and the
+ *   15.00 goal line of a split IRA row (off budget, not the feed) → actual 600.00, 2 rows.
+ * - IRA +30.00 on Jan 10 split 20.00 feed / 10.00 Shopping, and IRA +40.00 on Jan 14 split
+ *   25.00 feed / 15.00 Roth contributions: the feed lines count (45.00 in 2 lines), the other
+ *   lines do not, so Shopping's cell is 0 in 0 rows.
+ */
+describe.skipIf(!TEST_DATABASE_URL)("plan scope of a goal on an off-budget account and of split lines (audit b1-plan-math, second round)", () => {
+  let t: TestDb;
+  let db: Db;
+  let cat: (name: string) => string;
+  let goalId: string;
+  let goalCategory: string;
+  const ids: Record<string, string> = {};
+
+  async function add(key: string, accountId: string, date: string, cents: bigint, description: string, categoryId: string | null, isTransfer = false): Promise<void> {
+    const [row] = await db.insert(transaction).values({ accountId, source: "manual", date, amountCents: cents, rawDescription: description, categoryId, isTransfer }).returning({ id: transaction.id });
+    ids[key] = row!.id;
+  }
+  async function januaryCell(categoryId: string) {
+    const plan = await getPlan(db, { from: "2027-01", to: "2027-01", today: "2027-01-20" });
+    return plan.rows.find((r): r is PlanCategoryRowResult => r.kind === "category" && r.categoryId === categoryId)!.cells[0]!;
+  }
+  const keysOf = (rows: TransactionListRow[]) => rows.map((r) => Object.keys(ids).find((k) => ids[k] === r.id));
+
+  beforeAll(async () => {
+    t = await createTestDb();
+    db = t.db;
+    await seedDefaultCategories(db);
+    const accounts = await db
+      .insert(account)
+      .values([
+        { name: "Checking", type: "checking", taxTreatment: "none", onBudget: true },
+        { name: "Roth IRA", type: "roth", taxTreatment: "roth", onBudget: false },
+      ])
+      .returning({ id: account.id, name: account.name });
+    const checking = accounts.find((a) => a.name === "Checking")!.id;
+    const ira = accounts.find((a) => a.name === "Roth IRA")!.id;
+    const cats = await db.select({ id: category.id, name: category.name }).from(category);
+    cat = (name) => cats.find((c) => c.name === name)!.id;
+    const ctx = { userId: null, batchId: randomUUID(), today: "2027-01-20" };
+    await updateHouseholdSetting(db, { investmentIncomeCategoryId: cat("Interest & Dividends") }, ctx);
+    const goal = await createGoal(db, { name: "Retirement", newCategory: { name: "Roth contributions" }, targetCents: 700000n, linkedAccountId: ira, monthlyContributionCents: 50000n, startMonth: "2027-01" }, ctx);
+    goalId = goal.id;
+    goalCategory = goal.categoryId;
+
+    await add("checkingLeg", checking, "2027-01-05", -50000n, "TO ROTH IRA", null, true);
+    await add("iraLeg", ira, "2027-01-05", 50000n, "FROM CHECKING", null, true);
+    await add("iraFee", ira, "2027-01-08", -1500n, "IRA ADVISORY FEE", goalCategory);
+    await add("dividendSplit", ira, "2027-01-10", 3000n, "DIV + MISC", null);
+    await add("cashContribution", checking, "2027-01-12", -10000n, "CASH TO ROTH", goalCategory);
+    await add("goalSplit", ira, "2027-01-14", 4000n, "DIV + CONTRIB", null);
+    await db.insert(split).values([
+      { transactionId: ids["dividendSplit"]!, categoryId: cat("Interest & Dividends"), amountCents: 2000n },
+      { transactionId: ids["dividendSplit"]!, categoryId: cat("Shopping"), amountCents: 1000n },
+      { transactionId: ids["goalSplit"]!, categoryId: cat("Interest & Dividends"), amountCents: 2500n },
+      { transactionId: ids["goalSplit"]!, categoryId: goalCategory, amountCents: 1500n },
+    ]);
+  });
+  afterAll(async () => {
+    await t?.cleanup();
+  });
+
+  it("lists a goal's transfer legs in its off-budget linked account, as its cell counts them", async () => {
+    expect(await januaryCell(goalCategory)).toMatchObject({ actualCents: 60000n, txnCount: 2 });
+    const drill = await listPlanTransactions(db, { goalId, month: "2027-01" });
+    expect(keysOf(drill.items)).toEqual(["cashContribution", "iraLeg"]);
+    // The register link behind the goal cell asks for the same rows (goalId + planScope).
+    const register = await listTransactions(db, { goalId, from: "2027-01-01", to: "2027-01-31", planScope: true, limit: 50 });
+    expect(keysOf(register.items)).toEqual(["cashContribution", "iraLeg"]);
+    // Without plan scope the goal's filter still finds the rows of the off-budget account.
+    const all = await listTransactions(db, { goalId, from: "2027-01-01", to: "2027-01-31", limit: 50 });
+    expect(keysOf(all.items)).toEqual(["goalSplit", "cashContribution", "iraFee", "iraLeg"]);
+  });
+
+  it("lists a split row under a line's category only when the plan counts that line", async () => {
+    expect(await januaryCell(cat("Shopping"))).toMatchObject({ actualCents: 0n, txnCount: 0 });
+    expect((await listPlanTransactions(db, { categoryId: cat("Shopping"), month: "2027-01" })).items).toEqual([]);
+    expect(await januaryCell(cat("Interest & Dividends"))).toMatchObject({ actualCents: 4500n, txnCount: 2 });
+    const feed = await listPlanTransactions(db, { categoryId: cat("Interest & Dividends"), month: "2027-01" });
+    expect(keysOf(feed.items)).toEqual(["goalSplit", "dividendSplit"]);
+    // The register's category filter with plan scope follows the same rule; without it, the row is there.
+    expect((await listTransactions(db, { categoryId: cat("Shopping"), planScope: true, limit: 50 })).items).toEqual([]);
+    expect(keysOf((await listTransactions(db, { categoryId: cat("Shopping"), limit: 50 })).items)).toEqual(["dividendSplit"]);
+    // Plan scope with no category keeps every row the plan counts somewhere: both split rows count by their feed lines.
+    const scoped = await listTransactions(db, { from: "2027-01-01", to: "2027-01-31", transfers: "exclude", planScope: true, limit: 50 });
+    expect(keysOf(scoped.items)).toEqual(["goalSplit", "cashContribution", "dividendSplit"]);
   });
 });

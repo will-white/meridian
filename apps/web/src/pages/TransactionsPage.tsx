@@ -243,7 +243,7 @@ export function TransactionsPage() {
             </span>
           )}
           {f.planScope && (
-            <span className="chip" title="The plan counts on-budget accounts only (plus the investment income feed), and a split transaction by its lines">
+            <span className="chip" title="The plan counts on-budget accounts only (plus the investment income feed), a split transaction by its lines, and a goal's transfers into its linked account">
               As the plan counts it
               <button className="link" onClick={() => setFilter({ planScope: false })} aria-label="Show rows the plan does not count too">
                 ×

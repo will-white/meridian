@@ -11,7 +11,8 @@
  * - microseconds per path-year on one thread (inline, after a 300-path warm-up);
  * - `assess` calls per path-year and the most in any one year, and federal tax evaluations per
  *   path-year (counted on a 2,000-path run through wrapping hooks, timed separately);
- * - garbage collections during 2,000 paths after a 300-path warm-up (a `PerformanceObserver`);
+ * - garbage collections during 2,000 paths after a 300-path warm-up (a `PerformanceObserver`: the
+ *   entries that start while the paths run; those of the 50 ms after them are reported apart);
  * - wall time on `--threads` threads (default 3) and on the default thread count, pool start and
  *   aggregation included, from a bundled thread entry (esbuild, as production bundles the worker's
  *   `simThread.js`) and, for comparison, from the tsx dev entry;
@@ -144,8 +145,14 @@ function counts(run: PreparedRun, paths: number): Counts {
   return { assessCallsPerPathYear: calls / py, maxAssessCallsInAYear: maxCalls, taxEvaluationsPerPathYear: taxCalls / py };
 }
 
-/** Garbage collections during `paths` paths after a 300-path warm-up. */
-async function gcDuring(run: PreparedRun, paths: number): Promise<{ paths: number; gcCount: number; gcMs: number }> {
+/**
+ * Garbage collections during `paths` paths after a 300-path warm-up: the `gc` entries that start
+ * while the paths run. The observer then stays on for 50 ms so that every entry of the window is
+ * delivered; a collection that starts in those 50 ms is not the simulation's (the process is idle,
+ * and V8 runs idle-time collections: measured, a major collection with the schedule-idle flag
+ * starting 0.4 ms after the paths ended) and is reported apart as `gcAfterWindow`.
+ */
+async function gcDuring(run: PreparedRun, paths: number): Promise<{ paths: number; gcCount: number; gcMs: number; gcAfterWindow: number }> {
   const ps = createProductionState(run);
   simulateChunk(run, 0, 300, ps);
   await new Promise((r) => setImmediate(r));
@@ -153,11 +160,13 @@ async function gcDuring(run: PreparedRun, paths: number): Promise<{ paths: numbe
   const observer = new PerformanceObserver((list) => entries.push(...list.getEntries()));
   observer.observe({ entryTypes: ["gc"] });
   simulateChunk(run, 300, Math.min(paths, run.paths - 300), ps);
+  const end = performance.now();
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setTimeout(r, 50));
   entries.push(...observer.takeRecords());
   observer.disconnect();
-  return { paths, gcCount: entries.length, gcMs: entries.reduce((s, e) => s + e.duration, 0) };
+  const during = entries.filter((e) => e.startTime <= end);
+  return { paths, gcCount: during.length, gcMs: during.reduce((s, e) => s + e.duration, 0), gcAfterWindow: entries.length - during.length };
 }
 
 /** A self-contained bundle of the thread entry, as the worker app ships `simThread.js` (C10). */
@@ -205,7 +214,7 @@ interface ModelReport {
   years: number;
   oneThread: OneThread;
   counts: Counts;
-  gc: { paths: number; gcCount: number; gcMs: number };
+  gc: { paths: number; gcCount: number; gcMs: number; gcAfterWindow: number };
   wallBundled: Wall;
   wallDefaultThreads: Wall;
   wallDevEntry: Wall;
@@ -269,7 +278,7 @@ async function main(): Promise<void> {
     console.log(
       `reference workload, ${name}: ${o.paths} paths × ${w.years} years; one thread ${f(o.ms, 0)} ms, ${f(o.usPerPathYear)} µs per path-year, aggregation ${f(o.aggregateMs, 0)} ms; ` +
         `assess ${f(c.assessCallsPerPathYear)} calls per path-year (at most ${c.maxAssessCallsInAYear} in a year), ${f(c.taxEvaluationsPerPathYear)} tax evaluations per path-year; ` +
-        `${g.gcCount} GCs (${f(g.gcMs)} ms) over ${g.paths} paths after warm-up; wall ${f(b.ms, 0)} ms on ${b.usedThreads} threads (bundled entry), ` +
+        `${g.gcCount} GCs (${f(g.gcMs)} ms) over ${g.paths} paths after warm-up (${g.gcAfterWindow} in the 50 ms after); wall ${f(b.ms, 0)} ms on ${b.usedThreads} threads (bundled entry), ` +
         `${f(d.ms, 0)} ms on ${d.usedThreads}, ${f(w.wallDevEntry.ms, 0)} ms on ${b.usedThreads} with the tsx dev entry, ${f(w.warmPoolWallMs, 0)} ms for a second run on a started pool`,
     );
   }

@@ -39,8 +39,38 @@ export function createSpendingOutcome(): SpendingOutcome {
   return doubleFields(o, ["need", "floorNeed", "plannedNeed", "funded", "shortfall", "surplus"]);
 }
 
+/**
+ * The settlement's inputs as one record (`fillNeedsFor`, `settleSpendingFor`): the year loop's form,
+ * because V8 boxes a double passed to a call it does not inline, and these are passed every year.
+ */
+export interface SettleInput {
+  /** f, the year fraction. */
+  yearFraction: number;
+  /** The view's phase is drawdown. */
+  drawdown: boolean;
+  /** The record call's net cash (after tax and `need`). */
+  net: number;
+  /** The year's RMDs, all accounts. */
+  rmdTotal: number;
+}
+
+export function createSettleInput(): SettleInput {
+  const s: SettleInput = { yearFraction: 1, drawdown: false, net: 0, rmdTotal: 0 };
+  return doubleFields(s, ["yearFraction", "net", "rmdTotal"]);
+}
+
+/** The scalar forms' record. */
+const SCALAR = createSettleInput();
+
 /** The period's need, floor and planned need of a decision (f = the year fraction). */
 export function fillNeeds(decision: SpendDecision, f: number, out: SpendingOutcome): void {
+  SCALAR.yearFraction = f;
+  fillNeedsFor(decision, SCALAR, out);
+}
+
+/** `fillNeeds` with f from `s.yearFraction`. */
+export function fillNeedsFor(decision: SpendDecision, s: SettleInput, out: SpendingOutcome): void {
+  const f = s.yearFraction;
   out.need = decision.spend * f + decision.lump;
   out.floorNeed = decision.floor * f + decision.lumpFloor;
   out.plannedNeed = decision.planned * f + decision.lump;
@@ -51,25 +81,44 @@ export function fillNeeds(decision: SpendDecision, f: number, out: SpendingOutco
  * year's total RMDs. `drawdown` is the view's phase (1) — failure and below-plan exist only there.
  */
 export function settleSpending(decision: SpendDecision, f: number, drawdown: boolean, net: number, rmdTotal: number, out: SpendingOutcome): void {
-  fillNeeds(decision, f, out);
+  SCALAR.yearFraction = f;
+  SCALAR.drawdown = drawdown;
+  SCALAR.net = net;
+  SCALAR.rmdTotal = rmdTotal;
+  settleSpendingFor(decision, SCALAR, out);
+}
+
+/**
+ * `settleSpending` with its inputs from the record `s`. Every case's figures are computed and the
+ * results chosen among them (the module comment's three cases): an operation first reached in a
+ * case the warm-up never saw (the first shortfall of a run) deoptimizes the loop's function that
+ * inlined this one, which then runs unoptimized and allocates until it is compiled again. In a
+ * target year the gross-year figures are NaN and not chosen.
+ */
+export function settleSpendingFor(decision: SpendDecision, s: SettleInput, out: SpendingOutcome): void {
+  const f = s.yearFraction;
+  const drawdown = s.drawdown;
+  const net = s.net;
+  const rmdTotal = s.rmdTotal;
+  fillNeedsFor(decision, s, out);
   const need = out.need;
-  if (net < 0) {
-    const shortfall = -net < need ? -net : need;
-    out.shortfall = shortfall;
-    out.funded = need - shortfall;
-    out.surplus = 0;
-  } else if (Number.isNaN(decision.gross)) {
-    out.shortfall = 0;
-    out.funded = need;
-    out.surplus = net;
-  } else {
-    const released = decision.gross * f + decision.lump;
-    const excess = rmdTotal > released ? rmdTotal - released : 0;
-    const extra = net > excess ? net - excess : 0;
-    out.shortfall = 0;
-    out.funded = need + extra;
-    out.surplus = net - extra;
-  }
+  const short = net < 0;
+  const target = Number.isNaN(decision.gross);
+  // net < 0: the shortfall, at most the need.
+  const unfunded = -net;
+  const shortfall = unfunded < need ? unfunded : need;
+  const fundedShort = need - shortfall;
+  // A gross year: only the RMDs the rule did not call for are saved.
+  const released = decision.gross * f + decision.lump;
+  const overRule = rmdTotal - released;
+  const excess = rmdTotal > released ? overRule : 0;
+  const spendable = net - excess;
+  const extra = net > excess ? spendable : 0;
+  const fundedGross = need + extra;
+  const surplusGross = net - extra;
+  out.shortfall = short ? shortfall : 0;
+  out.funded = short ? fundedShort : target ? need : fundedGross;
+  out.surplus = short ? 0 : target ? net : surplusGross;
   out.failed = drawdown && out.funded + CASH_TOL < out.floorNeed;
   out.belowPlan = drawdown && out.funded + CASH_TOL < out.plannedNeed;
 }

@@ -208,6 +208,22 @@ export function depositAtWeights(
   amount: number,
   taxable: boolean,
 ): void {
+  FLOW[0] = amount;
+  depositAtWeightsFrom(bal, basis, off, target, targetOff, FLOW, 0, taxable);
+}
+
+/** `depositAtWeights` of `amounts[at]` (the year loop's form, as `planTradesFrom` is `planTrades`'s). */
+export function depositAtWeightsFrom(
+  bal: Float64Array,
+  basis: Float64Array,
+  off: number,
+  target: Float64Array,
+  targetOff: number,
+  amounts: Float64Array,
+  at: number,
+  taxable: boolean,
+): void {
+  const amount = amounts[at]!;
   if (!(amount >= 0) || !Number.isFinite(amount)) {
     throw new EngineInvariantError("deposit_invalid", `a deposit is a finite amount of at least 0, got ${amount}`);
   }

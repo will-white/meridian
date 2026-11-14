@@ -341,6 +341,24 @@ export function accountDragOffset(t: number, a: number, accounts: number): numbe
   return (t * accounts + a) * AD_REC;
 }
 
+/**
+ * Input of `taxableYieldsFrom` (taxDrag.ts), the year loop's form of `taxableYieldsInto`: one
+ * taxable account's post-trade state, dollars, and the period, in a record rather than as six
+ * doubles passed to a call (V8 boxes a double passed to a call it does not inline).
+ */
+export const TYI = {
+  /** The path's full-year bill return of the previous plan year (the model's starting bill rate in year 0). */
+  BILL_REF: 0,
+  /** The year fraction (the convention of `TI.YEAR_FRACTION`: outside (0, 1) a full year). */
+  YEAR_FRACTION: 1,
+  /** The post-trade stock and bond balances and their basis after the trade. */
+  STOCK: 2,
+  BOND: 3,
+  STOCK_BASIS: 4,
+  BOND_BASIS: 5,
+} as const;
+export const TYI_REC = 6;
+
 /** Output of `taxableYieldsInto`: one taxable account's income for the period, dollars. */
 export const TY = {
   /** Ordinary dividends including the qualified part: to `TI.ORD_DIV`. */
