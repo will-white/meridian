@@ -2,7 +2,7 @@ import { deflateYearTable, PLANNER_DISCLAIMER, YearTable, type YearRow } from "@
 import { exampleYearRow, exampleYearTable } from "@meridian/shared/src/retirement/testFixtures.js";
 import { describe, expect, it } from "vitest";
 import { R1_YEAR_TABLE } from "./retirementFixtures.js";
-import { eventLabel, isBelowPlan, yearDrawer, yearTableColumns, yearTableCsv, yearTableView } from "./retirementTable.js";
+import { eventLabel, isBelowPlan, socialSecurityPartsText, yearDrawer, yearTableColumns, yearTableCsv, yearTableView } from "./retirementTable.js";
 
 const R1_HEADER = [
   "Year",
@@ -286,5 +286,30 @@ describe("yearDrawer (§5.5 item 7, C37, C52)", () => {
     const off = yearDrawer({ ...row, surplusSaved: "100" }, exampleYearTable().accounts);
     expect(off.cash.unexplainedCents).toBe("-100");
     expect(off.cash.uses.at(-1)).toEqual({ label: "Not accounted for", cents: "-100" });
+  });
+
+  it("C37: a benefit's spousal and survivor parts and the earnings test's withholding are named; a benefit withheld whole keeps its line", () => {
+    const base = exampleYearRow();
+    const row: YearRow = {
+      ...base,
+      ages: [65, 63],
+      alive: [true, true],
+      income: {
+        ...base.income,
+        socialSecurity: ["2400000", "0"],
+        socialSecurityParts: [
+          { spousal: "540000", survivor: "0", withheld: "0" },
+          { spousal: "0", survivor: "0", withheld: "1800000" },
+        ],
+        total: "2400000",
+      },
+    };
+    const d = yearDrawer(row, exampleYearTable().accounts, ["Alex", "Sam"]);
+    expect(d.cash.sources.slice(0, 2)).toEqual([
+      { label: "Social Security (Alex)", cents: "2400000", detail: "includes $5,400.00 spousal" },
+      { label: "Social Security (Sam)", cents: "0", detail: "$18,000.00 withheld by the earnings test" },
+    ]);
+    expect(socialSecurityPartsText({ spousal: "100", survivor: "200", withheld: "300" })).toBe("includes $1.00 spousal and $2.00 survivor; $3.00 withheld by the earnings test");
+    expect(socialSecurityPartsText({ spousal: "0", survivor: "0", withheld: "0" })).toBeUndefined();
   });
 });

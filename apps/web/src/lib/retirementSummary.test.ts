@@ -1,7 +1,21 @@
-import { SimSummary } from "@meridian/shared";
+import { pathStory, SimSummary, type PathStory } from "@meridian/shared";
 import { exampleSimSummary } from "@meridian/shared/src/retirement/testFixtures.js";
 import { describe, expect, it } from "vitest";
-import { clampPercentile, fundedTest, modelText, pathCaption, percentileChoices, runHeaderText, runStaleText, summaryView, typicalShortfallPercentile } from "./retirementSummary.js";
+import { R1_YEAR_TABLE } from "./retirementFixtures.js";
+import {
+  clampPercentile,
+  fanLegend,
+  fanTableRows,
+  fundedTest,
+  modelText,
+  pathCaption,
+  pathStoryText,
+  percentileChoices,
+  runHeaderText,
+  runStaleText,
+  summaryView,
+  typicalShortfallPercentile,
+} from "./retirementSummary.js";
 
 /** The ten-path run of the shared fixture: 8 successes, Wilson [4902, 9433], depletions in 2028 and 2029. */
 const TEN = exampleSimSummary();
@@ -145,5 +159,64 @@ describe("the percentile picker (§5.5 item 4)", () => {
     expect(pathCaption({ pathIndex: 38, rank: 2, source: "resimulated", table: { historicalStartYear: 1966 } }, 69)).toBe(
       "The path that starts in 1966, ranked 3rd of 69 by ending wealth. One simulated future, not a forecast, and not the same percentile of every column. Re-simulated from the run's frozen input.",
     );
+  });
+});
+
+describe("the path story in sentences (§3.12, §5.5 item 5)", () => {
+  it("the design's failing story: ran out in 2053 at 91 and 88, the first ten years against the median, the order the buckets emptied", () => {
+    const story: PathStory = {
+      outcome: "failed",
+      failureYear: 2053,
+      failureAges: [91, 88],
+      endingRealCents: "0",
+      depletion: [
+        { bucket: "taxable", year: 2037 },
+        { bucket: "pre_tax", year: 2049 },
+        { bucket: "roth", year: 2053 },
+      ],
+      first10: { realReturnBp: -180, medianRealReturnBp: 310 },
+      events: { cuts: 2, raises: 1, freezes: 3, topUps: 0, bandFloors: 0, bandCeilings: 0 },
+      belowPlanYears: 7,
+      peakTax: { year: 2041, cents: "2345600" },
+    };
+    expect(pathStoryText(story, "guardrails")).toEqual([
+      "The money ran out in 2053, at ages 91 and 88.",
+      "Markets returned \u22121.8% a year after inflation over the first 10 retirement years; the median path had +3.1%.",
+      "The taxable accounts were empty by 2037, the pre-tax accounts by 2049, the Roth accounts by 2053.",
+      "The guardrails cut spending twice, raised it once and skipped the inflation raise 3 times.",
+      "Spending was below the plan in 7 years.",
+      "The largest federal tax bill was $23,456, in 2041.",
+    ]);
+  });
+
+  it("R1 through the shared pathStory (OUT-11): funded; cash empty in 2027 and taxable in 2031; no year below plan", () => {
+    // R1's fixed model returns 5% at 2.5% inflation: 1.05 ÷ 1.025 = 1.0243902, 243.9 bp, truncated 243 → "+2.4%".
+    const lines = pathStoryText(pathStory(R1_YEAR_TABLE), "constant_dollar");
+    expect(lines.slice(0, 3)).toEqual([
+      "Every year of spending was funded; the plan ended with $1,114,681 in today's dollars.",
+      "Markets returned +2.4% a year after inflation over the first 10 retirement years.",
+      "The cash accounts were empty by 2027, the taxable accounts by 2031.",
+    ]);
+    expect(lines.some((l) => l.startsWith("Spending was below the plan"))).toBe(false);
+    expect(lines.at(-1)).toMatch(/^The largest federal tax bill was \$[\d,]+, in 20\d\d\.$/);
+  });
+});
+
+describe("the fan's legend and table (§5.5 item 3)", () => {
+  it("the legend with and without the path; the table from the chart input", () => {
+    expect(fanLegend(false).map((l) => l.label)).toEqual(["10th to 90th percentile", "25th to 75th percentile", "Median"]);
+    expect(fanLegend(true).at(-1)).toEqual({ key: "path", label: "This path" });
+    const chart = {
+      labels: ["66", "67"],
+      years: [2028, 2029],
+      bands: { p10: ["100000", "100000"], p25: ["150000", "150000"], p50: ["225000", "225000"], p75: ["300000", "300000"], p90: ["500000", "500000"] },
+      fundedBp: [10000, 9425],
+    };
+    expect(fanTableRows(chart)).toEqual([
+      { year: 2028, ages: "66", p10: "$1,000.00", p25: "$1,500.00", p50: "$2,250.00", p75: "$3,000.00", p90: "$5,000.00", funded: "100%" },
+      { year: 2029, ages: "67", p10: "$1,000.00", p25: "$1,500.00", p50: "$2,250.00", p75: "$3,000.00", p90: "$5,000.00", funded: "94%" },
+    ]);
+    // By year, the ages come from the people.
+    expect(fanTableRows({ ...chart, labels: ["2028", "2029"], axis: "year" }, [{ birthYear: 1962 }, { birthYear: 1964 }])[1]!.ages).toBe("67 / 65");
   });
 });

@@ -116,7 +116,8 @@ export function describeAssumptions(input: SimInput, run: Pick<SimRunView, "path
   add("Run", "Plan years", `${input.plan.startYear} to ${input.plan.endYear}`);
   add("Run", "Paths", run.paths === s.paths ? countText(run.paths) : `${countText(run.paths)} (${countText(s.paths)} requested)`);
   add("Run", "Seed", String(s.seed));
-  add("Run", "Threads", `${run.threads === null ? "—" : String(run.threads)} (results do not depend on the thread count)`);
+  const threads = run.threads === null ? "—" : run.threads === 0 ? "none (run inline)" : String(run.threads);
+  add("Run", "Threads", `${threads} (results do not depend on the thread count)`);
   add("Run", "Versions", `engine ${run.engineVersion ?? "—"}, data ${run.dataVersion}`);
   add("Run", "Duration", durationText(run.durationMs));
 

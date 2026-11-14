@@ -35,6 +35,7 @@ describe("describeAssumptions (strategies-outputs-web §3.13)", () => {
     ]);
     // The historical model reports its own count (inputs decision 25).
     expect(valueOf(describeAssumptions(fixtureSimInput(), { ...RUN, paths: 10094 }), "Run", "Paths")).toBe("10,094 (10,000 requested)");
+    expect(valueOf(describeAssumptions(fixtureSimInput(), { ...RUN, threads: 0 }), "Run", "Threads")).toBe("none (run inline) (results do not depend on the thread count)");
   });
 
   it("Markets: the default bootstrap, full rebalancing (plan decision 8), the default asset map, yields and the measured fund cost", () => {

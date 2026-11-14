@@ -302,6 +302,21 @@ export const DRAWER_ROUNDING_CENTS = 5n;
 const nonZero = (lines: DrawerLine[]) => lines.filter((l) => BigInt(l.cents) !== 0n);
 
 /**
+ * One person's benefit parts in words (seams C37): "includes $450.00 spousal and $1,200.00
+ * survivor; $3,000.00 withheld by the earnings test". Undefined when every part is 0.
+ */
+export function socialSecurityPartsText(parts: YearRow["income"]["socialSecurityParts"][number] | undefined): string | undefined {
+  if (parts === undefined) return undefined;
+  const includes: string[] = [];
+  if (BigInt(parts.spousal) !== 0n) includes.push(`${money(parts.spousal)} spousal`);
+  if (BigInt(parts.survivor) !== 0n) includes.push(`${money(parts.survivor)} survivor`);
+  const out: string[] = [];
+  if (includes.length > 0) out.push(`includes ${includes.join(" and ")}`);
+  if (BigInt(parts.withheld) !== 0n) out.push(`${money(parts.withheld)} withheld by the earnings test`);
+  return out.length === 0 ? undefined : out.join("; ");
+}
+
+/**
  * The drawer of one row, in the row's unit (pass a row of `deflateYearTable` for today's
  * dollars). "Where the money came from and went": income + withdrawals = federal tax (less the tax
  * on income before spending started) + payroll tax + employee contributions + spending + surplus
@@ -313,13 +328,21 @@ const nonZero = (lines: DrawerLine[]) => lines.filter((l) => BigInt(l.cents) !==
  */
 export function yearDrawer(row: YearRow, accounts: readonly YearTableAccount[], people?: readonly string[]): YearDrawer {
   const inc = row.income;
-  const sources: DrawerLine[] = nonZero([
-    { label: "Wages", cents: inc.wages },
-    ...inc.socialSecurity.map((cents, p) => ({ label: `Social Security (${personName(people, p)})`, cents })),
-    { label: "Pensions and annuities", cents: inc.pensionAnnuity },
-    { label: "Rental", cents: inc.rental },
-    { label: "Other income", cents: inc.other },
-  ]);
+  const sources: DrawerLine[] = nonZero([{ label: "Wages", cents: inc.wages }]);
+  inc.socialSecurity.forEach((cents, p) => {
+    const line: DrawerLine = { label: `Social Security (${personName(people, p)})`, cents };
+    const detail = socialSecurityPartsText(inc.socialSecurityParts[p]);
+    if (detail !== undefined) line.detail = detail;
+    // A benefit the earnings test withheld whole still gets its line, so the owner sees why it is 0 (C37).
+    if (BigInt(cents) !== 0n || detail !== undefined) sources.push(line);
+  });
+  sources.push(
+    ...nonZero([
+      { label: "Pensions and annuities", cents: inc.pensionAnnuity },
+      { label: "Rental", cents: inc.rental },
+      { label: "Other income", cents: inc.other },
+    ]),
+  );
   accounts.forEach((a, i) => {
     const cents = row.withdrawals.byAccount[i] ?? "0";
     if (BigInt(cents) === 0n) return;
