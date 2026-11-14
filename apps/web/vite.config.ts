@@ -6,7 +6,11 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: "autoUpdate",
+      // The page registers the worker itself (src/lib/swUpdate.ts): a new build waits until the
+      // household chooses "Reload" in the shell's notice, so nothing being typed is lost, and the
+      // open app checks for one on focus and hourly (audit b8-web-layout-09).
+      registerType: "prompt",
+      injectRegister: false,
       manifest: {
         name: "Meridian",
         short_name: "Meridian",

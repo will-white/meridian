@@ -150,7 +150,7 @@ export function PriceStatusTable({
                           {r.failures > 0 && (
                             <div className="muted small">
                               {r.failures} failure{r.failures === 1 ? "" : "s"}
-                              {r.nextAttemptAt ? `, next try ${shortDate(r.nextAttemptAt.slice(0, 10))}` : ""}
+                              {r.nextAttemptAt ? `, next try ${shortDate(r.nextAttemptAt)}` : ""}
                             </div>
                           )}
                           {r.backfilledFrom && <div className="muted small">backfilled from {shortDate(r.backfilledFrom)}</div>}

@@ -93,8 +93,8 @@ export function ConnectionsPage() {
             add.mutate({ name: name.trim() || "SimpleFIN", token: token.trim() });
           }}
         >
-          <input placeholder="Name (e.g. Chase + Fidelity)" value={name} onChange={(e) => setName(e.target.value)} />
-          <input placeholder="Paste setup token" value={token} onChange={(e) => setToken(e.target.value)} required className="grow" />
+          <input placeholder="Name (e.g. Chase + Fidelity)" aria-label="Connection name" value={name} onChange={(e) => setName(e.target.value)} />
+          <input placeholder="Paste setup token" aria-label="SimpleFIN setup token" value={token} onChange={(e) => setToken(e.target.value)} required className="grow" />
           <button type="submit" disabled={add.isPending}>
             Connect
           </button>

@@ -3,17 +3,20 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { AuthStatus, TotpSetupResponse } from "@meridian/shared";
 import { api } from "../lib/api.js";
 import { AUTH_KEY, noteSignedOut, useAuthMutation, useLogout, useSignInNotice } from "../lib/auth.js";
+import { useDocumentTitle } from "../lib/useDocumentTitle.js";
 import { ErrorText } from "../components/ui.js";
 
+/** A signed-out screen: the page's main landmark and its document title (audit b8-web-layout-14). */
 function AuthFrame({ title, children }: { title: string; children: React.ReactNode }) {
+  useDocumentTitle(`${title} · Meridian`);
   return (
-    <div className="auth-frame">
+    <main className="auth-frame">
       <div className="auth-card">
         <div className="brand big">Meridian</div>
         <h1>{title}</h1>
         {children}
       </div>
-    </div>
+    </main>
   );
 }
 

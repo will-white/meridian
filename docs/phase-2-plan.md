@@ -89,3 +89,7 @@ Spending plan, goals and dashboard in the web app (findings b7-plan-ui-01 to -13
 - **A26. A typed amount stays inside the API's bound** (b7-13). The grid and the goal form refuse an amount past 9,999,999,999,999.99 (the 15-digit cents of every request) inline with "Too large" instead of sending it and showing the request's validation text.
 
 Deferred: the dashboard's retirement card (b7-06) belongs to Phase 4. The spec's card shows the success rate of the latest saved run, a Phase 4 artefact; the Phase 4 design (`strategies-outputs-web.md` §5.8) owns `RetirementCard`, including its state before any profile exists (`retirement: null`).
+
+The web app's shell, layout and PWA (audit batch b8-web-layout; record in `docs/audit/phases-1-3/b8-web-layout.md`):
+
+- **A27. A timestamp is shown as its local calendar date** (b8-03). `shortDate` shows a calendar date (YYYY-MM-DD) as written and a timestamp (an alert's `createdAt`, a reconciliation's `createdAt`, a price run's `runAt` and `finishedAt`, a security's `nextAttemptAt`) as the browser's local date, the day the dashboard calls today (decision 16, A22). Before, the first ten characters of the UTC timestamp were shown, so everything created after 4 or 5 pm on a US evening was labelled with the next day.

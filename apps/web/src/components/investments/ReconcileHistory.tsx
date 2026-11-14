@@ -75,7 +75,7 @@ export function ReconcileHistory({ accountId, viewer }: { accountId: string; vie
                     <td>{r.accepted ? <Badge tone="ok">accepted{r.holdingSnapshotDate ? ` · snapshot ${shortDate(r.holdingSnapshotDate)}` : ""}</Badge> : <Badge tone="neutral">recorded only</Badge>}</td>
                     <td className="muted">{r.cashInference}</td>
                     <td className="muted small">{r.note ?? ""}</td>
-                    <td className="muted small">{shortDate(r.createdAt.slice(0, 10))}</td>
+                    <td className="muted small">{shortDate(r.createdAt)}</td>
                     <td className="actions">
                       {!viewer && (
                         <button type="button" className="link small danger" disabled={remove.isPending} onClick={() => remove.mutate(r.id)} aria-label={`Delete the record of ${shortDate(r.date)}`}>
