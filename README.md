@@ -31,6 +31,8 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 Caddy serves the app on the LAN at `https://$SITE_ADDRESS` with an internally issued certificate; trust its root CA on your devices. For access from outside, put the server on Tailscale. Do not port-forward.
 
+After an update (`up -d --build` again), an app that is still open, on a phone as on a desktop, shows "A new version of Meridian is ready" when it next comes into view (it also checks hourly); choosing **Reload to use it** switches to the new build. Nothing reloads on its own, so nothing being typed is lost.
+
 The `web` container serves the built UI and the API on port 3000, reachable only from the compose network. The UI's files load without a session; everything under `/api` needs one. Changes are accepted only from the app's own origin and only as JSON. If you put a different reverse proxy in front, it must pass the `Host` header through (or send `X-Forwarded-Host`), and `TRUST_PROXY` in `deploy/docker-compose.yml` must name its address so the sign-in rate limits count the real client.
 
 ## Accounts and sign-in

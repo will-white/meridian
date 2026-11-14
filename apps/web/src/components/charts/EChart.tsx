@@ -40,7 +40,11 @@ export function EChart({ option, height = 260, className, label }: { option: ECh
     chart.current?.setOption(option, { notMerge: true });
   }, [option]);
 
-  return <div ref={ref} className={className} style={{ height, width: "100%" }} role="img" aria-label={label} />;
+  // ECharts draws a canvas of fixed pixel size inside this box and resizes it only when the box
+  // resizes. min-width: 0 and inline-size containment keep that canvas out of the box's own width,
+  // so a narrower window (a phone rotated to portrait) narrows the box and the chart follows
+  // instead of the canvas holding every parent wide (audit b8-web-layout-06).
+  return <div ref={ref} className={className} style={{ height, width: "100%", minWidth: 0, contain: "inline-size" }} role="img" aria-label={label} />;
 }
 
 export interface ChartTheme {
@@ -54,7 +58,7 @@ export interface ChartTheme {
   dark: boolean;
 }
 
-const FALLBACK_LIGHT: ChartTheme = { ink: "#0f172a", muted: "#64748b", line: "#e2e8f0", accent: "#0369a1", bad: "#b91c1c", warn: "#b45309", panel: "#ffffff", dark: false };
+const FALLBACK_LIGHT: ChartTheme = { ink: "#0f172a", muted: "#556274", line: "#e2e8f0", accent: "#0369a1", bad: "#b91c1c", warn: "#b45309", panel: "#ffffff", dark: false };
 const FALLBACK_DARK: ChartTheme = { ink: "#e2e8f0", muted: "#94a3b8", line: "#1e293b", accent: "#38bdf8", bad: "#f87171", warn: "#fbbf24", panel: "#111a2e", dark: true };
 
 /** Read the app's colour tokens off `:root` so canvas text and grids match the stylesheet in both schemes. */

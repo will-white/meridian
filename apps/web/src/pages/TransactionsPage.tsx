@@ -162,7 +162,7 @@ export function TransactionsPage() {
     <>
       <h1>Transactions</h1>
       <div className="row wrap filters">
-        <input placeholder="Search payee, description, notes…" value={q} onChange={(e) => setQ(e.target.value)} className="grow" />
+        <input placeholder="Search payee, description, notes…" aria-label="Search transactions" value={q} onChange={(e) => setQ(e.target.value)} className="grow" />
         <select value={f.accountId} onChange={(e) => setFilter({ accountId: e.target.value })} aria-label="Account">
           <option value="">All accounts</option>
           {(accounts.data ?? []).map((a) => (
@@ -251,8 +251,11 @@ export function TransactionsPage() {
           </button>
         </p>
       )}
-      {items.length === 0 && !txns.isLoading && <Empty>No transactions match.</Empty>}
+      {/* Only a loaded list can be empty; a failed load shows its error alone (audit b8-web-layout-13). */}
+      {txns.data !== undefined && items.length === 0 && <Empty>No transactions match.</Empty>}
       {items.length > 0 && (
+        // A wide register scrolls inside its box instead of widening the page (audit b8-web-layout-04).
+        <div className="scroll register-scroll">
         <table className="table register">
           <thead>
             <tr>
@@ -283,7 +286,7 @@ export function TransactionsPage() {
                   )}
                   {shortDate(t.date)}
                 </td>
-                <td className="muted nowrap">{t.accountName}</td>
+                <td className="muted nowrap register-account">{t.accountName}</td>
                 <td>
                   <div>
                     {t.payeeName ?? t.rawDescription}
@@ -325,7 +328,12 @@ export function TransactionsPage() {
                     </div>
                   ) : (
                     <>
-                      <select value={t.categoryId ?? ""} onChange={(e) => onCategoryChange(t, e.target.value)} className={t.categoryId ? "" : "unset"}>
+                      <select
+                        value={t.categoryId ?? ""}
+                        onChange={(e) => onCategoryChange(t, e.target.value)}
+                        className={t.categoryId ? "" : "unset"}
+                        aria-label={`Category for ${t.payeeName ?? t.rawDescription}`}
+                      >
                         <option value="">— uncategorized —</option>
                         {(categories.data ?? [])
                           .filter((c) => !c.hidden || c.id === t.categoryId)
@@ -399,6 +407,7 @@ export function TransactionsPage() {
             ])}
           </tbody>
         </table>
+        </div>
       )}
       {txns.hasNextPage && (
         <div className="center">

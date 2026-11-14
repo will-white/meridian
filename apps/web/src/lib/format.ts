@@ -11,10 +11,22 @@ export function money(cents: string | null | undefined, currency = "USD"): strin
   return `${negative ? "-" : ""}${symbol}${grouped}.${frac}`;
 }
 
+const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * "11/13/26". A calendar date (YYYY-MM-DD: a posting date, a due date, the `today` the app sends)
+ * is shown as written. A timestamp (an alert's or a reconciliation's createdAt, a price run's
+ * runAt) is shown as the browser's local calendar date, the day the dashboard calls today
+ * (phase 2 decisions 16 and A22): 2026-11-14T00:10Z is 11/13/26 on a Denver evening, not the
+ * UTC day (audit b8-web-layout-03).
+ */
 export function shortDate(iso: string | null | undefined): string {
   if (!iso) return "—";
-  const [y, m, d] = iso.slice(0, 10).split("-");
-  return `${m}/${d}/${y!.slice(2)}`;
+  if (CALENDAR_DATE.test(iso)) return `${iso.slice(5, 7)}/${iso.slice(8, 10)}/${iso.slice(2, 4)}`;
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return iso;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(at.getMonth() + 1)}/${pad(at.getDate())}/${String(at.getFullYear()).slice(-2)}`;
 }
 
 export function relativeTime(iso: string | null | undefined): string {

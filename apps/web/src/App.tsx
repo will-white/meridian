@@ -27,10 +27,29 @@ import { PricesPage } from "./pages/investments/PricesPage.js";
 import { ReconcilePage } from "./pages/investments/ReconcilePage.js";
 import { SecuritiesPage } from "./pages/investments/SecuritiesPage.js";
 
+/**
+ * The auth status decides the screen. Once a status was loaded it is what renders, also while a
+ * refetch fails (TanStack Query keeps the data and reports the error): one dropped request or a
+ * proxy restart must not replace the open page and what is typed in it (audit b8-web-layout-01;
+ * only a 401, which refreshes the status, brings the sign-in screen back). The full-screen message
+ * is for a first load that got no status at all.
+ */
 export function App() {
   const status = useAuthStatus();
-  if (status.isLoading) return <div className="auth-frame muted">Loading…</div>;
-  if (status.isError || !status.data) return <div className="auth-frame error">The API is unreachable. Is the server running?</div>;
+  if (!status.data) {
+    if (!status.isError) return <main className="auth-frame muted">Loading…</main>;
+    return (
+      <main className="auth-frame">
+        <div className="auth-card" role="alert">
+          <div className="brand big">Meridian</div>
+          <p className="error">The API is unreachable. Is the server running?</p>
+          <button type="button" onClick={() => void status.refetch()} disabled={status.isFetching}>
+            {status.isFetching ? "Trying…" : "Try again"}
+          </button>
+        </div>
+      </main>
+    );
+  }
   const s = status.data;
   if (s.setupRequired) return <SetupPage />;
   if (s.totpRequired) return <TotpVerifyPage status={s} />;

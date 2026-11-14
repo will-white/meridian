@@ -1,17 +1,7 @@
 import { NavLink, Outlet } from "react-router";
+import { INVESTMENT_LINKS as SUB_NAV } from "../../lib/navigation.js";
 import "./investments.css";
 import "./InvestmentsLayout.css";
-
-const SUB_NAV: ReadonlyArray<readonly [string, string, boolean]> = [
-  ["/investments", "Portfolio", true],
-  ["/investments/allocation", "Allocation", false],
-  ["/investments/holdings", "Holdings", false],
-  ["/investments/performance", "Performance", false],
-  ["/investments/income", "Income", false],
-  ["/investments/prices", "Prices", false],
-  ["/investments/reconcile", "Reconcile", false],
-  ["/investments/securities", "Securities", false],
-];
 
 /**
  * The Investments shell (views design §5): the title, a sub-nav of

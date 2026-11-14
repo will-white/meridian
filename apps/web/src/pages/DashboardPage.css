@@ -2,6 +2,8 @@
 .dash-head { margin-bottom: 0.75rem; }
 .dash-head h1 { margin: 0; }
 .dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; }
+/* Every grid item, not only the cards: the chart's row is a div.wide, and a grid item's automatic minimum is its content's width (audit b8-web-layout-06). */
+.dash-grid > * { min-width: 0; }
 .dash-grid .card { margin: 0; min-width: 0; }
 .dash-grid .wide { grid-column: 1 / -1; }
 .dash-hero { font-size: 1.9rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; }

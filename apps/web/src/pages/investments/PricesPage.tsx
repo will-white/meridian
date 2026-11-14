@@ -102,7 +102,7 @@ export function PricesPage() {
                 <span className="k">Last run</span>
                 <span className={`v ${s.lastRun?.status === "error" ? "tone-bad" : ""}`}>{lastRun ?? "never"}</span>
                 <span className="sub">
-                  {s.activeJob ? `a ${s.activeJob.reason} fetch is ${s.activeJob.status} (run at ${shortDate(s.activeJob.runAt.slice(0, 10))})` : s.lastRun?.finishedAt ? `finished ${shortDate(s.lastRun.finishedAt.slice(0, 10))}` : ""}
+                  {s.activeJob ? `a ${s.activeJob.reason} fetch is ${s.activeJob.status} (run at ${shortDate(s.activeJob.runAt)})` : s.lastRun?.finishedAt ? `finished ${shortDate(s.lastRun.finishedAt)}` : ""}
                 </span>
               </div>
             </div>

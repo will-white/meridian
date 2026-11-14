@@ -270,14 +270,15 @@ export function AccountsPage() {
           <label className="inline">
             <input type="checkbox" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} /> show closed
           </label>
-          <strong>Net worth {money(netWorth)}</strong>
+          {/* A total of accounts that were never loaded is not $0.00 (audit b8-web-layout-13). */}
+          {accounts.data !== undefined && <strong>Net worth {money(netWorth)}</strong>}
         </div>
       </div>
       <ErrorText error={accounts.error} />
       <ErrorText error={update.error} />
       <ErrorText error={link.error} />
       {linkNotice && <p className="notice">{linkNotice}</p>}
-      {all.length === 0 && !accounts.isLoading && <Empty>No accounts yet. Connect SimpleFIN or add a manual account below.</Empty>}
+      {accounts.data !== undefined && all.length === 0 && <Empty>No accounts yet. Connect SimpleFIN or add a manual account below.</Empty>}
       {GROUPS.map(([label, types]) => {
         const rows = visible.filter((a) => types.includes(a.type));
         if (rows.length === 0) return null;
@@ -336,7 +337,7 @@ export function AccountsPage() {
                       </td>
                       <td>{a.institution ?? "—"}</td>
                       <td>
-                        <select value={a.type} onChange={(e) => update.mutate({ id: a.id, type: e.target.value })}>
+                        <select value={a.type} onChange={(e) => update.mutate({ id: a.id, type: e.target.value })} aria-label={`${a.name} type`}>
                           {AccountType.options.map((t) => (
                             <option key={t} value={t}>
                               {titleCase(t)}
@@ -345,7 +346,7 @@ export function AccountsPage() {
                         </select>
                       </td>
                       <td>
-                        <select value={a.taxTreatment} onChange={(e) => update.mutate({ id: a.id, taxTreatment: e.target.value })}>
+                        <select value={a.taxTreatment} onChange={(e) => update.mutate({ id: a.id, taxTreatment: e.target.value })} aria-label={`${a.name} tax treatment`}>
                           {TaxTreatment.options.map((t) => (
                             <option key={t} value={t}>
                               {titleCase(t)}
@@ -451,8 +452,8 @@ export function AccountsPage() {
             create.mutate({ name: newName.trim(), type: newType, ...(parsed.cents !== null ? { balanceCents: parsed.cents.toString() } : {}) });
           }}
         >
-          <input placeholder="Name (e.g. House, Car loan, Cash)" value={newName} onChange={(e) => setNewName(e.target.value)} required />
-          <select value={newType} onChange={(e) => setNewType(e.target.value as AccountView["type"])}>
+          <input placeholder="Name (e.g. House, Car loan, Cash)" aria-label="Account name" value={newName} onChange={(e) => setNewName(e.target.value)} required />
+          <select value={newType} onChange={(e) => setNewType(e.target.value as AccountView["type"])} aria-label="Account type">
             {AccountType.options.map((t) => (
               <option key={t} value={t}>
                 {titleCase(t)}
