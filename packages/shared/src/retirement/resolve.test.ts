@@ -373,6 +373,27 @@ describe("13. errors, each giving no input (inputs-and-data §7 test 13)", () =>
     blocked({ doc: (d) => void Object.assign(d.people!.p1, { birthYear: 1960, birthMonth: 3, longevity: { mode: "fixed", age: 65 } }) }, "planning_age_low", "people.p1.longevity");
   });
 
+  it("13 a person born after the plan's start year (2077 or 2027 for Sam) → born_after_start at people.p2.birthYear; the contribution limit is never asked for a negative age", () => {
+    // The engine's contributionLimit refuses a negative age with a RangeError (src/tax/contributionLimits.ts); this stub does the same.
+    const limit = vi.fn((_year: number, age: number, _kind: string): bigint | null => {
+      if (age < 0) throw new RangeError(`age must be a whole number of years, got ${age}`);
+      return null;
+    });
+    const born = (birthYear: number) => resolve({ ctx: { contributionLimit: limit }, doc: (d) => void (d.people!.p2!.birthYear = birthYear) });
+    // 2027 + 95 = 2122: 97 years, inside the horizon, so the new error is the only one.
+    const r2027 = blocked({ ctx: { contributionLimit: limit }, doc: (d) => void (d.people!.p2!.birthYear = 2027) }, "born_after_start", "people.p2.birthYear");
+    expect(errors(r2027)).toEqual([{ code: "born_after_start", severity: "error", path: "people.p2.birthYear", message: "Sam's birth year, 2027, is after the plan starts in 2026." }]);
+    // 2077 (a typo for 1977) + 95 = 2172: 147 years, so horizon_too_long as well, after the people's error.
+    expect(codes(errors(born(2077)))).toEqual(["born_after_start", "horizon_too_long"]);
+    // R is Sam's Roth (the ira group); only Alex's groups were asked, at 2026 − 1975 = 51.
+    expect(limit.mock.calls.map(([, age]) => age)).not.toContain(-1);
+    expect(limit.mock.calls.map(([, age]) => age)).not.toContain(-51);
+    // Born in the start year is age 0 there (seams §2.2): no error from this rule, and the limit is asked at 0.
+    limit.mockClear();
+    expect(codes(errors(born(2026)))).not.toContain("born_after_start");
+    expect(limit).toHaveBeenCalledWith(2026, 0, "ira");
+  });
+
   it("13 conversions: for p2 (no pre-tax account) → conversion_no_pretax; from 2025 → conversion_in_past; two covering 2036 → conversion_overlap", () => {
     blocked({ doc: (d) => void (d.rothConversions = { c2: { personId: "p2", fromYear: 2030, toYear: 2030, annualCents: "100000" } }) }, "conversion_no_pretax", "rothConversions.c2.personId");
     blocked({ doc: (d) => void (d.rothConversions = { c0: { personId: "p1", fromYear: 2025, toYear: 2027, annualCents: "100000" } }) }, "conversion_in_past", "rothConversions.c0.fromYear");
@@ -596,6 +617,19 @@ describe("seams §10: the resolver's new cases (C13, C24, C25, C35)", () => {
     expect(errors(unknown).map((i) => [i.code, i.path])).toEqual([
       ["income_invalid", "incomes"],
       ["brand_new", ""],
+    ]);
+    // The return model's and the seed's refusals belong next to the setting that fixes them (C13): the cohorts or
+    // the custom figures, and the seed. Reachable through the schema: the first two (the engine's resolver test).
+    const settingsCodes = ["historical_horizon_too_long", "correlation_not_positive_definite", "correlation_not_symmetric", "persistence_invalid", "initial_rate_invalid", "mean_block_invalid", "seed_invalid"];
+    const model = resolve({ ctx: { validateInput: () => settingsCodes.map((code) => ({ code, message: code })) } });
+    expect(errors(model).map((i) => [i.code, i.path])).toEqual([
+      ["historical_horizon_too_long", "settings.returnModel"],
+      ["correlation_not_positive_definite", "settings.returnModel"],
+      ["correlation_not_symmetric", "settings.returnModel"],
+      ["persistence_invalid", "settings.returnModel"],
+      ["initial_rate_invalid", "settings.returnModel"],
+      ["mean_block_invalid", "settings.returnModel"],
+      ["seed_invalid", "settings.seed"],
     ]);
     const clean = vi.fn(() => []);
     expect(resolve({ ctx: { validateInput: clean } }).input).toBeDefined();

@@ -132,7 +132,10 @@ describe("describeAssumptions (strategies-outputs-web §3.13)", () => {
     const historical = SimInput.parse({ ...base, settings: { ...base.settings, returnModel: { kind: "historical", cohorts: "auto" } } });
     const summary = { ...exampleSimSummary(), model: { kind: "historical" as const, requestedPaths: 10000, cohortMode: "complete" as const, cohortCount: 52, firstStartYear: 1928, lastStartYear: 1979 } };
     expect(valueOf(describeAssumptions(historical, RUN, { summary }), "Markets", "Return model")).toBe("Historical sequences, start years 1928 to 1979, each a complete stretch of history");
-    expect(valueOf(describeAssumptions(historical, RUN), "Markets", "Return model")).toBe("Historical sequences (complete stretches of history when enough exist, else wrap-around)");
+    // Without a summary, auto is described as the engine decides it (planCohorts; plan decision 7).
+    expect(valueOf(describeAssumptions(historical, RUN), "Markets", "Return model")).toBe(
+      "Historical sequences (complete stretches of history when every life is a fixed age and at least 30 stretches exist, else wrap-around)",
+    );
   });
 });
 

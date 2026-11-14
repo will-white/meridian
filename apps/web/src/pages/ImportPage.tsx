@@ -4,7 +4,22 @@ import { useSearchParams } from "react-router";
 import { CsvDateFormat, type AccountView, type ConnectionView, type CsvKind, type CsvMappingInput, type CsvPreviewResponse, type ImportResult, type UndoImportResult } from "@meridian/shared";
 import { api } from "../lib/api.js";
 import { money, shortDate } from "../lib/format.js";
-import { bankPreviewBody, bankResultText, CSV_KINDS, csvKindFromParam, type BankPreviewBody } from "../lib/importMapping.js";
+import {
+  bankColumnOptions,
+  bankFirstRow,
+  bankHasHeader,
+  bankPreviewBody,
+  bankResultText,
+  columnValue,
+  CSV_KINDS,
+  csvKindFromParam,
+  handBuiltBankMapping,
+  setBankAmountMode,
+  setBankColumn,
+  setBankHasHeader,
+  type BankColumnField,
+  type BankPreviewBody,
+} from "../lib/importMapping.js";
 import { undoResultText } from "../lib/ledgerCorrections.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
 import { PositionsImport } from "../components/import/PositionsImport.js";
@@ -124,13 +139,6 @@ function BankImport({ accounts: accountList, connections: connectionList }: { ac
   };
 
   const p = preview.shown;
-  const headers = p?.headers ?? [];
-  const columnOptions = headers.map((h, i) => (
-    <option key={i} value={p?.mapping?.hasHeader === false ? i : h}>
-      {h}
-    </option>
-  ));
-  const setM = (patch: Partial<Mapping>) => mapping && setMapping({ ...mapping, ...patch });
   /** The server answered the current request and found no mapping: the owner builds one. */
   const noGuess = preview.current && p?.mapping === null;
 
@@ -192,7 +200,7 @@ function BankImport({ accounts: accountList, connections: connectionList }: { ac
               </table>
             </div>
           )}
-          {(mapping || noGuess) && <MappingEditor mapping={mapping} headers={headers} onChange={setMapping} columnOptions={columnOptions} setM={setM} />}
+          {(mapping || noGuess) && <MappingEditor mapping={mapping} sampleRows={p.sampleRows} firstRow={bankFirstRow(p)} onChange={setMapping} />}
         </Card>
       )}
 
@@ -286,48 +294,48 @@ function BankImport({ accounts: accountList, connections: connectionList }: { ac
   );
 }
 
+/**
+ * The bank mapping editor. Columns are offered by header name while the mapping reads a header
+ * row and by position otherwise (the bank mapper reads both); "first row is a header" carries
+ * every column over (`setBankHasHeader`). The column choices come from the file's first row,
+ * which the sample rows start with whichever way the preview read the file.
+ */
 function MappingEditor({
   mapping,
-  headers,
+  sampleRows,
+  firstRow,
   onChange,
-  columnOptions,
-  setM,
 }: {
   mapping: Mapping | null;
-  headers: string[];
+  sampleRows: readonly (readonly string[])[];
+  firstRow: readonly string[];
   onChange: (m: Mapping) => void;
-  columnOptions: React.ReactNode;
-  setM: (patch: Partial<Mapping>) => void;
 }) {
   if (!mapping) {
     return (
-      <button
-        className="secondary"
-        onClick={() =>
-          onChange({
-            hasHeader: true,
-            date: { column: headers[0] ?? 0, format: "MM/DD/YYYY" },
-            description: { column: headers[1] ?? 1 },
-            amount: { mode: "single", column: headers[headers.length - 1] ?? 2, invert: false },
-          })
-        }
-      >
+      <button className="secondary" onClick={() => onChange(handBuiltBankMapping(sampleRows))}>
         Build a mapping by hand
       </button>
     );
   }
-  const col = (c: string | number) => String(c);
+  const hasHeader = bankHasHeader(mapping);
+  const columnOptions = bankColumnOptions(firstRow, hasHeader).map((o, i) => (
+    <option key={i} value={o.value}>
+      {o.label}
+    </option>
+  ));
+  const pick = (field: BankColumnField) => (e: React.ChangeEvent<HTMLSelectElement>) => onChange(setBankColumn(mapping, field, e.target.value));
   return (
     <div className="grid2">
       <label>
         Date column
-        <select value={col(mapping.date.column)} onChange={(e) => setM({ date: { ...mapping.date, column: e.target.value } })}>
+        <select value={columnValue(mapping.date.column)} onChange={pick("date")}>
           {columnOptions}
         </select>
       </label>
       <label>
         Date format
-        <select value={mapping.date.format} onChange={(e) => setM({ date: { ...mapping.date, format: e.target.value as Mapping["date"]["format"] } })}>
+        <select value={mapping.date.format} onChange={(e) => onChange({ ...mapping, date: { ...mapping.date, format: e.target.value as Mapping["date"]["format"] } })}>
           {CsvDateFormat.options.map((f) => (
             <option key={f} value={f}>
               {f}
@@ -337,23 +345,13 @@ function MappingEditor({
       </label>
       <label>
         Description column
-        <select value={col(mapping.description.column)} onChange={(e) => setM({ description: { column: e.target.value } })}>
+        <select value={columnValue(mapping.description.column)} onChange={pick("description")}>
           {columnOptions}
         </select>
       </label>
       <label>
         Amount layout
-        <select
-          value={mapping.amount.mode}
-          onChange={(e) =>
-            setM({
-              amount:
-                e.target.value === "single"
-                  ? { mode: "single", column: headers[headers.length - 1] ?? 0, invert: false }
-                  : { mode: "split", debitColumn: headers[headers.length - 2] ?? 0, creditColumn: headers[headers.length - 1] ?? 1 },
-            })
-          }
-        >
+        <select value={mapping.amount.mode} onChange={(e) => onChange(setBankAmountMode(mapping, e.target.value === "split" ? "split" : "single", firstRow))}>
           <option value="single">One signed amount column</option>
           <option value="split">Separate debit and credit columns</option>
         </select>
@@ -362,7 +360,7 @@ function MappingEditor({
         <>
           <label>
             Amount column
-            <select value={col(mapping.amount.column)} onChange={(e) => mapping.amount.mode === "single" && setM({ amount: { ...mapping.amount, column: e.target.value } })}>
+            <select value={columnValue(mapping.amount.column)} onChange={pick("amount")}>
               {columnOptions}
             </select>
           </label>
@@ -370,7 +368,7 @@ function MappingEditor({
             <input
               type="checkbox"
               checked={mapping.amount.invert ?? false}
-              onChange={(e) => mapping.amount.mode === "single" && setM({ amount: { ...mapping.amount, invert: e.target.checked } })}
+              onChange={(e) => mapping.amount.mode === "single" && onChange({ ...mapping, amount: { ...mapping.amount, invert: e.target.checked } })}
             />{" "}
             outflows are positive in this file
           </label>
@@ -379,19 +377,13 @@ function MappingEditor({
         <>
           <label>
             Debit (money out) column
-            <select
-              value={col(mapping.amount.debitColumn)}
-              onChange={(e) => mapping.amount.mode === "split" && setM({ amount: { ...mapping.amount, debitColumn: e.target.value } })}
-            >
+            <select value={columnValue(mapping.amount.debitColumn)} onChange={pick("debit")}>
               {columnOptions}
             </select>
           </label>
           <label>
             Credit (money in) column
-            <select
-              value={col(mapping.amount.creditColumn)}
-              onChange={(e) => mapping.amount.mode === "split" && setM({ amount: { ...mapping.amount, creditColumn: e.target.value } })}
-            >
+            <select value={columnValue(mapping.amount.creditColumn)} onChange={pick("credit")}>
               {columnOptions}
             </select>
           </label>
@@ -399,32 +391,20 @@ function MappingEditor({
       )}
       <label>
         Memo column <span className="muted">(optional)</span>
-        <select
-          value={mapping.memo ? col(mapping.memo.column) : ""}
-          onChange={(e) => {
-            const { memo: _drop, ...rest } = mapping;
-            onChange(e.target.value ? { ...rest, memo: { column: e.target.value } } : rest);
-          }}
-        >
+        <select value={columnValue(mapping.memo?.column)} onChange={pick("memo")}>
           <option value="">—</option>
           {columnOptions}
         </select>
       </label>
       <label>
         Bank transaction id column <span className="muted">(optional)</span>
-        <select
-          value={mapping.externalId ? col(mapping.externalId.column) : ""}
-          onChange={(e) => {
-            const { externalId: _drop, ...rest } = mapping;
-            onChange(e.target.value ? { ...rest, externalId: { column: e.target.value } } : rest);
-          }}
-        >
+        <select value={columnValue(mapping.externalId?.column)} onChange={pick("externalId")}>
           <option value="">— (dedupe by date, amount and description)</option>
           {columnOptions}
         </select>
       </label>
       <label className="inline">
-        <input type="checkbox" checked={mapping.hasHeader ?? true} onChange={(e) => setM({ hasHeader: e.target.checked })} /> first row is a header
+        <input type="checkbox" checked={hasHeader} onChange={(e) => onChange(setBankHasHeader(mapping, e.target.checked, firstRow))} /> first row is a header
       </label>
     </div>
   );

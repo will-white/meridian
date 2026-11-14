@@ -153,7 +153,8 @@ export function changeLabel(path: string, before: unknown, after: unknown, names
 
 /**
  * The fan's markers by calendar year (§5.5 item 3): each person's retirement, Social Security
- * claim and Medicare (65, `MEDICARE_AGE`) that fall after the plan start, and, when the selected
+ * claim and Medicare (65, `MEDICARE_AGE`) that fall after the plan start and no later than the
+ * person's last possible year (`birthYear` + the fixed age or `maxAge`), and, when the selected
  * path's table is given, each person's first year with a required minimum distribution as that
  * path took it (the table's own RMD column, so the web needs no copy of the RMD start ages). A
  * one-person household's labels carry no name.
@@ -165,11 +166,17 @@ export function fanMarkers(input: SimInput, table?: YearTable): YearMarker[] {
   const startMonth = input.plan.startMonth;
   const out: YearMarker[] = [];
   for (const person of people) {
-    if (person.retirementMonth > startMonth) out.push({ year: Number(person.retirementMonth.slice(0, 4)), label: named ? `${person.name} retires` : "Retirement" });
+    // Alive through the calendar year of the last age (the fixed age, or maxAge on the table; seams §2.2 and C28):
+    // nothing happens to the person after it.
+    const lastYear = person.birthYear + (person.longevity.mode === "fixed" ? person.longevity.age : person.longevity.maxAge);
+    const push = (year: number, text: string) => {
+      if (year <= lastYear) out.push({ year, label: text });
+    };
+    if (person.retirementMonth > startMonth) push(Number(person.retirementMonth.slice(0, 4)), named ? `${person.name} retires` : "Retirement");
     const ss = input.socialSecurity.people.find((s) => s.personId === person.id);
-    if (ss?.mode === "estimate" && ss.claimMonth > startMonth) out.push({ year: Number(ss.claimMonth.slice(0, 4)), label: label(person.name, "Social Security", "Social Security") });
+    if (ss?.mode === "estimate" && ss.claimMonth > startMonth) push(Number(ss.claimMonth.slice(0, 4)), label(person.name, "Social Security", "Social Security"));
     const medicare = `${person.birthYear + MEDICARE_AGE}-${String(person.birthMonth).padStart(2, "0")}`;
-    if (medicare > startMonth) out.push({ year: person.birthYear + MEDICARE_AGE, label: label(person.name, "Medicare", "Medicare") });
+    if (medicare > startMonth) push(person.birthYear + MEDICARE_AGE, label(person.name, "Medicare", "Medicare"));
   }
   if (table !== undefined) {
     people.forEach((person, p) => {

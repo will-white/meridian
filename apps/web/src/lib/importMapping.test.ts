@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
-import type { PositionsCsvMapping, TradesCsvMapping } from "@meridian/shared";
+import type { CsvMappingInput, PositionsCsvMapping, TradesCsvMapping } from "@meridian/shared";
 import {
+  bankColumnOptions,
+  bankFirstRow,
   bankPreviewBody,
   bankResultText,
   columnRef,
   columnValue,
   csvKindFromParam,
+  firstRowLooksLikeData,
   groupTradesByDate,
+  handBuiltBankMapping,
   handBuiltPositionsMapping,
   handBuiltTradesMapping,
   hasFeeColumn,
@@ -19,6 +23,9 @@ import {
   rowOrderText,
   securityBadge,
   setActionKind,
+  setBankAmountMode,
+  setBankColumn,
+  setBankHasHeader,
   setPositionsAsOf,
   setPositionsColumn,
   setTradesAmount,
@@ -83,6 +90,158 @@ describe("hand-built mappings", () => {
       actionMap: {},
     });
     expect(tradesMappingIssues(m)).toEqual([]);
+  });
+});
+
+// Audit b4-import-ui, second round: the bank mapper reads header or index columns (phase 1 plan,
+// "CSV import"), and the bank editor could only write header names.
+describe("the bank mapping editor, with and without a header row", () => {
+  const HEADERLESS = [
+    ["11/07/2026", "OAKWOOD APTS RENT", "-1800.00"],
+    ["11/08/2026", "ACME PAYROLL", "2500.00"],
+    ["11/09/2026", "KING SOOPERS", "-82.13"],
+  ];
+  const FIRST = HEADERLESS[0]!;
+  /** What "Build a mapping by hand" gave such a file before: the first row's cells as header names. */
+  const BY_NAME: CsvMappingInput = {
+    hasHeader: true,
+    date: { column: "11/07/2026", format: "MM/DD/YYYY" },
+    description: { column: "OAKWOOD APTS RENT" },
+    amount: { mode: "single", column: "-1800.00", invert: false },
+  };
+  const BY_POSITION: CsvMappingInput = {
+    hasHeader: false,
+    date: { column: 0, format: "MM/DD/YYYY" },
+    description: { column: 1 },
+    amount: { mode: "single", column: 2, invert: false },
+  };
+
+  it("takes the file's first row from the sample rows, since a header-less preview names its columns Column 1, Column 2…", () => {
+    expect(bankFirstRow({ headers: ["Column 1", "Column 2", "Column 3"], sampleRows: HEADERLESS })).toEqual(FIRST);
+    expect(bankFirstRow({ headers: ["Date", "Description", "Amount"], sampleRows: [] })).toEqual(["Date", "Description", "Amount"]);
+  });
+
+  it("offers the columns by header name, or by position with the first row's cell when the file has no header row", () => {
+    expect(bankColumnOptions(["Date", "Description", "Amount"], true)).toEqual([
+      { value: "Date", label: "Date" },
+      { value: "Description", label: "Description" },
+      { value: "Amount", label: "Amount" },
+    ]);
+    expect(bankColumnOptions([...FIRST, ""], false)).toEqual([
+      { value: "0", label: "Column 1 (11/07/2026)" },
+      { value: "1", label: "Column 2 (OAKWOOD APTS RENT)" },
+      { value: "2", label: "Column 3 (-1800.00)" },
+      { value: "3", label: "Column 4" },
+    ]);
+    // A long cell is cut in the label only.
+    expect(bankColumnOptions(["X".repeat(50)], false)[0]!.label).toBe(`Column 1 (${"X".repeat(29)}…)`);
+  });
+
+  it("stores a picked column as a position when the file has no header row, and as a name otherwise", () => {
+    expect(setBankColumn(BY_POSITION, "description", "0")).toEqual({ ...BY_POSITION, description: { column: 0 } });
+    expect(setBankColumn(BY_POSITION, "date", "2")).toEqual({ ...BY_POSITION, date: { column: 2, format: "MM/DD/YYYY" } });
+    expect(setBankColumn(BY_POSITION, "amount", "1")).toEqual({ ...BY_POSITION, amount: { mode: "single", column: 1, invert: false } });
+    expect(setBankColumn(BY_POSITION, "memo", "1")).toEqual({ ...BY_POSITION, memo: { column: 1 } });
+    expect(setBankColumn({ ...BY_POSITION, memo: { column: 1 } }, "memo", "")).toEqual(BY_POSITION);
+    expect(setBankColumn(BY_POSITION, "externalId", "2")).toEqual({ ...BY_POSITION, externalId: { column: 2 } });
+    const named: CsvMappingInput = { date: { column: "Date", format: "YYYY-MM-DD" }, description: { column: "Description" }, amount: { mode: "split", debitColumn: "Debit", creditColumn: "Credit" } };
+    // `hasHeader` left out is the schema's default, true: a header named "2" stays a name.
+    expect(setBankColumn(named, "description", "2")).toEqual({ ...named, description: { column: "2" } });
+    expect(setBankColumn(named, "debit", "Withdrawals")).toEqual({ ...named, amount: { mode: "split", debitColumn: "Withdrawals", creditColumn: "Credit" } });
+    expect(setBankColumn({ ...named, hasHeader: false }, "credit", "3")).toEqual({ ...named, hasHeader: false, amount: { mode: "split", debitColumn: "Debit", creditColumn: 3 } });
+    // A column of the other amount layout changes nothing.
+    expect(setBankColumn(named, "amount", "Amount")).toBe(named);
+    expect(setBankColumn(BY_POSITION, "debit", "1")).toBe(BY_POSITION);
+  });
+
+  it("switches the amount layout with the last columns, by position when the file has no header row", () => {
+    expect(setBankAmountMode(BY_POSITION, "split", FIRST)).toEqual({ ...BY_POSITION, amount: { mode: "split", debitColumn: 1, creditColumn: 2 } });
+    expect(setBankAmountMode({ ...BY_POSITION, amount: { mode: "split", debitColumn: 1, creditColumn: 2 } }, "single", FIRST)).toEqual(BY_POSITION);
+    const headers = ["Date", "Description", "Debit", "Credit"];
+    expect(setBankAmountMode({ ...BY_NAME, hasHeader: true }, "split", headers).amount).toEqual({ mode: "split", debitColumn: "Debit", creditColumn: "Credit" });
+    expect(setBankAmountMode({ ...BY_NAME, hasHeader: true }, "single", headers).amount).toEqual({ mode: "single", column: "Credit", invert: false });
+  });
+
+  it("rewrites every column between names and positions when 'first row is a header' changes, so the box alone gives a valid mapping", () => {
+    // The reviewer's file: unchecking the box used to send the names with hasHeader false (400 "referenced by name").
+    expect(setBankHasHeader(BY_NAME, false, FIRST)).toEqual(BY_POSITION);
+    expect(setBankHasHeader(BY_POSITION, true, FIRST)).toEqual(BY_NAME);
+    const full: CsvMappingInput = {
+      hasHeader: true,
+      skipRows: 0,
+      date: { column: "posted", format: "YYYY-MM-DD" },
+      description: { column: "Payee" },
+      memo: { column: "Memo" },
+      externalId: { column: "Ref" },
+      amount: { mode: "split", debitColumn: "Out", creditColumn: "In" },
+    };
+    const headers = ["Ref", "Posted", "Payee", "Memo", "Out", "In"];
+    // Names are matched as the server matches them (sanitized, any case): "posted" is column 1.
+    const positions = setBankHasHeader(full, false, headers);
+    expect(positions).toEqual({
+      hasHeader: false,
+      skipRows: 0,
+      date: { column: 1, format: "YYYY-MM-DD" },
+      description: { column: 2 },
+      memo: { column: 3 },
+      externalId: { column: 0 },
+      amount: { mode: "split", debitColumn: 4, creditColumn: 5 },
+    });
+    expect(setBankHasHeader(positions, true, headers)).toEqual({ ...full, date: { column: "Posted", format: "YYYY-MM-DD" } });
+  });
+
+  it("keeps a column it cannot translate as it is", () => {
+    // A name the first row does not have (a saved mapping from another export): the preview says which.
+    expect(setBankHasHeader({ ...BY_NAME, description: { column: "Payee" } }, false, FIRST).description).toEqual({ column: "Payee" });
+    // A position past the first row, an empty header and a repeated header stay positions (valid with a header row too):
+    // the name "Amount" would find column 1, not 2.
+    const repeated: CsvMappingInput = { hasHeader: false, date: { column: 0, format: "YYYY-MM-DD" }, description: { column: 3 }, amount: { mode: "split", debitColumn: 1, creditColumn: 2 } };
+    expect(setBankHasHeader(repeated, true, ["Date", "Amount", "Amount", ""])).toEqual({
+      hasHeader: true,
+      date: { column: "Date", format: "YYYY-MM-DD" },
+      description: { column: 3 },
+      amount: { mode: "split", debitColumn: "Amount", creditColumn: 2 },
+    });
+    expect(setBankHasHeader({ ...BY_POSITION, memo: { column: 7 } }, true, FIRST).memo).toEqual({ column: 7 });
+  });
+
+  it("tells a first row of data from a header row", () => {
+    expect(firstRowLooksLikeData(FIRST)).toBe(true);
+    expect(firstRowLooksLikeData(["Date", "Description", "Amount"])).toBe(false);
+    expect(firstRowLooksLikeData(["Posted", "Payee", "Amt (USD)"])).toBe(false);
+    // Wells Fargo's export has no header row: date, amount, "*", check number, description.
+    expect(firstRowLooksLikeData(["11/07/2026", "-1800.00", "*", "", "OAKWOOD APTS RENT"])).toBe(true);
+    expect(firstRowLooksLikeData(["2026-11-07", "Coffee", "(4.50)"])).toBe(true);
+    // A date without an amount, or an amount without a date, is not enough.
+    expect(firstRowLooksLikeData(["11/07/2026", "Statement"])).toBe(false);
+    expect(firstRowLooksLikeData(["Total", "-1800.00"])).toBe(false);
+    expect(firstRowLooksLikeData([])).toBe(false);
+  });
+
+  it("builds a header-less mapping by position when the first row is data, so no row is lost", () => {
+    expect(handBuiltBankMapping(HEADERLESS)).toEqual(BY_POSITION);
+    expect(handBuiltBankMapping([["11/07/2026", "-1800.00", "*", "", "OAKWOOD APTS RENT"]])).toEqual({
+      hasHeader: false,
+      date: { column: 0, format: "MM/DD/YYYY" },
+      description: { column: 4 },
+      amount: { mode: "single", column: 1, invert: false },
+    });
+    // The date format is one that reads every sample: 13/11 is not a month/day.
+    expect(handBuiltBankMapping([["07/11/2026", "RENT", "-1800.00"], ["13/11/2026", "PAYROLL", "2500.00"]]).date).toEqual({ column: 0, format: "DD/MM/YYYY" });
+    expect(handBuiltBankMapping([["2026-11-07", "RENT", "-1800.00"]]).date).toEqual({ column: 0, format: "YYYY-MM-DD" });
+    // An id that reads as a whole number is not taken for the amount when a cell with cents is there.
+    expect(handBuiltBankMapping([["10442", "2026-11-07", "RENT", "-1800.00"]])).toMatchObject({ date: { column: 1 }, description: { column: 2 }, amount: { column: 3 } });
+  });
+
+  it("builds a mapping by header name when the first row is a header the guess did not recognise, with a date format that reads the rows under it", () => {
+    expect(handBuiltBankMapping([["Posted", "Payee", "Amt (USD)"], ["2026-11-07", "RENT", "-1800.00"]])).toEqual({
+      hasHeader: true,
+      date: { column: "Posted", format: "YYYY-MM-DD" },
+      description: { column: "Payee" },
+      amount: { mode: "single", column: "Amt (USD)", invert: false },
+    });
+    expect(handBuiltBankMapping([["Posted", "Payee", "Amt (USD)"]]).date).toEqual({ column: "Posted", format: "MM/DD/YYYY" });
+    expect(handBuiltBankMapping([])).toEqual({ hasHeader: true, date: { column: 0, format: "MM/DD/YYYY" }, description: { column: 1 }, amount: { mode: "single", column: 2, invert: false } });
   });
 });
 

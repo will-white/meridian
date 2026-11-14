@@ -108,7 +108,28 @@ export interface PreviewView<TResponse> {
   error: Error | null;
 }
 
-/** `kept` is the last settled response of the same file; a refused query has no data of its own, so the hook remembers it. */
+/** What `useCsvPreview` keeps between renders: the last settled response and the file it answers. */
+export interface KeptPreview<TResponse> {
+  fileKey: number;
+  response: TResponse;
+}
+
+/**
+ * The kept response after a render: the settled one when there is one, else what was kept (a
+ * pending or refused body has no settled response, so the last answer stays). The same object
+ * comes back while nothing changed, so the hook's state update renders nothing more.
+ */
+export function nextKept<TResponse>(prev: KeptPreview<TResponse> | null, fileKey: number, settled: TResponse | undefined): KeptPreview<TResponse> | null {
+  if (settled === undefined) return prev;
+  return prev !== null && prev.fileKey === fileKey && prev.response === settled ? prev : { fileKey, response: settled };
+}
+
+/** The kept response the page may show: the chosen file's only, never another file's. */
+export function keptFor<TResponse>(kept: KeptPreview<TResponse> | null, fileKey: number): TResponse | undefined {
+  return kept !== null && kept.fileKey === fileKey ? kept.response : undefined;
+}
+
+/** `kept` is the last settled response of the same file; a refused query has no data of its own, so the hook remembers it (`nextKept`, `keptFor`). */
 export function previewView<TResponse>(result: PreviewResult<TResponse>, kept: TResponse | undefined): PreviewView<TResponse> {
   const shown = result.data ?? kept;
   return {

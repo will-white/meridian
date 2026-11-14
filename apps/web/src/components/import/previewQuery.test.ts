@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MutationObserver, QueryClient, QueryObserver } from "@tanstack/react-query";
+import { CsvMapping, guessCsvMapping, mapCsvRows, parseCsv, previewCells } from "@meridian/shared";
 import type { CsvMappingInput, CsvPreviewResponse, PositionsCsvMapping, PositionsPreviewBody, PositionsPreviewResponse } from "@meridian/shared";
 import { api, ApiError } from "../../lib/api.js";
-import { bankPreviewBody, positionsPreviewBody, type BankPreviewBody } from "../../lib/importMapping.js";
-import { adoptPreviewMapping, nextFileKey, PREVIEW_KEY, previewQueryOptions, previewView } from "./previewQuery.js";
+import { bankColumnOptions, bankFirstRow, bankPreviewBody, handBuiltBankMapping, positionsPreviewBody, setBankColumn, setBankHasHeader, type BankPreviewBody } from "../../lib/importMapping.js";
+import { adoptPreviewMapping, keptFor, nextFileKey, nextKept, PREVIEW_KEY, previewQueryOptions, previewView, settledPreview, type KeptPreview } from "./previewQuery.js";
 
 interface Body {
   csvText: string;
@@ -89,15 +90,45 @@ describe("previewQueryOptions", () => {
   });
 });
 
+describe("the response kept on screen (audit b4-import-ui, second round)", () => {
+  const A = { mapping: null, n: 1 };
+  const B = { mapping: null, n: 2 };
+
+  it("keeps the last settled response of the file, as the same object while nothing changes", () => {
+    expect(nextKept(null, 1, undefined)).toBeNull();
+    const kept = nextKept(null, 1, A);
+    expect(kept).toEqual({ fileKey: 1, response: A });
+    // The same answer again: the same state, so the hook's setState renders nothing more.
+    expect(nextKept(kept, 1, A)).toBe(kept);
+    // A pending or refused body has no settled response: the last answer stays.
+    expect(nextKept(kept, 1, undefined)).toBe(kept);
+    expect(nextKept(kept, 1, B)).toEqual({ fileKey: 1, response: B });
+  });
+
+  it("shows only the chosen file's answer, never another file's", () => {
+    const kept: KeptPreview<typeof A> = { fileKey: 1, response: A };
+    expect(keptFor(kept, 1)).toBe(A);
+    expect(keptFor(kept, 2)).toBeUndefined();
+    expect(keptFor(null, 1)).toBeUndefined();
+    // The next file's first preview is refused: nothing of the first file is on screen.
+    const refused = { data: undefined, isPlaceholderData: false, isFetching: false, error: new Error("The file is empty") };
+    expect(previewView(refused, keptFor(nextKept(kept, 2, settledPreview(refused)), 2))).toMatchObject({ shown: undefined, current: false, reading: false });
+    expect(previewView(refused, keptFor(nextKept(kept, 1, settledPreview(refused)), 1)).shown).toBe(A);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // The page's preview flow, without React. The hook (`useCsvPreview`) is
 // `useQuery(previewQueryOptions(path, bodyFor(mapping), fileKey))` plus one
-// effect that calls `adoptPreviewMapping`; `Page` is that loop.
+// effect that keeps the settled response (`nextKept`) and calls
+// `adoptPreviewMapping`; `Page` is that loop. `useCsvPreview.test.ts` runs the
+// hook itself.
 // ---------------------------------------------------------------------------
 
 class Page<TBody extends { csvText: string }, M, TResponse extends { mapping: M | null }> {
   mapping: M | null = null;
   fileKey = nextFileKey();
+  kept: KeptPreview<TResponse> | null = null;
   readonly observer;
   private readonly unsubscribe: () => void;
 
@@ -119,11 +150,18 @@ class Page<TBody extends { csvText: string }, M, TResponse extends { mapping: M 
     for (let pass = 0; pass < 10; pass++) {
       this.observer.setOptions(this.options());
       await vi.waitFor(() => expect(this.observer.getCurrentResult().isFetching).toBe(false));
-      const adopted = adoptPreviewMapping(this.qc, this.path, this.fileKey, this.observer.getCurrentResult(), this.mapping, this.bodyFor);
-      if (adopted === null) return this.observer.getCurrentResult();
+      const result = this.observer.getCurrentResult();
+      this.kept = nextKept(this.kept, this.fileKey, settledPreview(result));
+      const adopted = adoptPreviewMapping(this.qc, this.path, this.fileKey, result, this.mapping, this.bodyFor);
+      if (adopted === null) return result;
       this.mapping = adopted;
     }
     throw new Error("the preview never settled");
+  }
+
+  /** What the page shows: the hook's `previewView(query, keptFor(kept, fileKey))`. */
+  view() {
+    return previewView(this.observer.getCurrentResult(), keptFor(this.kept, this.fileKey));
   }
 
   close() {
@@ -270,6 +308,7 @@ describe("the bank preview flow", () => {
     expect(refused.error).toBeInstanceOf(ApiError);
     const view = previewView(refused, kept);
     expect(view.shown).toBe(kept);
+    expect(page.view()).toEqual(view);
     expect(view).toMatchObject({ current: false, reading: false, updating: false });
     expect(view.error?.message).toBe('Column "Date" referenced by name, but the file has no header row');
     // Without a remembered response there would be nothing to show (what the page did before).
@@ -306,6 +345,129 @@ describe("the bank preview flow", () => {
 
   it("files every preview under one key, so a commit can make them all ask again", () => {
     expect(previewQueryOptions<BankPreviewBody, CsvPreviewResponse>("/import/csv/preview", { csvText: "a" }, 7).queryKey.slice(0, 2)).toEqual([...PREVIEW_KEY]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bank: a file without a header row (audit b4-import-ui, second round)
+// ---------------------------------------------------------------------------
+
+const HEADERLESS_CSV = "11/07/2026,OAKWOOD APTS RENT,-1800.00\n11/08/2026,ACME PAYROLL,2500.00\n11/09/2026,KING SOOPERS,-82.13\n";
+const HEADERLESS_FIRST_ROW = ["11/07/2026", "OAKWOOD APTS RENT", "-1800.00"];
+/** What "Build a mapping by hand" gave this file before: its first row taken as the header. */
+const HEADERLESS_BY_NAME: CsvMappingInput = {
+  hasHeader: true,
+  date: { column: "11/07/2026", format: "MM/DD/YYYY" },
+  description: { column: "OAKWOOD APTS RENT" },
+  amount: { mode: "single", column: "-1800.00", invert: false },
+};
+
+/**
+ * The bank preview route as `apps/api/src/routes/import.ts` runs it, with the shared mapper: the
+ * guess from the first row, `mapCsvRows`, and a 400 for a mapping the file cannot take.
+ */
+function mapperServer() {
+  const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as BankPreviewBody;
+    const rows = parseCsv(body.csvText);
+    const headers = previewCells([rows[0]!])[0]!;
+    const mapping = body.mapping ?? guessCsvMapping(headers, rows.slice(1, 6));
+    const sampleRows = previewCells(rows.slice(0, 6));
+    if (!mapping) return json(200, { headers, sampleRows, mapping: null, rows: [], totalRows: Math.max(rows.length - 1, 0), duplicateCount: 0, errors: [] } satisfies CsvPreviewResponse);
+    try {
+      const mapped = await mapCsvRows(rows, mapping);
+      const response: CsvPreviewResponse = {
+        headers: mapping.hasHeader === false ? headers.map((_, i) => `Column ${i + 1}`) : headers,
+        sampleRows,
+        mapping: CsvMapping.parse(mapping),
+        rows: mapped.rows.map((m) => ({ rowIndex: m.rowIndex, date: m.date, amountCents: m.amountCents.toString(), description: m.description, ...(m.memo ? { memo: m.memo } : {}), externalId: m.externalId, duplicate: false })),
+        totalRows: mapped.rows.length,
+        duplicateCount: 0,
+        errors: mapped.errors,
+      };
+      return json(200, response);
+    } catch (err) {
+      return json(400, { error: (err as Error).message, code: "bad_mapping" });
+    }
+  });
+  vi.stubGlobal("fetch", fetch);
+  return fetch;
+}
+
+function headerlessPage() {
+  const state = { csvText: HEADERLESS_CSV, accountId: "", profileId: "" };
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return new Page<BankPreviewBody, CsvMappingInput, CsvPreviewResponse>(qc, "/import/csv/preview", (mapping) => bankPreviewBody({ ...state, mapping }));
+}
+
+const rowsOf = (p: CsvPreviewResponse | undefined) => p?.rows.map((r) => [r.date, r.description, r.amountCents]);
+
+describe("the bank preview flow for a file without a header row (audit b4-import-ui, second round)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("finds no guess, and the mapping built by hand reads every row by position", async () => {
+    const fetch = mapperServer();
+    const page = headerlessPage();
+    const asked = await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(asked.data?.mapping).toBeNull();
+    expect(page.mapping).toBeNull();
+    expect(bankFirstRow(asked.data!)).toEqual(HEADERLESS_FIRST_ROW);
+
+    // "Build a mapping by hand".
+    page.mapping = handBuiltBankMapping(asked.data!.sampleRows);
+    const built = await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(built.error).toBeNull();
+    expect(built.data).toMatchObject({ headers: ["Column 1", "Column 2", "Column 3"], mapping: { hasHeader: false }, totalRows: 3, errors: [] });
+    expect(rowsOf(built.data)).toEqual([
+      ["2026-11-07", "OAKWOOD APTS RENT", "-180000"],
+      ["2026-11-08", "ACME PAYROLL", "250000"],
+      ["2026-11-09", "KING SOOPERS", "-8213"],
+    ]);
+
+    // The editor offers positions, labelled with the first row; a pick is stored as a position the server reads.
+    const options = bankColumnOptions(bankFirstRow(built.data!), false);
+    expect(options.map((o) => o.value)).toEqual(["0", "1", "2"]);
+    page.mapping = setBankColumn(setBankColumn(page.mapping, "date", options[0]!.value), "memo", options[1]!.value);
+    expect(page.mapping).toMatchObject({ date: { column: 0 }, memo: { column: 1 } });
+    const picked = await page.settle();
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(picked.error).toBeNull();
+    expect(picked.data?.totalRows).toBe(3);
+    expect(picked.data?.rows[2]).toMatchObject({ description: "KING SOOPERS", memo: "KING SOOPERS" });
+    page.close();
+  });
+
+  it("turns a mapping by name into one by position when 'first row is a header' is unchecked, and back when it is checked", async () => {
+    const fetch = mapperServer();
+    const page = headerlessPage();
+    await page.settle();
+    page.mapping = HEADERLESS_BY_NAME;
+    const byName = await page.settle();
+    // The first row is taken as the header: two rows, the rent is lost.
+    expect(byName.data?.totalRows).toBe(2);
+
+    // The box as it was: the same names with hasHeader false, which the server refuses; no edit could reach a valid mapping.
+    page.mapping = { ...HEADERLESS_BY_NAME, hasHeader: false };
+    const refused = await page.settle();
+    expect(refused.error?.message).toBe('Column "11/07/2026" referenced by name, but the file has no header row');
+    expect(page.view().shown).toBe(byName.data);
+
+    // The box now rewrites the columns from the first row of the response on screen.
+    page.mapping = setBankHasHeader(HEADERLESS_BY_NAME, false, bankFirstRow(page.view().shown!));
+    const byPosition = await page.settle();
+    expect(byPosition.error).toBeNull();
+    expect(byPosition.data).toMatchObject({ mapping: { hasHeader: false, date: { column: 0 }, description: { column: 1 }, amount: { column: 2 } }, totalRows: 3 });
+    expect(page.view()).toMatchObject({ current: true, error: null });
+
+    // Checked again: the names come back, and that preview is still in the cache.
+    page.mapping = setBankHasHeader(page.mapping, true, bankFirstRow(byPosition.data!));
+    expect(page.mapping).toEqual(HEADERLESS_BY_NAME);
+    const back = await page.settle();
+    expect(back.data?.totalRows).toBe(2);
+    expect(fetch).toHaveBeenCalledTimes(4);
+    page.close();
   });
 });
 

@@ -43,8 +43,9 @@ import { classWeights } from "./weights.js";
  *
  * - R1 the effective document (`override_invalid`, nothing else is resolved);
  * - R2 the plan start (`planStart`), the baseline's age and the first tax year;
- * - R3 the people, retirement months, the horizon (`plan.endYear` is the last year any person can
- *   be alive, which is the engine's mortality horizon, C28);
+ * - R3 the people (`born_after_start` for a birth year after the plan's start year), retirement
+ *   months, the horizon (`plan.endYear` is the last year any person can be alive, which is the
+ *   engine's mortality horizon, C28);
  * - R4 the accounts: inclusion, balance, owner, allocation, glide path, basis, Roth basis, the fund
  *   cost (C25: typed, else measured, else 0 with `expense_ratio_unknown`), the baseline's flags;
  * - R10 the Roth conversions (resolved here because R5 depends on them);
@@ -160,11 +161,12 @@ export interface ResolveResult {
   doc?: RetirementProfileDoc;
 }
 
-/** The resolver's error codes (§3.5, with seams C13's limits and `input_invalid`); the engine's codes are added as they come. */
+/** The resolver's error codes (§3.5, with seams C13's limits, `input_invalid` and `born_after_start`); the engine's codes are added as they come. */
 export const PLAN_ERROR_CODES = [
   "override_invalid",
   "owner_required",
   "no_accounts",
+  "born_after_start",
   "unknown_person",
   "planning_age_low",
   "claim_in_past",
@@ -333,6 +335,11 @@ export function resolvePlan(args: ResolveArgs, ctx: ResolveContext): ResolveResu
   const filingStatus = people.length === 2 ? "married_joint" : "single";
   let endYear = startYear;
   for (const p of people) {
+    // Ages are whole years attained in the calendar year (seams §2.2), so a person of the household is at least 0 in
+    // the plan's first year; a later birth year is a typo the owner must fix (the engine's limits refuse a negative age).
+    if (p.person.birthYear > startYear) {
+      error("born_after_start", `people.${p.id}.birthYear`, `${p.person.name}'s birth year, ${p.person.birthYear}, is after the plan starts in ${startYear}.`);
+    }
     const lastAge = p.person.longevity.mode === "fixed" ? p.person.longevity.age : p.person.longevity.maxAge;
     const lastYear = p.person.birthYear + lastAge;
     if (lastYear <= startYear) {
@@ -981,7 +988,10 @@ export function resolvePlan(args: ResolveArgs, ctx: ResolveContext): ResolveResu
   contributions.sort((a, b) => (a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : 0));
   if (ctx.contributionLimit !== undefined) {
     for (const group of employeeByLimit.values()) {
-      const limit = ctx.contributionLimit(startYear, startYear - group.person.person.birthYear, group.kind);
+      // A negative age is `born_after_start` above; the engine's limit refuses it, so it is not asked.
+      const age = startYear - group.person.person.birthYear;
+      if (age < 0) continue;
+      const limit = ctx.contributionLimit(startYear, age, group.kind);
       if (limit !== null && group.cents > limit) {
         const what = group.kind === "employer_plan" ? "employer plan" : group.kind === "ira" ? "IRA" : "HSA";
         warn(
@@ -1112,6 +1122,13 @@ const ENGINE_ISSUE_PATH: Readonly<Record<string, string>> = {
   plan_invalid: "people",
   path_years_too_many: "settings.paths",
   custom_params_required: "settings.returnModel",
+  historical_horizon_too_long: "settings.returnModel",
+  correlation_not_positive_definite: "settings.returnModel",
+  correlation_not_symmetric: "settings.returnModel",
+  persistence_invalid: "settings.returnModel",
+  initial_rate_invalid: "settings.returnModel",
+  mean_block_invalid: "settings.returnModel",
+  seed_invalid: "settings.seed",
   glide_order: "allocation.glidePath",
   spending_invalid: "spending",
   income_invalid: "incomes",
