@@ -44,6 +44,7 @@ import {
 import { badRequest, notFound } from "../lib/errors.js";
 import { toAccountChangesView, toAllocationView, toHoldingsView, toIncomeView, toPerformanceView, toPortfolioView, toRunIncomeFeedResponse, type PerformanceViewExtras } from "../views/investmentViews.js";
 import { resolveToday, usePlanErrors } from "./plan.js";
+import { priceProviderConfigured } from "./securities.js";
 
 /**
  * The Investments pages' routes (views design §4 "Routes"; plan decisions 12, 13, 16, 17): Portfolio,
@@ -69,6 +70,7 @@ export async function investmentViewRoutes(app: FastifyInstance): Promise<void> 
       ...(q.from !== undefined ? { from: q.from } : {}),
       ...(q.to !== undefined ? { to: q.to } : {}),
       ...(q.includeClosed !== undefined ? { includeClosed: q.includeClosed } : {}),
+      priceFeed: priceProviderConfigured(app),
     };
     const record = await getPortfolio(app.db, query);
     reply.header("Cache-Control", "no-store");
@@ -78,7 +80,13 @@ export async function investmentViewRoutes(app: FastifyInstance): Promise<void> 
   r.get("/investments/allocation", { schema: { querystring: AllocationQuery, response: { 200: AllocationView } } }, async (request, reply) => {
     const q = request.query;
     const today = await resolveToday(app, q.today);
-    const record = await getAllocation(app.db, { today, now: app.now(), ...(q.asOf !== undefined ? { asOf: q.asOf } : {}), ...(q.includeClosed !== undefined ? { includeClosed: q.includeClosed } : {}) });
+    const record = await getAllocation(app.db, {
+      today,
+      now: app.now(),
+      ...(q.asOf !== undefined ? { asOf: q.asOf } : {}),
+      ...(q.includeClosed !== undefined ? { includeClosed: q.includeClosed } : {}),
+      priceFeed: priceProviderConfigured(app),
+    });
     reply.header("Cache-Control", "no-store");
     return toAllocationView(record);
   });
@@ -93,6 +101,7 @@ export async function investmentViewRoutes(app: FastifyInstance): Promise<void> 
       ...(q.asOf !== undefined ? { asOf: q.asOf } : {}),
       ...(q.accountId !== undefined ? { accountId: q.accountId } : {}),
       ...(q.includeClosed !== undefined ? { includeClosed: q.includeClosed } : {}),
+      priceFeed: priceProviderConfigured(app),
     });
     reply.header("Cache-Control", "no-store");
     return toHoldingsView(record);

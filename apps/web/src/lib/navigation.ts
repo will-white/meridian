@@ -23,6 +23,7 @@ export const INVESTMENT_LINKS: ReadonlyArray<readonly [string, string, boolean]>
   ["/investments/allocation", "Allocation", false],
   ["/investments/holdings", "Holdings", false],
   ["/investments/performance", "Performance", false],
+  ["/investments/realized", "Realized gains", false],
   ["/investments/income", "Income", false],
   ["/investments/prices", "Prices", false],
   ["/investments/reconcile", "Reconcile", false],

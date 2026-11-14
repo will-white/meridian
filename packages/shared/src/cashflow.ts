@@ -33,9 +33,18 @@ export interface CashFlowAccount {
   id: string;
   name: string;
   type: AccountType;
-  /** Posted balance plus pending transactions. */
+  /** Posted balance plus pending transactions (plus, for an account without a bank feed, the rows posted since its balance). */
   openingCents: bigint;
+  /** The date of the known balance the opening starts from. */
   balanceDate: IsoDate | null;
+  /**
+   * Accounts without a bank feed: the posted rows dated after `balanceDate` through today, which
+   * the opening adds to the typed balance (Phase 2 plan, audit decision A28). 0 and 0 otherwise.
+   */
+  rolledForwardCents?: bigint;
+  rolledForwardRows?: number;
+  /** The latest day the opening covers: `balanceDate`, or the last row rolled forward. */
+  dataThrough?: IsoDate | null;
   /** Per-account override; null → checking/savings inherit the household default, other types get none. */
   lowBalanceThresholdCents: bigint | null;
 }
@@ -136,6 +145,9 @@ export interface CashFlowAccountSeries extends CashFlowSeries {
   name: string;
   type: AccountType;
   balanceDate: IsoDate | null;
+  rolledForwardCents: bigint;
+  rolledForwardRows: number;
+  dataThrough: IsoDate | null;
 }
 
 export interface CashFlowSpread {
@@ -488,6 +500,9 @@ export function projectCashFlow(input: CashFlowInput): CashFlowResult {
       name: a.name,
       type: a.type,
       balanceDate: a.balanceDate,
+      rolledForwardCents: a.rolledForwardCents ?? 0n,
+      rolledForwardRows: a.rolledForwardRows ?? 0,
+      dataThrough: a.dataThrough === undefined ? a.balanceDate : a.dataThrough,
       ...seriesStats(a.openingCents, points.get(a.id) ?? [], dates, thresholdCents),
     };
   });

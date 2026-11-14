@@ -1,7 +1,8 @@
-import { and, asc, eq, gt, gte, inArray, lt, lte, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import {
   addDays,
   addMonths,
+  dayDiff,
   daysInMonth,
   isIsoDate,
   maxBig,
@@ -335,6 +336,22 @@ export function unscheduledWarning(items: readonly UnscheduledPlan[]): string | 
 
 // ---- The loader ----
 
+/**
+ * An opening older than this many days is named in the warnings (audit decision A28): a bank
+ * often reports the previous close, and a sync may have run last evening, so one or two days
+ * behind is normal.
+ */
+export const STALE_OPENING_DAYS = 2;
+
+const shortDay = (d: IsoDate): string => `${d.slice(5, 7)}/${d.slice(8, 10)}/${d.slice(2, 4)}`;
+
+/** "Savings: the projection starts from the balance of 09/15/26; record a newer balance or import its transactions". */
+export function staleOpeningWarning(name: string, feed: boolean, balanceDate: IsoDate, rolledRows: number, dataThrough: IsoDate): string {
+  if (feed) return `${name}: the projection starts from the bank's balance of ${shortDay(balanceDate)}; sync its connection for a newer one`;
+  const rows = rolledRows > 0 ? ` plus ${rolledRows} transaction${rolledRows === 1 ? "" : "s"} through ${shortDay(dataThrough)}` : "";
+  return `${name}: the projection starts from the balance of ${shortDay(balanceDate)}${rows}; record a newer balance or import its transactions`;
+}
+
 /** Every read the engine needs for `[today, today + horizonDays]`; no writes. */
 export async function loadCashFlowInput(db: DbOrTx, q: LoadCashFlowInputQuery): Promise<CashFlowLoad> {
   assertToday(q.today);
@@ -344,12 +361,14 @@ export async function loadCashFlowInput(db: DbOrTx, q: LoadCashFlowInputQuery): 
   const warnings: string[] = [];
   const setting = await getHouseholdSetting(db, today);
 
-  // 1. Projected accounts: on budget, open, optionally a subset; opening = posted balance + pending.
+  // 1. Projected accounts: on budget, open, optionally a subset; opening = posted balance + pending,
+  //    and for an account without a bank feed the rows posted since its balance (audit decision A28).
   const allAccounts = await db
     .select({
       id: account.id,
       name: account.name,
       type: account.type,
+      connectionId: account.connectionId,
       onBudget: account.onBudget,
       closed: account.closed,
       balanceCents: account.balanceCents,
@@ -373,14 +392,38 @@ export async function loadCashFlowInput(db: DbOrTx, q: LoadCashFlowInputQuery): 
     .where(eq(transaction.pending, true))
     .groupBy(transaction.accountId);
   const pendingBy = new Map(pendingRows.map((r) => [r.accountId, r.cents]));
+  // A balance is the end of its day. A feed's is the bank's and is passed through even when it is old
+  // (the cash-flow design); a balance typed by hand knows nothing of the rows imported after it.
+  const rolledRows = await db
+    .select({
+      accountId: transaction.accountId,
+      cents: sql<bigint>`sum(${transaction.amountCents})::bigint`,
+      rows: sql<number>`count(*)::int`,
+      last: sql<string>`max(${transaction.date})::text`,
+    })
+    .from(transaction)
+    .innerJoin(account, eq(account.id, transaction.accountId))
+    .where(and(eq(transaction.pending, false), isNull(account.connectionId), isNotNull(account.balanceCents), gt(transaction.date, account.balanceDate), lte(transaction.date, today)))
+    .groupBy(transaction.accountId);
+  const rolledBy = new Map(rolledRows.map((r) => [r.accountId, r]));
   const accounts: CashFlowAccount[] = projectedRows.map((a) => {
     if (a.balanceCents === null) warnings.push(`account ${a.name} has no known balance`);
+    const rolled = a.balanceCents !== null ? rolledBy.get(a.id) : undefined;
+    const rolledForwardCents = rolled ? BigInt(rolled.cents) : 0n;
+    const rolledForwardRows = rolled ? Number(rolled.rows) : 0;
+    const dataThrough = rolled && a.balanceDate !== null && rolled.last > a.balanceDate ? rolled.last : a.balanceDate;
+    if (a.balanceCents !== null && a.balanceDate !== null && dataThrough !== null && dayDiff(dataThrough, today) > STALE_OPENING_DAYS) {
+      warnings.push(staleOpeningWarning(a.name, a.connectionId !== null, a.balanceDate, rolledForwardRows, dataThrough));
+    }
     return {
       id: a.id,
       name: a.name,
       type: a.type,
-      openingCents: (a.balanceCents ?? 0n) + (pendingBy.get(a.id) ?? 0n),
+      openingCents: (a.balanceCents ?? 0n) + rolledForwardCents + (pendingBy.get(a.id) ?? 0n),
       balanceDate: a.balanceDate,
+      rolledForwardCents,
+      rolledForwardRows,
+      dataThrough,
       lowBalanceThresholdCents: a.lowBalanceThresholdCents,
     };
   });
@@ -562,7 +605,16 @@ export function toCashFlowProjectionView(r: CashFlowResult & { unscheduled?: Uns
     today: r.today,
     endDate: r.endDate,
     dates: r.dates,
-    accounts: r.accounts.map((a) => ({ ...seriesView(a), accountId: a.accountId, name: a.name, type: a.type, balanceDate: a.balanceDate })),
+    accounts: r.accounts.map((a) => ({
+      ...seriesView(a),
+      accountId: a.accountId,
+      name: a.name,
+      type: a.type,
+      balanceDate: a.balanceDate,
+      rolledForwardCents: a.rolledForwardCents.toString(),
+      rolledForwardRows: a.rolledForwardRows,
+      dataThrough: a.dataThrough,
+    })),
     combined: seriesView(r.combined),
     events: r.events.map((e) => ({
       date: e.date,

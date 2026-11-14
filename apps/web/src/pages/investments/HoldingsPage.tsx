@@ -27,6 +27,7 @@ import {
 import { Badge, Card, Empty, ErrorText } from "../../components/ui.js";
 import { AccountWarnings } from "../../components/investments/AccountWarnings.js";
 import { FidelityBadge } from "../../components/investments/FidelityBadge.js";
+import { LotsDrawer } from "../../components/investments/LotsDrawer.js";
 import { AsOfPicker } from "../../components/investments/Pickers.js";
 import { PriceStatusChip } from "../../components/investments/PriceStatusChip.js";
 import { SecurityAllocationEditor } from "../../components/investments/SecurityAllocationEditor.js";
@@ -39,7 +40,8 @@ import "./HoldingsPage.css";
  * accounts with quantity and value from the chain, cost basis and gains from
  * the lots (coverage full / partial / none, or the statement's basis), the
  * weighted expense ratio and concentration warnings; each row expands to its
- * per-account sub-rows. `?accountId=` filters to one account, `?asOf=` dates
+ * per-account sub-rows, and a sub-row's lot count opens that security's lots
+ * drawer (GET /investments/lots, audit decision A21). `?accountId=` filters to one account, `?asOf=` dates
  * the view. Owners edit a security's class and splits inline. Reads
  * GET /investments/holdings and GET /accounts (the filter).
  */
@@ -175,6 +177,8 @@ export function HoldingsPage() {
                       <HoldingRows
                         key={key}
                         r={r}
+                        asOf={asOf}
+                        today={today}
                         open={expanded.has(key)}
                         onToggle={() => toggle(key)}
                         editing={editing === key}
@@ -218,7 +222,25 @@ interface ClassEditor {
   onEdit: (on: boolean) => void;
 }
 
-function HoldingRows({ r, open, onToggle, editing, editor }: { r: HoldingRowView; open: boolean; onToggle: () => void; editing: boolean; editor: ClassEditor | null }) {
+function HoldingRows({
+  r,
+  asOf,
+  today,
+  open,
+  onToggle,
+  editing,
+  editor,
+}: {
+  r: HoldingRowView;
+  asOf: string | null;
+  today: string;
+  open: boolean;
+  onToggle: () => void;
+  editing: boolean;
+  editor: ClassEditor | null;
+}) {
+  // The sub-row whose lots drawer is open (lots design §5), by account.
+  const [lotsOf, setLotsOf] = useState<string | null>(null);
   const split = splitLabel(r.splits);
   const sources = r.accounts.map((a) => a.basisSource).filter((b): b is BasisSource => b !== null);
   const basisSource: BasisSource | null = sources.length === 0 ? null : sources.every((b) => b === "statement") ? "statement" : "lots";
@@ -278,38 +300,55 @@ function HoldingRows({ r, open, onToggle, editing, editor }: { r: HoldingRowView
       )}
       {open &&
         r.accounts.map((a, i) => (
-          <tr className="inv-sub" key={`${a.accountId}-${a.kind}-${i}`}>
-            <td>
-              {a.accountName}
-              <FidelityBadge fidelity={a.fidelity} fidelityNote={a.fidelityNote} accountId={a.accountId} />
-              {holdingLineLabel(a) !== null && <span className="muted small"> · {holdingLineLabel(a)}</span>}
-              {a.dollarOnly && <Badge tone="neutral">value only</Badge>}
-            </td>
-            <td className="num">{a.quantity === null ? <span className="muted">value only</span> : formatQuantity(a.quantity, 4)}</td>
-            <td className="num muted small">
-              {priceSourceLabel(a.priceSource)}
-              {a.snapshotDate && (
-                <div>
-                  snapshot {shortDate(a.snapshotDate)}
-                  {a.snapshotSource ? ` · ${a.snapshotSource}` : ""}
-                </div>
-              )}
-            </td>
-            <td className="num">{money(a.valueCents)}</td>
-            <td></td>
-            <td className="num">
-              {money(a.costBasisCents)}
-              {a.basisSource === "statement" && <div className="muted small">from statement</div>}
-              {a.unknownBasisQuantity !== null && parseFixed8(a.unknownBasisQuantity) !== 0n && <div className="tone-warn small">basis unknown for {formatQuantity(a.unknownBasisQuantity, 4)} sh</div>}
-            </td>
-            <td className={`num ${changeTone(a.gainCents)}`}>{signedMoney(a.gainCents)}</td>
-            <td className="num muted small">{a.lotCount !== null ? `${a.lotCount} lot${a.lotCount === 1 ? "" : "s"}` : ""}</td>
-            <td className="actions">
-              <Link className="small" to={`/investments/accounts/${a.accountId}`}>
-                activity
-              </Link>
-            </td>
-          </tr>
+          <Fragment key={`${a.accountId}-${a.kind}-${i}`}>
+            <tr className="inv-sub">
+              <td>
+                {a.accountName}
+                <FidelityBadge fidelity={a.fidelity} fidelityNote={a.fidelityNote} accountId={a.accountId} />
+                {holdingLineLabel(a) !== null && <span className="muted small"> · {holdingLineLabel(a)}</span>}
+                {a.dollarOnly && <Badge tone="neutral">value only</Badge>}
+              </td>
+              <td className="num">{a.quantity === null ? <span className="muted">value only</span> : formatQuantity(a.quantity, 4)}</td>
+              <td className="num muted small">
+                {priceSourceLabel(a.priceSource)}
+                {a.snapshotDate && (
+                  <div>
+                    snapshot {shortDate(a.snapshotDate)}
+                    {a.snapshotSource ? ` · ${a.snapshotSource}` : ""}
+                  </div>
+                )}
+              </td>
+              <td className="num">{money(a.valueCents)}</td>
+              <td></td>
+              <td className="num">
+                {money(a.costBasisCents)}
+                {a.basisSource === "statement" && <div className="muted small">from statement</div>}
+                {a.unknownBasisQuantity !== null && parseFixed8(a.unknownBasisQuantity) !== 0n && <div className="tone-warn small">basis unknown for {formatQuantity(a.unknownBasisQuantity, 4)} sh</div>}
+              </td>
+              <td className={`num ${changeTone(a.gainCents)}`}>{signedMoney(a.gainCents)}</td>
+              <td className="num small">
+                {a.lotCount !== null && r.securityId !== null ? (
+                  <button type="button" className="link small" aria-expanded={lotsOf === a.accountId} onClick={() => setLotsOf(lotsOf === a.accountId ? null : a.accountId)}>
+                    {lotsOf === a.accountId ? "hide lots" : `${a.lotCount} lot${a.lotCount === 1 ? "" : "s"}`}
+                  </button>
+                ) : (
+                  ""
+                )}
+              </td>
+              <td className="actions">
+                <Link className="small" to={`/investments/accounts/${a.accountId}`}>
+                  activity
+                </Link>
+              </td>
+            </tr>
+            {lotsOf === a.accountId && r.securityId !== null && (
+              <tr className="inv-detail">
+                <td colSpan={span}>
+                  <LotsDrawer accountId={a.accountId} accountName={a.accountName} securityId={r.securityId} label={r.ticker ?? r.name} asOf={asOf} today={today} />
+                </td>
+              </tr>
+            )}
+          </Fragment>
         ))}
     </Fragment>
   );

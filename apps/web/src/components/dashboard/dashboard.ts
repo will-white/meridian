@@ -160,7 +160,7 @@ export function staleAccountsText(stale: InvestmentsBlock["staleAccounts"]): str
 
 /** The price feed's health: current through the expected close, behind with counts, or not configured. */
 export function priceFeedText(pf: InvestmentsBlock["priceFeed"]): ChangeText {
-  if (!pf.configured) return { text: "Price feed not configured: values use statement, implied and manual prices", tone: "neutral" };
+  if (!pf.configured) return { text: "Price feed not configured: values use statement, implied, manual and trade prices", tone: "neutral" };
   const issues: string[] = [];
   if (pf.stale > 0) issues.push(`${pf.stale} stale`);
   if (pf.notFound > 0) issues.push(`${pf.notFound} not found`);

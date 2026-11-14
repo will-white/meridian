@@ -60,10 +60,13 @@ import { expectedCloseFor } from "./prices.js";
  * alone.
  *
  * Price status (§3.4, C26) is user-facing freshness: trading days behind the expected close,
- * for `provider`-mode securities only; `implied` and `manual` modes report their mode;
+ * for `provider`-mode securities only and only while a price feed is configured (without one a
+ * `provider`-mode price behind the expected close reports `implied`, or `manual` for a manual row:
+ * audit decision A18); `implied` and `manual` modes report their mode;
  * `statement` on the snapshot date; `carried` for a value without any price (dollar-only);
- * `cash`; `missing` when a lots-basis position has no price at all (the account value is then
- * null and the security is listed in `missing`). The engine's 7-day `stale_price` warning
+ * `cash`; `missing` when a lots-basis position has no price at all, neither a price row nor a
+ * trade price of the account on or before the date (the account value is then null and the
+ * security is listed in `missing`; audit decision A20 added the trade-price fallback). The engine's 7-day `stale_price` warning
  * (lots.ts) is a separate, engine-level rule.
  *
  * Treat a `ValuationInput` as immutable once passed in: the per-input indexes are cached by
@@ -137,6 +140,18 @@ export interface ValuationTradePosition {
   quantityBySecurity: ReadonlyMap<string, Fixed8>;
 }
 
+/**
+ * A trade's own price (`investment_txn.price`) for a full-history account: the lots basis' fallback
+ * when a security has no price row on or before the date, the performance engine's `txn` quote
+ * (lots design §3.6). In stream order; several on one date → the last given wins.
+ */
+export interface ValuationTradePrice {
+  accountId: string;
+  securityId: string;
+  date: IsoDate;
+  price: Fixed8;
+}
+
 /** The lot engine's `cashEffects` (trade legs, dividends, interest, fees); rolls cash forward on the lots basis. */
 export interface ValuationCashEffect {
   accountId: string;
@@ -147,6 +162,13 @@ export interface ValuationCashEffect {
 export interface ValuationInput {
   /** `expectedPriceDate(now)`: the latest close the feed can have. */
   expectedThrough: IsoDate;
+  /**
+   * Whether a price provider is configured (`PRICE_PROVIDER` other than `none`); absent = true.
+   * Without one nothing can fetch a close, so a `provider`-mode security's statement-implied or
+   * manual price is the expected source, not a lag: it is never `stale` (plan decision 10, audit
+   * decision A18). Values are the same either way.
+   */
+  priceFeed?: boolean;
   accounts: readonly ValuationAccount[];
   securities: readonly ValuationSecurity[];
   prices: readonly ValuationPrice[];
@@ -155,6 +177,13 @@ export interface ValuationInput {
   flows: readonly ValuationFlow[];
   tradePositions: readonly ValuationTradePosition[];
   cashEffects?: readonly ValuationCashEffect[];
+  /**
+   * Full-history accounts' trade prices (audit decision A20): a lots-basis position whose security
+   * has no price row on or before the date is priced at the account's latest trade price on or
+   * before it (`priceSource` `txn`), as the performance engine values the same lots, instead of
+   * leaving the account without a value until its first statement. Absent = none.
+   */
+  tradePrices?: readonly ValuationTradePrice[];
 }
 
 // ---- Output ----
@@ -254,6 +283,8 @@ interface Context {
   accounts: Map<string, AccountData>;
   securities: Map<string, ValuationSecurity>;
   prices: Map<string, PriceIndex>;
+  /** Trade prices per `accountId␀securityId`, one per date (the last in stream order), ascending. */
+  tradePrices: Map<string, PriceIndex>;
   countBehind: (from: IsoDate, to: IsoDate) => number;
 }
 
@@ -391,6 +422,20 @@ function buildContext(input: ValuationInput): Context {
     prices.set(securityId, { dates: rows.map((r) => r.date), rows });
   }
 
+  const tradeRows = new Map<string, ValuationPrice[]>();
+  for (const t of input.tradePrices ?? []) {
+    const key = tradeKey(t.accountId, t.securityId);
+    const row: ValuationPrice = { securityId: t.securityId, date: t.date, close: t.price, source: "txn" };
+    const list = tradeRows.get(key);
+    if (list) list.push(row);
+    else tradeRows.set(key, [row]);
+  }
+  const tradePrices = new Map<string, PriceIndex>();
+  for (const [key, list] of tradeRows) {
+    const rows = lastPerDate(list.sort((a, b) => compareDates(a.date, b.date)));
+    tradePrices.set(key, { dates: rows.map((r) => r.date), rows });
+  }
+
   const snapshots = groupByAccount(input.snapshots);
   const balances = groupByAccount(input.balances);
   const flows = groupByAccount(input.flows);
@@ -421,7 +466,11 @@ function buildContext(input: ValuationInput): Context {
     return count;
   };
 
-  return { input, accounts, securities, prices, countBehind };
+  return { input, accounts, securities, prices, tradePrices, countBehind };
+}
+
+function tradeKey(accountId: string, securityId: string): string {
+  return `${accountId}\u0000${securityId}`;
 }
 
 function contextOf(input: ValuationInput): Context {
@@ -446,10 +495,18 @@ function securityOf(ctx: Context, securityId: string): ValuationSecurity {
 }
 
 function priceRowOn(ctx: Context, securityId: string, date: IsoDate): ValuationPrice | null {
-  const index = ctx.prices.get(securityId);
+  return latestRow(ctx.prices.get(securityId), date);
+}
+
+function latestRow(index: PriceIndex | undefined, date: IsoDate): ValuationPrice | null {
   if (!index) return null;
   const i = upperBound(index.dates, date);
   return i === 0 ? null : index.rows[i - 1]!;
+}
+
+/** The lots basis' price (§3.6): the latest close on or before `date`, else the account's latest trade price on or before it. */
+function lotsPriceOn(ctx: Context, accountId: string, securityId: string, date: IsoDate): ValuationPrice | null {
+  return priceRowOn(ctx, securityId, date) ?? latestRow(ctx.tradePrices.get(tradeKey(accountId, securityId)), date);
 }
 
 function latestBalance(acct: AccountData, date: IsoDate): ValuationBalance | null {
@@ -484,6 +541,10 @@ export interface PriceStatusResult {
  * are `cash`; no price → `fallback` (`carried` when a statement value stands in, else `missing`);
  * `provider` mode → `stale` with the trading days between the price and the expected close for
  * `date` (capped at `expectedThrough`), or `current`; `implied` and `manual` modes report the mode.
+ * With `priceFeed` false (no provider configured) nothing can fetch a close, so a `provider`-mode
+ * price older than the expected close is not a lag: it is what the statements (or the owner) gave,
+ * and reports `manual` for a manual row and `implied` otherwise, as a ticker-less fund does; one on
+ * the expected close is still `current` (audit decision A18). `source` is the price row's source.
  */
 export function priceStatusOf(
   security: Pick<ValuationSecurity, "type" | "priceMode">,
@@ -492,14 +553,17 @@ export function priceStatusOf(
   expectedThrough: IsoDate,
   fallback: "carried" | "missing" = "missing",
   countBehind: (from: IsoDate, to: IsoDate) => number = tradingDaysBetween,
+  priceFeed = true,
+  source: ValuationPriceSource | null = null,
 ): PriceStatusResult {
   if (security.type === "cash") return { priceStatus: "cash", tradingDaysBehind: 0 };
   if (priceDate === null) return { priceStatus: fallback, tradingDaysBehind: 0 };
   switch (security.priceMode) {
     case "provider": {
       const expected = expectedCloseFor(date, expectedThrough);
-      if (priceDate < expected) return { priceStatus: "stale", tradingDaysBehind: countBehind(priceDate, expected) };
-      return { priceStatus: "current", tradingDaysBehind: 0 };
+      if (priceDate >= expected) return { priceStatus: "current", tradingDaysBehind: 0 };
+      if (!priceFeed) return { priceStatus: source === "manual" ? "manual" : "implied", tradingDaysBehind: 0 };
+      return { priceStatus: "stale", tradingDaysBehind: countBehind(priceDate, expected) };
     }
     case "implied":
       return { priceStatus: "implied", tradingDaysBehind: 0 };
@@ -557,7 +621,7 @@ function snapshotLine(ctx: Context, line: ValuationSnapshotLine, date: IsoDate):
       price: row.close,
       priceDate: row.date,
       priceSource: row.source,
-      ...priceStatusOf(security, row.date, date, ctx.input.expectedThrough, "missing", ctx.countBehind),
+      ...priceStatusOf(security, row.date, date, ctx.input.expectedThrough, "missing", ctx.countBehind, ctx.input.priceFeed !== false, row.source),
       valueCents: mulToCents(line.quantity, row.close),
       valueSource: "priced",
     };
@@ -565,7 +629,7 @@ function snapshotLine(ctx: Context, line: ValuationSnapshotLine, date: IsoDate):
   const price = line.price ?? (line.quantity === 0n ? null : impliedPrice(line.valueCents, line.quantity));
   const status: PriceStatusResult = onDate
     ? { priceStatus: "statement", tradingDaysBehind: 0 }
-    : priceStatusOf(security, line.date, date, ctx.input.expectedThrough, "carried", ctx.countBehind);
+    : priceStatusOf(security, line.date, date, ctx.input.expectedThrough, "carried", ctx.countBehind, ctx.input.priceFeed !== false);
   return {
     ...base,
     kind: "position",
@@ -579,8 +643,11 @@ function snapshotLine(ctx: Context, line: ValuationSnapshotLine, date: IsoDate):
   };
 }
 
-/** A lot-derived quantity priced on `date`; unpriced when the security has no price row at all. */
-function lotsLine(ctx: Context, security: ValuationSecurity, quantity: Fixed8, date: IsoDate): LineValuation {
+/**
+ * A lot-derived quantity priced on `date`: the latest close on or before it, else the account's
+ * latest trade price on or before it (`txn`, audit decision A20); unpriced when neither exists.
+ */
+function lotsLine(ctx: Context, accountId: string, security: ValuationSecurity, quantity: Fixed8, date: IsoDate): LineValuation {
   const base = lineBase(security);
   if (security.type === "cash") {
     return {
@@ -596,7 +663,7 @@ function lotsLine(ctx: Context, security: ValuationSecurity, quantity: Fixed8, d
       valueSource: "priced",
     };
   }
-  const row = priceRowOn(ctx, security.id, date);
+  const row = lotsPriceOn(ctx, accountId, security.id, date);
   if (!row) {
     return {
       ...base,
@@ -618,7 +685,7 @@ function lotsLine(ctx: Context, security: ValuationSecurity, quantity: Fixed8, d
     price: row.close,
     priceDate: row.date,
     priceSource: row.source,
-    ...priceStatusOf(security, row.date, date, ctx.input.expectedThrough, "missing", ctx.countBehind),
+    ...priceStatusOf(security, row.date, date, ctx.input.expectedThrough, "missing", ctx.countBehind, ctx.input.priceFeed !== false, row.source),
     valueCents: mulToCents(quantity, row.close),
     valueSource: "priced",
   };
@@ -664,7 +731,7 @@ function checkpointSecuritiesOn(ctx: Context, acct: AccountData, date: IsoDate):
   if (!checkpoint) return 0n;
   let sum = 0n;
   for (const [securityId, quantity] of checkpointEntries(checkpoint)) {
-    const line = lotsLine(ctx, securityOf(ctx, securityId), quantity, date);
+    const line = lotsLine(ctx, acct.account.id, securityOf(ctx, securityId), quantity, date);
     if (line.valueCents === null) return null;
     sum += line.valueCents;
   }
@@ -782,7 +849,7 @@ export function valueAccountOn(input: ValuationInput, accountId: string, date: I
   } else if (checkpoint && (snapshotDate === null || checkpoint.date > snapshotDate)) {
     basis = "lots";
     asOf = checkpoint.date;
-    positionLines = checkpointEntries(checkpoint).map(([securityId, quantity]) => lotsLine(ctx, securityOf(ctx, securityId), quantity, date));
+    positionLines = checkpointEntries(checkpoint).map(([securityId, quantity]) => lotsLine(ctx, account.id, securityOf(ctx, securityId), quantity, date));
     cash = inferCash(ctx, acct, date, basis, (d) => checkpointSecuritiesOn(ctx, acct, d), null);
   } else if (snapshotDate !== null) {
     basis = "positions";

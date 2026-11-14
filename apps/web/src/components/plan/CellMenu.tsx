@@ -26,6 +26,8 @@ export interface CellMenuProps {
   onClear: () => void;
   onRollover: (mode: RolloverMode, fromMonth: string | null) => void;
   onDrillDown: () => void;
+  /** Open this cell's edit history (audit decision A29). */
+  onHistory?: (() => void) | undefined;
 }
 
 const MENU_WIDTH = 280;
@@ -105,6 +107,13 @@ export function CellMenu(props: CellMenuProps) {
               Show transactions ({cell.txnCount})
             </button>
           </li>
+          {props.onHistory && (
+            <li>
+              <button type="button" className="link" onClick={props.onHistory}>
+                History of this cell
+              </button>
+            </li>
+          )}
         </ul>
       )}
       {section === "average" && (

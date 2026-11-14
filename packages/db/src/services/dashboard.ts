@@ -60,6 +60,8 @@ export interface DashboardCashFlowBlock {
   /** The combined line's minimum; the earliest date on ties. */
   lowPoint: { date: IsoDate; cents: bigint };
   firstBelow: IsoDate | null;
+  /** The oldest day the projected accounts' openings cover (null without a known balance): the line's "as of" (audit decision A28). */
+  balancesAsOf: IsoDate | null;
   warnings: string[];
 }
 
@@ -311,6 +313,7 @@ export async function getDashboard(db: DbOrTx, q: DashboardQuery): Promise<Dashb
     points: projection.dates.map((date, i) => ({ date, cents: combined.points[i] ?? combined.openingCents })),
     lowPoint: { date: combined.minDate, cents: combined.minCents },
     firstBelow: combined.firstBelowThresholdDate,
+    balancesAsOf: projection.accounts.reduce<IsoDate | null>((oldest, a) => (a.dataThrough !== null && (oldest === null || a.dataThrough < oldest) ? a.dataThrough : oldest), null),
     warnings: projection.warnings,
   };
 
@@ -356,6 +359,7 @@ export function toDashboardView(d: DashboardResult): DashboardView {
       points: d.cashFlow.points.map((p) => ({ date: p.date, cents: p.cents.toString() })),
       lowPoint: { date: d.cashFlow.lowPoint.date, cents: d.cashFlow.lowPoint.cents.toString() },
       firstBelow: d.cashFlow.firstBelow,
+      balancesAsOf: d.cashFlow.balancesAsOf,
       warnings: d.cashFlow.warnings,
     },
     billsDue: d.billsDue.map((b) => ({

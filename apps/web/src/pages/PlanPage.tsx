@@ -2,15 +2,30 @@ import { useCallback, useMemo, useState } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
 import type { CategoryDetailView, HouseholdSettingView, PlanAveragesResponse, PlanCellEdit, PlanResponse, RolloverMode, TransactionView } from "@meridian/shared";
-import { addMonths, monthDiff } from "@meridian/shared";
+import { monthDiff, monthKey } from "@meridian/shared";
 import { useIsViewer } from "../components/investments/queries.js";
 import { DrillPanel, type DrillCategory } from "../components/plan/DrillPanel.js";
 import { ManageCategories } from "../components/plan/ManageCategories.js";
 import { PlanGrid } from "../components/plan/PlanGrid.js";
+import { PlanHistory } from "../components/plan/PlanHistory.js";
 import { RulePrompt } from "../components/transactions/RulePrompt.js";
 import { Empty, ErrorText } from "../components/ui.js";
 import { api, query } from "../lib/api.js";
-import { MAX_RANGE_MONTHS, applyEdits, averagePlanOutcome, defaultRange, monthLabel, resolveRange, visibleRows, type DrillTarget, type PlanCategoryRow } from "../lib/plan.js";
+import {
+  MAX_RANGE_MONTH,
+  MAX_RANGE_MONTHS,
+  MIN_RANGE_MONTH,
+  applyEdits,
+  averagePlanOutcome,
+  defaultRange,
+  monthLabel,
+  resizeRange,
+  resolveRange,
+  shiftRange,
+  visibleRows,
+  type DrillTarget,
+  type PlanCategoryRow,
+} from "../lib/plan.js";
 import { recategorizePrompt, ruleSavedNotice, type RulePromptTarget } from "../lib/recategorize.js";
 import { useLocalToday } from "../lib/useLocalToday.js";
 import "./PlanPage.css";
@@ -51,6 +66,8 @@ export function PlanPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [drill, setDrill] = useState<DrillTarget | null>(null);
   const [rulePrompt, setRulePrompt] = useState<{ target: RulePromptTarget; categoryName: string | undefined } | null>(null);
+  // The history panel: the whole plan's (cell null) or one cell's (audit decision A29).
+  const [history, setHistory] = useState<{ cell: { month: string; categoryId: string } | null } | null>(null);
 
   const planKey = useMemo(() => ["plan", from, to, today] as const, [from, to, today]);
   const plan = useQuery({
@@ -136,9 +153,10 @@ export function PlanPage() {
   );
   const onDropTransaction = useCallback((id: string, categoryId: string) => recategorize.mutate({ id, categoryId }), [recategorize]);
   const onDrill = useCallback((target: DrillTarget) => setDrill(target), []);
+  const onCellHistory = useCallback((row: PlanCategoryRow, month: string) => setHistory({ cell: { month, categoryId: row.categoryId } }), []);
 
   const span = monthDiff(from, to) + 1;
-  const setRange = (f: string, t: string) => setParams({ from: f, to: t });
+  const moveRange = (r: { from: string; to: string }) => setParams({ from: r.from, to: r.to });
   const reset = () => setParams({});
   const isDefault = useMemo(() => {
     const d = defaultRange(today);
@@ -156,6 +174,15 @@ export function PlanPage() {
     const row = plan.data?.rows.find((r): r is PlanCategoryRow => r.kind === "category" && r.categoryId === categoryId);
     return row?.name ?? "Category";
   };
+  const historyNames = useMemo(() => {
+    const categoryNames = new Map<string, string>();
+    const groupNames = new Map<string, string>();
+    for (const r of plan.data?.rows ?? []) {
+      if (r.kind === "category") categoryNames.set(r.categoryId, r.name);
+      else if (r.kind === "group") groupNames.set(r.groupId, r.name);
+    }
+    return { category: (id: string) => categoryNames.get(id), group: (id: string) => groupNames.get(id) };
+  }, [plan.data]);
   const drillTitle = drill ? `${drill.kind === "uncategorized" ? "Uncategorized" : drillName(drill.row.categoryId)} · ${monthLabel(drill.month)}` : "";
 
   return (
@@ -163,15 +190,24 @@ export function PlanPage() {
       <div className="row space wrap plan-toolbar">
         <h1>Spending plan</h1>
         <div className="row wrap">
-          <button type="button" className="secondary" disabled={span >= MAX_RANGE_MONTHS} onClick={() => setRange(addMonths(from, -1), to)} title="Show one more month before">
+          <button type="button" className="secondary" disabled={from <= MIN_RANGE_MONTH} onClick={() => moveRange(shiftRange({ from, to }, -1))} title="Move the months shown one month earlier">
             ‹ Earlier
           </button>
           <span className="muted nowrap">
             {monthLabel(from)} – {monthLabel(to)}
           </span>
-          <button type="button" className="secondary" disabled={span >= MAX_RANGE_MONTHS} onClick={() => setRange(from, addMonths(to, 1))} title="Show one more month after">
+          <button type="button" className="secondary" disabled={to >= MAX_RANGE_MONTH} onClick={() => moveRange(shiftRange({ from, to }, 1))} title="Move the months shown one month later">
             Later ›
           </button>
+          <label className="inline" title={`How many months to show side by side (at most ${MAX_RANGE_MONTHS})`}>
+            <select aria-label="Months shown" value={span} onChange={(e) => moveRange(resizeRange({ from, to }, Number(e.target.value), monthKey(today)))}>
+              {Array.from({ length: MAX_RANGE_MONTHS }, (_, i) => i + 1).map((n) => (
+                <option key={n} value={n}>
+                  {n} month{n === 1 ? "" : "s"}
+                </option>
+              ))}
+            </select>
+          </label>
           {!isDefault && (
             <button type="button" className="link" onClick={reset}>
               This month
@@ -204,6 +240,9 @@ export function PlanPage() {
             />{" "}
             show hidden
           </label>
+          <button type="button" className="secondary" aria-pressed={history !== null && history.cell === null} onClick={() => setHistory((h) => (h && h.cell === null ? null : { cell: null }))}>
+            History
+          </button>
           {!viewer && (
             <button type="button" className="secondary" onClick={() => setManage((m) => !m)}>
               {manage ? "Hide manager" : "Manage categories"}
@@ -252,6 +291,7 @@ export function PlanPage() {
           onRollover={onRollover}
           onDropTransaction={onDropTransaction}
           onDrill={onDrill}
+          onCellHistory={onCellHistory}
         />
       )}
       {drill && plan.data && (
@@ -262,6 +302,17 @@ export function PlanPage() {
           canEdit={!viewer}
           onRecategorize={(t, categoryId) => recategorize.mutate({ id: t.id, categoryId })}
           onClose={() => setDrill(null)}
+        />
+      )}
+      {history && (
+        <PlanHistory
+          key={history.cell ? `${history.cell.month}:${history.cell.categoryId}` : "plan"}
+          names={historyNames}
+          cell={history.cell}
+          canUndo={!viewer}
+          today={today}
+          onClose={() => setHistory(null)}
+          onUndone={(message) => setNotice(message)}
         />
       )}
       {plan.data &&

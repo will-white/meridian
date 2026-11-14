@@ -2,7 +2,7 @@ import { Fragment, type ReactNode } from "react";
 import type { AccountRef, PerformanceBenchmarkView, ReturnBlockView } from "@meridian/shared";
 import { money } from "../../lib/format.js";
 import { changeTone, formatRate, signedMoney } from "../../lib/investments.js";
-import { excessText, flowsSourceLabel, methodLabel, methodTone, mwrCell, openingValueText, twrCell } from "../../lib/performanceView.js";
+import { excessText, flowsSourceLabel, methodLabel, methodTone, mwrCell, mwrShownRate, openingValueText, twrCell } from "../../lib/performanceView.js";
 import { Badge } from "../ui.js";
 import { FidelityBadge } from "./FidelityBadge.js";
 
@@ -99,7 +99,7 @@ export function ReturnsTable({
                     {twr.text}
                     {twr.caption && <div className="muted small">{twr.caption}</div>}
                   </td>
-                  <td className={`num ${mwr.failed ? "muted" : changeTone(days < 365 ? (b.xirr.period ?? null) : (b.xirr.annualized ?? null))}`}>
+                  <td className={`num ${mwr.failed ? "muted" : changeTone(mwrShownRate(b.xirr, days))}`}>
                     {mwr.text}
                     {mwr.caption && <div className="muted small">{mwr.caption}</div>}
                   </td>

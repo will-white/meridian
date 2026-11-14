@@ -624,6 +624,8 @@ export async function pricesStatus(db: DbOrTx, opts: { now: Date } & PriceFeedCo
   const setting = await getHouseholdSetting(db);
   const today = householdToday(setting, opts.now);
   const expectedDate = expectedPriceDate(opts.now);
+  // Without a provider nothing is fetched: no security is "behind" a feed that does not exist (audit decision A18).
+  const configured = opts.provider !== null;
   const held = await loadHeldSecurities(db);
   const fetchSet = await fetchSetIds(db, today);
   const rows = await db
@@ -638,7 +640,7 @@ export async function pricesStatus(db: DbOrTx, opts: { now: Date } & PriceFeedCo
   const securities: SecurityPriceStatusRecord[] = listed
     .map((s) => {
       const lp = latest.get(s.id) ?? null;
-      const status = priceStatusOf({ type: s.type, priceMode: s.priceMode }, lp?.date ?? null, expectedDate, expectedDate, "missing");
+      const status = priceStatusOf({ type: s.type, priceMode: s.priceMode }, lp?.date ?? null, expectedDate, expectedDate, "missing", undefined, configured, lp?.source ?? null);
       return {
         securityId: s.id,
         ticker: s.ticker,
@@ -675,7 +677,8 @@ export async function pricesStatus(db: DbOrTx, opts: { now: Date } & PriceFeedCo
     if (s.fetchStatus === "error" || s.fetchStatus === "rate_limited") counts.error++;
     if (!s.fetched) continue;
     if (s.priceStatus === "current") counts.current++;
-    else if (s.priceStatus === "stale" || s.priceStatus === "missing") counts.stale++;
+    // Without a provider nothing is behind a feed (audit decision A18): a missing close is the row's own status.
+    else if (configured && (s.priceStatus === "stale" || s.priceStatus === "missing")) counts.stale++;
   }
   const [active] = await db
     .select({ id: job.id, status: job.status, payload: job.payload, runAt: job.runAt })
@@ -685,7 +688,7 @@ export async function pricesStatus(db: DbOrTx, opts: { now: Date } & PriceFeedCo
     .limit(1);
   return {
     provider: opts.provider,
-    configured: opts.provider !== null,
+    configured,
     fetchHourLocal: opts.fetchHourLocal ?? 18,
     catchupHourLocal: opts.catchupHourLocal === undefined ? 6 : opts.catchupHourLocal,
     timezone: setting.timezone,
@@ -724,12 +727,17 @@ export async function priceFeedHealth(db: DbOrTx, opts: { now: Date } & PriceFee
 }
 
 /** The user-facing status of one security's latest close on the expected date (the price-history route). */
-export async function securityPriceStatus(db: DbOrTx, securityId: string, now: Date): Promise<{ priceMode: PriceSource; expectedDate: IsoDate; latest: PriceRecord | null; priceStatus: PriceStatus; tradingDaysBehind: number }> {
+export async function securityPriceStatus(
+  db: DbOrTx,
+  securityId: string,
+  now: Date,
+  priceFeed = true,
+): Promise<{ priceMode: PriceSource; expectedDate: IsoDate; latest: PriceRecord | null; priceStatus: PriceStatus; tradingDaysBehind: number }> {
   const row = await requireSecurity(db, securityId);
   const expectedDate = expectedPriceDate(now);
   const [latestRow] = await db.select().from(price).where(eq(price.securityId, securityId)).orderBy(desc(price.date)).limit(1);
   const latest = latestRow ? toRecord(latestRow) : null;
-  const status = priceStatusOf({ type: row.type, priceMode: row.priceMode }, latest?.date ?? null, expectedDate, expectedDate, "missing");
+  const status = priceStatusOf({ type: row.type, priceMode: row.priceMode }, latest?.date ?? null, expectedDate, expectedDate, "missing", undefined, priceFeed, latest?.source ?? null);
   return { priceMode: row.priceMode, expectedDate, latest, ...status };
 }
 

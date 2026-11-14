@@ -126,8 +126,9 @@ describe.skipIf(!TEST_DATABASE_URL)("valuation services (prices S1)", () => {
       { accountId: A, source: "manual", date: "2026-10-05", amountCents: 100000n, rawDescription: "TRANSFER IN", isTransfer: true },
       { accountId: P, source: "manual", date: "2026-10-05", amountCents: 100000n, rawDescription: "TRANSFER IN", isTransfer: true },
     ]);
-    // E: a full-history account (trades, no statement) whose only security has no price row.
-    await t.db.insert(investmentTxn).values({ accountId: E, securityId: NOPX, date: "2026-10-01", type: "buy", quantity: "10", price: "50", amountCents: -50000n, source: "manual" });
+    // E: a full-history account (trades, no statement) whose only security has no price at all: no price row and no
+    // trade price (shares transferred in without one; a buy's own price would value them, audit decision A20).
+    await t.db.insert(investmentTxn).values({ accountId: E, securityId: NOPX, date: "2026-10-01", type: "transfer", transferDirection: "in", quantity: "10", price: null, amountCents: 0n, source: "manual" });
   });
   afterAll(async () => {
     await t?.cleanup();

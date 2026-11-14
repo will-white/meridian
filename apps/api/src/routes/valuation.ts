@@ -4,6 +4,7 @@ import { valuationSeries, valuationSummary, type ValuationSeriesQueryInput, type
 import { ValuationSeriesQuery, ValuationSeriesResponse, ValuationSummaryQuery, ValuationSummaryResponse } from "@meridian/shared";
 import { toValuationSeriesResponse, toValuationSummaryResponse } from "../views/valuation.js";
 import { resolveToday, usePlanErrors } from "./plan.js";
+import { priceProviderConfigured } from "./securities.js";
 
 /**
  * Valuation routes (prices design §4.1, plan decisions 8 and 12): the household's investment
@@ -25,6 +26,7 @@ export async function valuationRoutes(app: FastifyInstance): Promise<void> {
       ...(q.asOf !== undefined ? { asOf: q.asOf } : {}),
       ...(q.accountIds !== undefined ? { accountIds: q.accountIds } : {}),
       ...(q.from !== undefined ? { from: q.from } : {}),
+      priceFeed: priceProviderConfigured(app),
     };
     const summary = await valuationSummary(app.db, query);
     reply.header("Cache-Control", "no-store");
@@ -41,6 +43,7 @@ export async function valuationRoutes(app: FastifyInstance): Promise<void> {
       now: app.now(),
       step: q.step,
       ...(q.accountIds !== undefined ? { accountIds: q.accountIds } : {}),
+      priceFeed: priceProviderConfigured(app),
     };
     const series = await valuationSeries(app.db, query);
     reply.header("Cache-Control", "no-store");

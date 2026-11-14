@@ -4,6 +4,7 @@ import type { DashboardView } from "@meridian/shared";
 import { money, shortDate } from "../../lib/format.js";
 import { EChart, useChartTheme } from "../charts/EChart.js";
 import { cashFlowChartOption } from "../charts/chartOptions.js";
+import { balancesAsOfText, isStaleOpening } from "../cashflow/opening.js";
 import { Card } from "../ui.js";
 
 type CashFlowView = DashboardView["cashFlow"];
@@ -33,6 +34,8 @@ export function CashFlowCard({ cashFlow }: { cashFlow: CashFlowView }) {
     [cashFlow, theme],
   );
   const below = BigInt(cashFlow.lowPoint.cents) < BigInt(cashFlow.thresholdCents);
+  const asOfText = balancesAsOfText(cashFlow.balancesAsOf, cashFlow.asOf);
+  const asOfStale = isStaleOpening(cashFlow.balancesAsOf, cashFlow.asOf);
   return (
     <Card title={`Cash flow · next ${cashFlow.horizonDays} days`} actions={<Link to="/cashflow">Open cash flow</Link>}>
       <EChart option={option} height={220} label={`Projected combined balance from ${shortDate(cashFlow.asOf)}, lowest ${money(cashFlow.lowPoint.cents)} on ${shortDate(cashFlow.lowPoint.date)}`} />
@@ -52,6 +55,7 @@ export function CashFlowCard({ cashFlow }: { cashFlow: CashFlowView }) {
           <span className={`v ${cashFlow.firstBelow ? "tone-bad" : ""}`}>{cashFlow.firstBelow ? `from ${shortDate(cashFlow.firstBelow)}` : "never"}</span>
         </div>
       </div>
+      {asOfText && <p className={`small ${asOfStale ? "dash-warnings-line" : "muted"}`}>{asOfText}</p>}
       {cashFlow.warnings.length > 0 && (
         <ul className="dash-warnings">
           {cashFlow.warnings.map((w) => (

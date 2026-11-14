@@ -457,14 +457,22 @@ function uniqueSortedDates(dates: Iterable<IsoDate>): IsoDate[] {
   return [...new Set(dates)].sort();
 }
 
-function finishChain(from: IsoDate, to: IsoDate, subPeriods: SubPeriod[], warnings: EngineWarning[], failure: { reason: ReturnFailureReason; date: IsoDate } | null): ChainResult {
+/**
+ * Chain-link the computed sub-periods. The rate is annualized over the time the capital was
+ * actually invested, from `investedFrom` (the close the first computed sub-period starts from:
+ * `from` for an account valued there, the day before its first contribution or opening value for
+ * one that entered later) to `to`, never over the request's range: an account that entered 31
+ * days before `to` has 31 days of return, which D21 (GIPS) does not annualize, whatever the
+ * range (audit decision A19).
+ */
+function finishChain(to: IsoDate, investedFrom: IsoDate | null, subPeriods: SubPeriod[], warnings: EngineWarning[], failure: { reason: ReturnFailureReason; date: IsoDate } | null): ChainResult {
   if (failure) return { rate: null, annualized: null, reason: failure.reason, reasonDate: failure.date, subPeriods, warnings };
   const computed = subPeriods.filter((s) => !s.skipped);
-  if (computed.length === 0) return { rate: null, annualized: null, reason: "no_valuations", reasonDate: to, subPeriods, warnings };
+  if (computed.length === 0 || investedFrom === null) return { rate: null, annualized: null, reason: "no_valuations", reasonDate: to, subPeriods, warnings };
   let product = 1;
   for (const s of computed) product *= 1 + s.rate!;
   const rate = product - 1;
-  return { rate, annualized: annualize(rate, dayDiff(from, to)), reason: null, reasonDate: null, subPeriods, warnings };
+  return { rate, annualized: annualize(rate, dayDiff(investedFrom, to)), reason: null, reasonDate: null, subPeriods, warnings };
 }
 
 /**
@@ -512,7 +520,8 @@ export function trueTwr(from: IsoDate, to: IsoDate, flows: readonly FlowLike[], 
     else sp.rate = Number(end) / Number(begin) - 1;
     subPeriods.push(sp);
   }
-  return finishChain(from, to, subPeriods, [], failure);
+  // Under true TWR a computed sub-period's begin already holds the capital at the close of its `from`.
+  return finishChain(to, subPeriods.find((sp) => !sp.skipped)?.from ?? null, subPeriods, [], failure);
 }
 
 /**
@@ -546,6 +555,9 @@ export function modifiedDietzOver(from: IsoDate, to: IsoDate, flows: readonly Fl
   };
   const subPeriods: SubPeriod[] = [];
   let failure: { reason: ReturnFailureReason; date: IsoDate } | null = null;
+  // Where the capital starts: the first computed sub-period's `from` when it is valued there, else the
+  // close before its first flow (a contribution arrives at the start of its day).
+  let investedFrom: IsoDate | null = null;
   for (let i = 1; i < dates.length; i++) {
     const b0 = dates[i - 1]!;
     const b1 = dates[i]!;
@@ -582,9 +594,13 @@ export function modifiedDietzOver(from: IsoDate, to: IsoDate, flows: readonly Fl
     else if (denominator === 0) failure ??= { reason: "zero_denominator", date: b0 };
     else if (denominator < 0) failure ??= { reason: "negative_capital", date: b0 };
     else sp.rate = (Number(v1.valueCents) / 100 - Number(v0.valueCents) / 100 - Number(flowCents) / 100) / denominator;
+    if (!sp.skipped && investedFrom === null) {
+      const firstFlow = active.find((f) => f.date > b0 && f.date <= b1);
+      investedFrom = v0.valueCents !== 0n || !firstFlow ? b0 : addDays(firstFlow.date, -1);
+    }
     subPeriods.push(sp);
   }
-  return finishChain(from, to, subPeriods, warnings, failure);
+  return finishChain(to, investedFrom, subPeriods, warnings, failure);
 }
 
 /** Modified Dietz with boundaries at `from`, `to` and every valuation date in between, values carried forward (0 before the first). */

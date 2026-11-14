@@ -25,5 +25,6 @@ export * from "./lots.js";
 export * from "./simplefinHoldings.js";
 export * from "./investmentsCsv.js";
 export * from "./valuation.js";
+export * from "./planHistory.js";
 export * from "./performance.js";
 export * from "./retirement/index.js";
