@@ -1,10 +1,10 @@
-import { matchesToDollar } from "@meridian/shared";
+import { CsvDateFormat, headerKey, matchesToDollar, parseCsvDate, parseLooseMoney } from "@meridian/shared";
 import type {
   ActionFoundView,
   ColumnRef,
-  CsvDateFormat,
   CsvKind,
   CsvMappingInput,
+  CsvPreviewResponse,
   ImportResult,
   MappedTradeView,
   PositionsCsvMapping,
@@ -86,6 +86,169 @@ export const TRADES_COLUMNS: ReadonlyArray<readonly [TradesColumnKey, string, st
   ["description", "Description column", "optional: kept with the row"],
   ["accountFilter", "Account column", "optional: a file covering several accounts"],
 ];
+
+// ---- The bank mapping editor ----
+//
+// The bank mapper reads columns by header name or by position (phase 1 plan, "CSV import"). The
+// editor offers the file's columns the same way: by name while the mapping reads a header row, by
+// position otherwise, and every pick goes through `columnRef`, as in the positions and trades
+// editors. Audit b4-import-ui (second round): the editor wrote names only, so a file without a
+// header row could not be mapped.
+
+/** The column fields of a bank mapping, as the editor's selects name them. */
+export type BankColumnField = "date" | "description" | "memo" | "externalId" | "amount" | "debit" | "credit";
+
+/** Whether a bank mapping reads a header row (`hasHeader` left out is the schema's default, true). */
+export function bankHasHeader(mapping: CsvMappingInput): boolean {
+  return mapping.hasHeader ?? true;
+}
+
+/**
+ * The file's first row as a bank preview shows it. The sample rows start with it; `headers` is
+ * the same row only while the mapping reads a header row (a header-less preview names its
+ * columns "Column 1", "Column 2"…).
+ */
+export function bankFirstRow(p: Pick<CsvPreviewResponse, "headers" | "sampleRows">): string[] {
+  return p.sampleRows[0] ?? p.headers;
+}
+
+const LABEL_CELL_MAX = 30;
+
+/** The editor's column choices: header names, or positions labelled with the first row's cell ("Column 1 (11/07/2026)"). */
+export function bankColumnOptions(firstRow: readonly string[], hasHeader: boolean): Array<{ value: string; label: string }> {
+  return firstRow.map((cell, i) => {
+    if (hasHeader) return { value: cell, label: cell };
+    const example = cell.length > LABEL_CELL_MAX ? `${cell.slice(0, LABEL_CELL_MAX - 1)}…` : cell;
+    return { value: String(i), label: example ? `Column ${i + 1} (${example})` : `Column ${i + 1}` };
+  });
+}
+
+/**
+ * The reference to column `i` of the first row: its name while the mapping reads a header row,
+ * unless the name is empty or another column has it first (a name finds the first column that
+ * has it, here and on the server); otherwise its position, which the mapper reads either way.
+ */
+function bankRefAt(i: number, firstRow: readonly string[], hasHeader: boolean): ColumnRef {
+  const name = firstRow[i];
+  if (!hasHeader || !name) return i;
+  return firstRow.findIndex((h) => headerKey(h) === headerKey(name)) === i ? name : i;
+}
+
+/** Sets one column of a bank mapping from a select value; "" clears the optional memo and id columns. */
+export function setBankColumn(mapping: CsvMappingInput, field: BankColumnField, value: string): CsvMappingInput {
+  const ref = columnRef(value, bankHasHeader(mapping));
+  switch (field) {
+    case "date":
+      return { ...mapping, date: { ...mapping.date, column: ref } };
+    case "description":
+      return { ...mapping, description: { column: ref } };
+    case "memo":
+    case "externalId": {
+      const { [field]: _drop, ...rest } = mapping;
+      return value === "" ? rest : { ...rest, [field]: { column: ref } };
+    }
+    case "amount":
+      return mapping.amount.mode === "single" ? { ...mapping, amount: { ...mapping.amount, column: ref } } : mapping;
+    case "debit":
+      return mapping.amount.mode === "split" ? { ...mapping, amount: { ...mapping.amount, debitColumn: ref } } : mapping;
+    case "credit":
+      return mapping.amount.mode === "split" ? { ...mapping, amount: { ...mapping.amount, creditColumn: ref } } : mapping;
+  }
+}
+
+/** One signed amount column (the last), or separate debit and credit columns (the last two). */
+export function setBankAmountMode(mapping: CsvMappingInput, mode: "single" | "split", firstRow: readonly string[]): CsvMappingInput {
+  const hasHeader = bankHasHeader(mapping);
+  const n = firstRow.length;
+  const at = (i: number, fallback: number) => (i >= 0 && i < n ? bankRefAt(i, firstRow, hasHeader) : fallback);
+  return {
+    ...mapping,
+    amount: mode === "single" ? { mode: "single", column: at(n - 1, 0), invert: false } : { mode: "split", debitColumn: at(n - 2, 0), creditColumn: at(n - 1, 1) },
+  };
+}
+
+/**
+ * "first row is a header", with every column carried over: names become the positions of the
+ * first-row cells they find (sanitized, any case, as the server finds them), positions become the
+ * names of their cells. A name the row does not have, and a position past it or without a usable
+ * name, stay as they are: the preview then says which column it cannot find.
+ */
+export function setBankHasHeader(mapping: CsvMappingInput, hasHeader: boolean, firstRow: readonly string[]): CsvMappingInput {
+  const convert = (ref: ColumnRef): ColumnRef => {
+    if (hasHeader) return typeof ref === "number" && ref < firstRow.length ? bankRefAt(ref, firstRow, true) : ref;
+    if (typeof ref === "number") return ref;
+    const i = firstRow.findIndex((h) => headerKey(h) === headerKey(ref));
+    return i < 0 ? ref : i;
+  };
+  const next: CsvMappingInput = {
+    ...mapping,
+    hasHeader,
+    date: { ...mapping.date, column: convert(mapping.date.column) },
+    description: { column: convert(mapping.description.column) },
+    amount:
+      mapping.amount.mode === "single"
+        ? { ...mapping.amount, column: convert(mapping.amount.column) }
+        : { ...mapping.amount, debitColumn: convert(mapping.amount.debitColumn), creditColumn: convert(mapping.amount.creditColumn) },
+  };
+  if (mapping.memo) next.memo = { column: convert(mapping.memo.column) };
+  if (mapping.externalId) next.externalId = { column: convert(mapping.externalId.column) };
+  return next;
+}
+
+/** The first date format that reads every non-empty cell (the order of `CsvDateFormat`: ISO, then US before day-first). */
+function dateFormatReading(cells: readonly string[]): CsvDateFormat | undefined {
+  const values = cells.map((c) => c.trim()).filter((c) => c !== "");
+  if (values.length === 0) return undefined;
+  return CsvDateFormat.options.find((f) => values.every((v) => parseCsvDate(v, f) !== undefined));
+}
+
+const isDate = (cell: string) => dateFormatReading([cell]) !== undefined;
+const isMoney = (cell: string) => parseLooseMoney(cell) !== undefined;
+/** An amount as a bank writes one: with cents, a sign, a currency symbol or parentheses (a bare whole number may be an id). */
+const looksLikeAmount = (cell: string) => isMoney(cell) && /[.$()+-]|\b(?:CR|DR)\b/i.test(cell);
+
+/**
+ * Whether the first row is data rather than a header: one cell reads as a date and another as an
+ * amount. Header names are words ("Date", "Amount"), so a header row has neither.
+ */
+export function firstRowLooksLikeData(row: readonly string[]): boolean {
+  const date = row.findIndex(isDate);
+  return date >= 0 && row.some((cell, i) => i !== date && isMoney(cell));
+}
+
+/**
+ * "Build a mapping by hand", when the server could not guess one. A first row that is data
+ * (`firstRowLooksLikeData`, e.g. Wells Fargo's export) gives a mapping by position with no header
+ * row: the date in the first column holding one, the amount in the first column that looks like
+ * one, the description in the first other column with letters in it. Otherwise the first row is
+ * a header the guess did not recognise, and the mapping names its columns: the date first, the
+ * description second, the amount last. Either way the date format is one that reads the date
+ * column of every sample row (MM/DD/YYYY when nothing reads it).
+ */
+export function handBuiltBankMapping(sampleRows: readonly (readonly string[])[]): CsvMappingInput {
+  const first = sampleRows[0] ?? [];
+  const formatOf = (column: number, rows: readonly (readonly string[])[]) => dateFormatReading(rows.map((r) => r[column] ?? "")) ?? "MM/DD/YYYY";
+  if (!firstRowLooksLikeData(first)) {
+    const n = first.length;
+    return {
+      hasHeader: true,
+      date: { column: bankRefAt(0, first, true), format: formatOf(0, sampleRows.slice(1)) },
+      description: { column: n > 1 ? bankRefAt(1, first, true) : 1 },
+      amount: { mode: "single", column: n > 0 ? bankRefAt(n - 1, first, true) : 2, invert: false },
+    };
+  }
+  const date = first.findIndex(isDate);
+  const others = first.map((_, i) => i).filter((i) => i !== date);
+  const amount = others.find((i) => looksLikeAmount(first[i]!)) ?? others.find((i) => isMoney(first[i]!)) ?? others[others.length - 1]!;
+  const rest = others.filter((i) => i !== amount);
+  const description = rest.find((i) => /\p{L}/u.test(first[i]!)) ?? rest[0] ?? amount;
+  return {
+    hasHeader: false,
+    date: { column: date, format: formatOf(date, sampleRows) },
+    description: { column: description },
+    amount: { mode: "single", column: amount, invert: false },
+  };
+}
 
 /** A first mapping when the server could not guess one: symbol in the first column, value in the last, the date from the request. */
 export function handBuiltPositionsMapping(headers: readonly string[]): PositionsCsvMapping {
