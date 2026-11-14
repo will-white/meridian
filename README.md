@@ -12,8 +12,8 @@ Phase 2 (spending plan) is built: category groups, a virtualized multi-month pla
 
 ```bash
 pnpm install
-cp .env.example .env            # fill in SESSION_SECRET, SECRETS_KEY (openssl rand -base64 32), passwords
-docker compose -f deploy/docker-compose.yml up -d db
+cp .env.example .env            # fill in SESSION_SECRET (openssl rand -hex 32), SECRETS_KEY (openssl rand -base64 32)
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev.yml up -d db   # db on 127.0.0.1:5432
 pnpm db:migrate                 # applies packages/db/drizzle to DATABASE_URL
 pnpm dev                        # api on :3000, worker, web on :5173 (proxies /api)
 ```
@@ -25,9 +25,14 @@ The API listens on loopback (`API_HOST`, default `127.0.0.1`) and believes no `X
 ## Quick start (home server)
 
 ```bash
-cp .env.example .env            # fill in secrets
+cp .env.example .env            # set POSTGRES_PASSWORD, SESSION_SECRET, SECRETS_KEY, BACKUP_PASSPHRASE, SITE_ADDRESS
 docker compose -f deploy/docker-compose.yml up -d --build
+docker compose -f deploy/docker-compose.yml ps      # every service should become "healthy"
 ```
+
+This needs Docker Compose 2.20 or later. `deploy/docker-compose.yml` includes `deploy/services.yml` and reads the repository's `.env` for it, and each container gets only the settings it reads: the database password reaches db, web, worker and backup; `SECRETS_KEY` web and worker; `SESSION_SECRET` web; the Tiingo key the worker; `BACKUP_PASSPHRASE` the backup container; Caddy only `SITE_ADDRESS`. The API and the worker refuse to start in production with the `.env.example` placeholders (`change-me`) or a `SECRETS_KEY` that is not 32 bytes of base64. To keep `SECRETS_KEY` and the Tiingo key out of every container's environment, use Docker secret files instead (`deploy/docker-compose.secrets.yml` says how).
+
+The database and the web container sit on a network with no route out; only the worker (SimpleFIN and the price provider), the backup container (the off-site copy) and Caddy (for its published ports) can reach other hosts, and which hosts the worker calls is enforced by the worker itself. The web and worker containers run as an unprivileged user; the backup container drops to the `postgres` user once it has handed `deploy/backups` to it.
 
 Caddy serves the app on the LAN at `https://$SITE_ADDRESS` with an internally issued certificate; trust its root CA on your devices. For access from outside, put the server on Tailscale. Do not port-forward.
 
@@ -56,6 +61,8 @@ docker compose -f deploy/docker-compose.yml exec web node apps/api/dist/admin.js
 docker compose -f deploy/docker-compose.yml exec web node apps/api/dist/admin.js reset-password <username>
 docker compose -f deploy/docker-compose.yml exec web node apps/api/dist/admin.js sign-out <username>
 ```
+
+If the `web` container is not running (for example it refuses to start on a wrong `SECRETS_KEY`), use `run --rm` instead of `exec`: `docker compose -f deploy/docker-compose.yml run --rm web node apps/api/dist/admin.js users`.
 
 `reset-totp` clears the authenticator: sign in with the password and set up a new one straight away, because until then the password alone reaches that setup screen. `reset-password` prints a temporary password once; sign in with it and change it under Settings. `users` lists the accounts that exist: if the app shows "Sign in" before you ever created an account, someone else on your network got there first; check with `users`, then reset that account or start again with an empty database. In development the same commands run as `pnpm --filter @meridian/api admin <command>`, with `DATABASE_URL` set as for `pnpm dev`.
 
@@ -88,9 +95,55 @@ The worker syncs each SimpleFIN connection every 6 hours (`SYNC_INTERVAL_HOURS`)
 | `pnpm db:migrate` | apply migrations to `DATABASE_URL` |
 | `pnpm build` | production bundles (`apps/*/dist`) and the web build |
 
+## The encryption key
+
+`SECRETS_KEY` encrypts the SimpleFIN access URLs, setup tokens and every member's authenticator secret. It is never in the database or a backup, so keep a copy with the backup passphrase, off the server: a backup restored without it signs no one in and syncs nothing. The API and the worker check it at start-up and refuse to run, saying so in their log, when it opens none of the stored secrets.
+
+**Changing it** (for example after it may have leaked):
+
+```bash
+openssl rand -base64 32                                         # the new key
+# in .env: rename the SECRETS_KEY line to SECRETS_KEY_OLD, and add SECRETS_KEY=<the new key>
+docker compose -f deploy/docker-compose.yml stop web worker
+docker compose -f deploy/docker-compose.yml run --rm web node apps/api/dist/admin.js rotate-secrets-key
+# remove SECRETS_KEY_OLD from .env
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+`rotate-secrets-key` re-encrypts every stored secret in one transaction (all or nothing); running it again changes nothing.
+
+**When it is lost:** put a new key in `.env`, then `docker compose -f deploy/docker-compose.yml run --rm web node apps/api/dist/admin.js reset-secrets-key` lists what the new key cannot open, and the same with `--confirm` clears it: every member sets up their authenticator again at the next sign-in (the password alone reaches that screen until then, so do it straight away), and each SimpleFIN connection is removed and added again with a new setup token from the Bridge (its accounts and history are kept). Then start web and worker.
+
 ## Backups
 
-The `backup` service runs `deploy/backup.sh` nightly at `BACKUP_HOUR` UTC: an encrypted `pg_dump` into `deploy/backups/daily` (30 kept) and `deploy/backups/monthly` (12 kept). Set `BACKUP_COPY_CMD` to push each file off the server. Restore with `deploy/restore.sh <file>`. `SECRETS_KEY` is never in a backup: keep it with the passphrase, off the server.
+The `backup` service (`deploy/backup.Dockerfile`: the Postgres image plus openssl, rclone and ssh) runs `deploy/backup.sh` nightly at `BACKUP_HOUR` UTC: a `pg_dump`, gzipped and encrypted with `BACKUP_PASSPHRASE`, into `deploy/backups/daily` (30 kept) and, for the first backup of each month, `deploy/backups/monthly` (12 kept). A backup counts only when every step worked and the new file decrypts and reads to pg_dump's closing line; a failed one leaves no file, promotes nothing and prunes nothing. The files and folders are readable by their owner only (the container's `postgres` user, uid 70).
+
+`docker compose -f deploy/docker-compose.yml ps` shows the backup container **unhealthy** when the last backup failed, when no verified backup was made for 26 hours, or when the off-site copy is failing; `docker compose -f deploy/docker-compose.yml exec backup /backup.sh --health` says which, and `docker compose -f deploy/docker-compose.yml logs backup` shows each night. `deploy/backups/status/` keeps the last success, the last failure, the off-site state and the last restore check.
+
+**Off the server.** Set `BACKUP_COPY_CMD` in `.env` (examples there): it runs for every backup file not copied yet, daily and monthly, with the file as `$1` and its folder as `$2`; a file whose copy failed is tried again after the next backup. Put the tool's configuration in `deploy/backup-config/` (git-ignored, mounted at `/backup-config`): `rclone.conf` for rclone (`RCLONE_CONFIG` points there; make one with `rclone config` and copy it in), or an ssh key and `known_hosts` for scp. The folder must be readable by uid 70 (`sudo chown -R 70 deploy/backup-config`).
+
+**Prove a backup restores** (once a month; running it on a schedule is Phase 6 work): `docker compose -f deploy/docker-compose.yml exec backup /restore-check.sh` restores the newest backup into a throwaway database, checks it holds the app's tables, drops it and records the result. The live database is not touched.
+
+**Restore.**
+
+```bash
+docker compose -f deploy/docker-compose.yml stop web worker
+docker compose -f deploy/docker-compose.yml exec backup /restore.sh /backups/daily/meridian-20261013T020000Z.sql.gz.enc
+docker compose -f deploy/docker-compose.yml start web worker
+```
+
+Nothing is changed until the backup has been decrypted and read to its end. It is then restored into a new database in one transaction that stops at the first error, and only then swapped in; the database it replaced is kept as `<name>_before_<time>` until you drop it. It asks you to type the database name (or pass `--yes`). `--target-db <name>` restores into a new database of that name and leaves everything else alone. On another machine with `psql`, `openssl` and `gzip` installed (and the development file's database port), `deploy/restore.sh` reads the settings it is not given from the repository's `.env`, from any directory. A restored database needs the same `SECRETS_KEY` (see "The encryption key").
+
+## Updating
+
+```bash
+git pull
+docker compose -f deploy/docker-compose.yml pull --ignore-buildable   # db and Caddy
+docker compose -f deploy/docker-compose.yml build --pull              # web, worker and backup on fresh base images
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+The base images are the floating tags `postgres:16-alpine`, `node:22-alpine` and `caddy:2-alpine`, so a rebuild picks up their security fixes. To make rebuilds reproducible instead, pin each to a digest in `.env` (`POSTGRES_IMAGE`, `NODE_IMAGE`, `CADDY_IMAGE`; `docker buildx imagetools inspect <image>` prints the digest) and move the pins when you choose to update. Keep Postgres on major version 16: a new major version cannot read the existing data volume without a dump and restore. pnpm is pinned by version and hash in `package.json`.
 
 ## Layout
 

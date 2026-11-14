@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { claimNextJob, completeJob, failJob, requeueStaleJobs } from "@meridian/db";
 import { errorMessageText } from "@meridian/shared";
 import { dispatchJob } from "./jobs/index.js";
@@ -10,8 +11,24 @@ export function isPermanentError(err: unknown): boolean {
   return typeof permanent === "boolean" && permanent;
 }
 
+/**
+ * Audit a7-backup-deploy-secrets-18: the container's healthcheck reads this file's time. It is
+ * written after every pass over the queue and every job, so it goes stale only when the runner
+ * is stuck (or cannot reach the database).
+ */
+export function heartbeatWriter(file: string | undefined): (() => void) | undefined {
+  if (!file) return undefined;
+  return () => {
+    try {
+      writeFileSync(file, `${new Date().toISOString()}\n`);
+    } catch {
+      // The healthcheck reports a missing or stale file; the runner itself goes on.
+    }
+  };
+}
+
 /** Drain the queue once: claim and run jobs until none are due. Returns how many ran. */
-export async function drainQueue(ctx: JobContext): Promise<number> {
+export async function drainQueue(ctx: JobContext, beat?: () => void): Promise<number> {
   let ran = 0;
   for (;;) {
     const job = await claimNextJob(ctx.db, ctx.config.workerId);
@@ -30,11 +47,12 @@ export async function drainQueue(ctx: JobContext): Promise<number> {
       await failJob(ctx.db, job, message, { retry });
       ctx.log.error(`[job] ${job.type} ${job.id} failed (attempt ${job.attempts}/${job.maxAttempts}${retry ? "" : ", no retry"}): ${message}`);
     }
+    beat?.();
   }
 }
 
-/** Poll the queue forever. Stops when the returned function is called. */
-export function startRunner(ctx: JobContext): () => void {
+/** Poll the queue forever. Stops when the returned function is called. `heartbeat` runs after each pass that reached the database. */
+export function startRunner(ctx: JobContext, heartbeat: (() => void) | undefined = heartbeatWriter(ctx.config.heartbeatFile)): () => void {
   let stopped = false;
   let lastStaleSweep = 0;
   const tick = async () => {
@@ -45,7 +63,8 @@ export function startRunner(ctx: JobContext): () => void {
         const stale = await requeueStaleJobs(ctx.db, 30);
         if (stale.requeued + stale.failed > 0) ctx.log.warn(`[runner] a worker stopped during ${stale.requeued + stale.failed} job(s): ${stale.requeued} requeued after a backoff, ${stale.failed} failed (attempts spent)`);
       }
-      await drainQueue(ctx);
+      await drainQueue(ctx, heartbeat);
+      heartbeat?.();
     } catch (err) {
       ctx.log.error(`[runner] ${(err as Error).message}`);
     } finally {

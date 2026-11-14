@@ -1,16 +1,23 @@
-import { createDb, getHouseholdSetting, runMigrations, seedDefaultCategories } from "@meridian/db";
+import { createDb } from "@meridian/db";
 import { buildApp } from "./app.js";
+import { prepareDatabase } from "./boot.js";
 import { loadConfig } from "./config.js";
 
 const config = loadConfig();
 const { db, client } = createDb(config.databaseUrl);
 
-await runMigrations(db);
-await seedDefaultCategories(db);
-// The household_setting singleton exists from the first request on, so a viewer's GET never has to create it.
-await getHouseholdSetting(db);
+let keyWarning: string | null;
+try {
+  keyWarning = await prepareDatabase(db, config);
+} catch (err) {
+  // A wrong SECRETS_KEY (or an unreachable database) stops the server with the reason, before it serves anything.
+  console.error(`[api] not starting: ${err instanceof Error ? err.message : String(err)}`);
+  await client.end({ timeout: 5 });
+  process.exit(1);
+}
 
 const app = await buildApp({ db, config });
+if (keyWarning) app.log.warn(keyWarning);
 
 async function shutdown(signal: string) {
   app.log.info(`${signal} received, shutting down`);

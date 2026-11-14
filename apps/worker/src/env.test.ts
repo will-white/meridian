@@ -105,10 +105,10 @@ describe("price feed configuration (prices design §6.4)", () => {
   });
 
   it("loadConfig carries the price feed beside the Phase 1 settings", () => {
-    const config = loadConfig({ DATABASE_URL: "postgres://x", SECRETS_KEY: "s", PRICE_PROVIDER: "tiingo", TIINGO_API_KEY: "k", DETECT_HOUR_UTC: "3" });
+    const config = loadConfig({ DATABASE_URL: "postgres://x", SECRETS_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", PRICE_PROVIDER: "tiingo", TIINGO_API_KEY: "k", DETECT_HOUR_UTC: "3" });
     expect(config.prices).toMatchObject({ provider: "tiingo", tiingoApiKey: "k" });
     expect(config.detectHourUtc).toBe(3);
-    expect(loadConfig({ DATABASE_URL: "postgres://x", SECRETS_KEY: "s" }).prices?.provider).toBeNull();
+    expect(loadConfig({ DATABASE_URL: "postgres://x", SECRETS_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=" }).prices?.provider).toBeNull();
   });
 });
 
@@ -124,7 +124,25 @@ describe("SimpleFIN hosts and response size (a4-sync-parse-13, a4-sync-parse-15)
     expect(readSimplefinMaxResponseBytes({})).toBe(50_000_000);
     expect(readSimplefinMaxResponseBytes({ SIMPLEFIN_MAX_RESPONSE_MB: "120" })).toBe(120_000_000);
     expect(readSimplefinMaxResponseBytes({ SIMPLEFIN_MAX_RESPONSE_MB: "0" })).toBe(50_000_000);
-    const config = loadConfig({ DATABASE_URL: "postgres://x", SECRETS_KEY: "s" });
+    const config = loadConfig({ DATABASE_URL: "postgres://x", SECRETS_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=" });
     expect(config).toMatchObject({ simplefinAllowedHosts: ["bridge.simplefin.org", "beta-bridge.simplefin.org"], simplefinMaxResponseBytes: 50_000_000 });
+  });
+});
+
+describe("the encryption key and the database password (audit a7-backup-deploy-secrets-06, -17)", () => {
+  const KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
+  it("refuses a SECRETS_KEY that is not 32 bytes of base64, from the variable or the secret file", () => {
+    expect(() => loadConfig({ DATABASE_URL: "postgres://x", SECRETS_KEY: "not-base64-at-all!!" })).toThrow(/SECRETS_KEY must be 32 random bytes in base64/);
+    expect(() => loadConfig({ DATABASE_URL: "postgres://x", SECRETS_KEY: "ab".repeat(32) })).toThrow(/decodes to 48 bytes.*hex/);
+    const file = path.join(mkdtempSync(path.join(tmpdir(), "meridian-key-")), "secrets_key");
+    writeFileSync(file, "ab".repeat(32) + "\n");
+    expect(() => loadConfig({ DATABASE_URL: "postgres://x", SECRETS_KEY_FILE: file })).toThrow(/decodes to 48 bytes/);
+    writeFileSync(file, KEY + "\n");
+    expect(loadConfig({ DATABASE_URL: "postgres://x", SECRETS_KEY_FILE: file }).secretsKey).toBe(KEY);
+  });
+
+  it("in production refuses the .env.example database password", () => {
+    expect(() => loadConfig({ NODE_ENV: "production", MERIDIAN_DB_HOST: "db", POSTGRES_USER: "meridian", POSTGRES_PASSWORD: "change-me", POSTGRES_DB: "meridian", SECRETS_KEY: KEY })).toThrow(/POSTGRES_PASSWORD is the \.env\.example placeholder/);
+    expect(loadConfig({ NODE_ENV: "development", DATABASE_URL: "postgres://meridian:change-me@localhost/meridian", SECRETS_KEY: KEY }).secretsKey).toBe(KEY);
   });
 });

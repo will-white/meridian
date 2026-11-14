@@ -188,7 +188,7 @@ P7. **Phase 2 §17 job dedupe (`enqueueJob`, verified: type + `connectionId`)** 
 
 P8. **Phase 2 §16 today** — every route uses `resolveToday`; the prices area's `expectedThrough` uses the server clock in America/New_York (a market fact, not the household's day). Consistent.
 
-P9. **Phase 1 "the worker is the only container that talks to the outside world"** — Tiingo is called from the worker only; the API reads `PRICE_PROVIDER` from env to render state (compose's shared `env_file` verified). Consistent. Key via env/secret file, never the database (CLAUDE.md).
+P9. **Phase 1 "the worker is the only container that talks to the outside world"** — Tiingo is called from the worker only; the API reads `PRICE_PROVIDER` from env to render state (compose passes `PRICE_PROVIDER` to both containers; since audit a7-backup-deploy-secrets-07 by name in `deploy/services.yml`, not through a shared `env_file`). Consistent. Key via env/secret file, never the database (CLAUDE.md).
 
 P10. **Phase 2 §11 audit (never when before equals after; one batch per request)** — all areas comply; imports/syncs/price fetches are recorded by `import_log`, as Phase 1 does.
 

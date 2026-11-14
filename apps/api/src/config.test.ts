@@ -10,7 +10,8 @@ import { loadConfig, parseCatchupHour, parseTrustProxy } from "./config.js";
  * boots one container boots the other (and a bad one fails both with the same message).
  */
 
-const BASE = { DATABASE_URL: "postgres://x", SECRETS_KEY: "s", SESSION_SECRET: "0123456789abcdef0123456789abcdef" };
+const KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="; // 32 bytes, base64
+const BASE = { DATABASE_URL: "postgres://x", SECRETS_KEY: KEY, SESSION_SECRET: "0123456789abcdef0123456789abcdef" };
 
 describe("loadConfig: PRICE_PROVIDER", () => {
   it("defaults to no provider and accepts the worker's spellings: empty, `none` in any case, surrounding spaces", () => {
@@ -85,5 +86,33 @@ describe("loadConfig: where the API listens and whose forwarded headers it belie
       expect(() => parseTrustProxy(value), value).toThrow(/^TRUST_PROXY must list the reverse proxy's addresses/);
     }
     expect(() => loadConfig({ ...BASE, TRUST_PROXY: "true" })).toThrow('TRUST_PROXY must list the reverse proxy\'s addresses (an IP, a CIDR range, or loopback, linklocal, uniquelocal), not "true"');
+  });
+});
+
+describe("loadConfig: the encryption key and placeholder secrets (audit a7-backup-deploy-secrets-06, -17)", () => {
+  it("refuses a SECRETS_KEY that is not 32 bytes of base64, naming the problem, and accepts one that is", () => {
+    expect(() => loadConfig({ ...BASE, SECRETS_KEY: "not-base64-at-all!!" })).toThrow(/SECRETS_KEY must be 32 random bytes in base64 \(openssl rand -base64 32\); this value is not base64/);
+    // openssl rand -hex 32: 64 hex characters, which base64-decode to 48 bytes.
+    expect(() => loadConfig({ ...BASE, SECRETS_KEY: "ab".repeat(32) })).toThrow(/decodes to 48 bytes.*hex/);
+    expect(() => loadConfig({ ...BASE, SECRETS_KEY: "MDEyMzQ1Njc4OWFiY2RlZg==" })).toThrow(/decodes to 16 bytes/);
+    expect(loadConfig(BASE).secretsKey).toBe(KEY);
+    expect(loadConfig({ ...BASE, SECRETS_KEY: ` ${KEY}\n` }).secretsKey).toBe(KEY);
+  });
+
+  it("in production refuses the .env.example placeholders for SESSION_SECRET and the database password", () => {
+    const prod = { ...BASE, NODE_ENV: "production" };
+    expect(() => loadConfig({ ...prod, SESSION_SECRET: "change-me-to-64-random-hex-chars" })).toThrow(/SESSION_SECRET is the \.env\.example placeholder/);
+    expect(() => loadConfig({ ...prod, DATABASE_URL: undefined, MERIDIAN_DB_HOST: "db", POSTGRES_USER: "meridian", POSTGRES_PASSWORD: "change-me", POSTGRES_DB: "meridian" })).toThrow(/POSTGRES_PASSWORD is the \.env\.example placeholder/);
+    expect(() => loadConfig({ ...prod, DATABASE_URL: "postgres://meridian:change-me@localhost:5432/meridian" })).toThrow(/POSTGRES_PASSWORD is the \.env\.example placeholder/);
+    expect(loadConfig({ ...prod, DATABASE_URL: "postgres://meridian:s3cret-and-long@db:5432/meridian" }).databaseUrl).toContain("s3cret");
+    // Development keeps working with the example's database password.
+    expect(loadConfig({ ...BASE, DATABASE_URL: "postgres://meridian:change-me@localhost:5432/meridian" }).nodeEnv).toBe("development");
+  });
+
+  it(".env.example leaves SESSION_SECRET empty, so the API does not start until it is set", async () => {
+    const { readFileSync } = await import("node:fs");
+    const example = readFileSync(new URL("../../../.env.example", import.meta.url), "utf8");
+    expect(example).toMatch(/^SESSION_SECRET=$/m);
+    expect(() => loadConfig({ ...BASE, SESSION_SECRET: "" })).toThrow(/SESSION_SECRET must be at least 32 characters/);
   });
 });
