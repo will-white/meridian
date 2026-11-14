@@ -12,11 +12,11 @@
   },
   "dependencies": {
     "@meridian/shared": "workspace:*",
-    "drizzle-orm": "^0.38.3",
+    "drizzle-orm": "^0.45.4",
     "postgres": "^3.4.5"
   },
   "devDependencies": {
-    "drizzle-kit": "^0.30.1",
+    "drizzle-kit": "^0.31.11",
     "tsx": "^4.19.2"
   },
   "exports": {

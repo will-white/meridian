@@ -9,7 +9,7 @@
  * SECRETS_KEY_OLD). When the server refuses to start on a wrong key, run it with
  * `docker compose -f deploy/docker-compose.yml run --rm web node apps/api/dist/admin.js <command>`.
  */
-import { createDb } from "@meridian/db";
+import { createDb, errorMessageOf } from "@meridian/db";
 import { resolveDatabaseUrl } from "./config.js";
 import { runAdminCommand } from "./lib/adminCommands.js";
 
@@ -17,7 +17,7 @@ const { db, client } = createDb(resolveDatabaseUrl(), { max: 1 });
 try {
   process.exitCode = await runAdminCommand(db, process.argv.slice(2), { out: (line) => console.log(line), err: (line) => console.error(line) });
 } catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
+  console.error(errorMessageOf(error));
   process.exitCode = 1;
 } finally {
   await client.end({ timeout: 5 });

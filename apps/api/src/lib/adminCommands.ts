@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { checkSecretsKey, deleteUserSessions, listUsers, resetSecondFactor, resetSecretsKey, rotateSecretsKey, setPassword, user, type AuditContext, type Db } from "@meridian/db";
+import { checkSecretsKey, deleteUserSessions, errorMessageOf, listUsers, resetSecondFactor, resetSecretsKey, rotateSecretsKey, setPassword, user, type AuditContext, type Db } from "@meridian/db";
 import { readSecretsKey } from "../config.js";
 import { hashPassword } from "./auth.js";
 
@@ -109,7 +109,7 @@ async function secretsKeyCommand(db: Db, command: "rotate-secrets-key" | "reset-
     key = readSecretsKey(env);
     if (command === "rotate-secrets-key") oldKey = readSecretsKey(env, "SECRETS_KEY_OLD");
   } catch (error) {
-    io.err(error instanceof Error ? error.message : String(error));
+    io.err(errorMessageOf(error));
     return 1;
   }
 
@@ -120,7 +120,7 @@ async function secretsKeyCommand(db: Db, command: "rotate-secrets-key" | "reset-
       io.out("Now remove SECRETS_KEY_OLD from .env and start web and worker again.");
       return 0;
     } catch (error) {
-      io.err(error instanceof Error ? error.message : String(error));
+      io.err(errorMessageOf(error));
       return 1;
     }
   }

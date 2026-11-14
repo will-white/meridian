@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { connection, enqueueJob, importLog, type JobRow } from "@meridian/db";
+import { connection, driverError, enqueueJob, importLog, type JobRow } from "@meridian/db";
 import { decryptSecret, encryptSecret, errorMessageText } from "@meridian/shared";
 import { claimAccessUrl, SimplefinError } from "../simplefin/client.js";
 import type { JobContext } from "./context.js";
@@ -12,7 +12,7 @@ import type { JobContext } from "./context.js";
  * `POST /connections/:id/sync` (Sync now) queues the claim again (audit a4-sync-parse-06).
  */
 export function claimFailure(err: unknown): { message: string; spent: boolean } {
-  const reason = errorMessageText(err);
+  const reason = errorMessageText(driverError(err));
   if (err instanceof SimplefinError && (err.kind === "claim_forbidden" || err.kind === "access_url_refused")) return { message: reason, spent: true };
   if (err instanceof SimplefinError && err.kind === "host_not_allowed") return { message: `${reason} Then press Sync now to claim the token.`, spent: false };
   return { message: `The setup token could not be claimed yet: ${reason.replace(/\.$/, "")}. Press Sync now to try again.`, spent: false };
