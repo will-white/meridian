@@ -1,38 +1,40 @@
 import { describe, expect, it } from "vitest";
 import { runsInOwnFile } from "../testIsolation.js";
 import { fillPathTables } from "./compile.js";
-import { contributionLimitsInto } from "./contributionLimits.js";
+import { contributionLimitsFrom } from "./contributionLimits.js";
 import { federalTaxInto } from "./federalTax.js";
 import { TAX_FUNCTIONS, type TaxFunctions } from "./functions.js";
-import { AD_REC, CL, CL_REC, PT, PT_REC, TAX_OUT, TI, TO, TY, TY_REC, progOffset, taxOffset } from "./layout.js";
-import { employeePayrollTaxInto } from "./payroll.js";
-import { hsaWithdraw, preTaxPenaltyBase } from "./penalties.js";
-import { requiredMinimumDistribution } from "./rmd.js";
-import { rothFreeAmount, rothWithdraw } from "./rothBasis.js";
-import { socialSecurityYear } from "./socialSecurity.js";
-import { assetClassMapRows, blendTaxDrag, compileTaxDrag, taxableYieldsInto } from "./taxDrag.js";
+import { AD_REC, CL, CL_REC, PT, PT_REC, TAX_OUT, TI, TO, TY, TYI, TYI_REC, TY_REC, progOffset, taxOffset } from "./layout.js";
+import { employeePayrollTaxFrom } from "./payroll.js";
+import { hsaWithdrawFrom, preTaxPenaltyBaseInto } from "./penalties.js";
+import { requiredMinimumDistributionInto } from "./rmd.js";
+import { rothFreeAmountInto, rothWithdrawFrom } from "./rothBasis.js";
+import { socialSecurityYearFrom } from "./socialSecurity.js";
+import { assetClassMapRows, blendTaxDrag, compileTaxDrag, taxableYieldsFrom } from "./taxDrag.js";
 import { loadTaxData } from "./taxData.js";
 import { pathTables, taxInput } from "./testKit.js";
 
 // Seams §2.5: one injectable record of the tax area's functions replaces the engine design's tax
-// hooks, so the loop's tests can run on stubs written to the same slot layouts. Step 11's members
-// follow the engine's hook rule (engine-and-returns §4): results in out records, never a returned
-// number, because V8 boxes a double returned from a call it does not inline.
+// hooks, so the loop's tests can run on stubs written to the same slot layouts. Every member follows
+// the engine's hook rule (engine-and-returns §4): results in out records, never a returned number,
+// and amounts read from arrays, never passed as doubles, because V8 boxes a double that crosses a
+// call it does not inline (step 11 made the payroll tax and the limits out-record forms; the
+// zero-GC work of engine-and-returns §3.15 the rest, functions.ts).
 
 describe("TAX_FUNCTIONS (seams §2.5)", () => {
-  it("holds the real functions the seams name (payroll and the limits in their out-record form), plus rothFreeAmount (C34) and taxableYieldsInto (C17, C18)", () => {
+  it("holds the real functions the seams name in their record forms, plus rothFreeAmount (C34) and taxableYieldsInto (C17, C18)", () => {
     expect(TAX_FUNCTIONS).toEqual({
       fillPathTables,
       federalTaxInto,
-      rothWithdraw,
-      rothFreeAmount,
-      preTaxPenaltyBase,
-      hsaWithdraw,
-      requiredMinimumDistribution,
-      socialSecurityYear,
-      employeePayrollTaxInto,
-      contributionLimitsInto,
-      taxableYieldsInto,
+      rothWithdraw: rothWithdrawFrom,
+      rothFreeAmount: rothFreeAmountInto,
+      preTaxPenaltyBase: preTaxPenaltyBaseInto,
+      hsaWithdraw: hsaWithdrawFrom,
+      requiredMinimumDistribution: requiredMinimumDistributionInto,
+      socialSecurityYear: socialSecurityYearFrom,
+      employeePayrollTaxInto: employeePayrollTaxFrom,
+      contributionLimitsInto: contributionLimitsFrom,
+      taxableYieldsInto: taxableYieldsFrom,
     });
     for (const [name, fn] of Object.entries(TAX_FUNCTIONS)) expect(typeof fn, name).toBe("function");
     expect(Object.isFrozen(TAX_FUNCTIONS)).toBe(true);
@@ -53,7 +55,7 @@ describe("TAX_FUNCTIONS (seams §2.5)", () => {
     expect(r[TO.TOTAL]).toBe(20000);
     TAX_FUNCTIONS.federalTaxInto(t.tax, taxOffset(0, 0), x, r);
     expect(r[TO.TOTAL]).toBe(13170);
-    expect(stubbed.employeePayrollTaxInto).toBe(employeePayrollTaxInto);
+    expect(stubbed.employeePayrollTaxInto).toBe(employeePayrollTaxFrom);
   });
 
   it("no allocation in 10,000 years of step 11's members through the record (yields, payroll, limits)", ({ skip }) => {
@@ -65,15 +67,21 @@ describe("TAX_FUNCTIONS (seams §2.5)", () => {
     const ty = new Float64Array(TY_REC);
     const pt = new Float64Array(PT_REC);
     const cl = new Float64Array(CL_REC);
+    const tyIn = Float64Array.of(0.03, 1, 500000, 200000, 300000, 190000);
+    const wages = Float64Array.of(120000, 60000);
     const sink = new Float64Array(1);
+    expect(TYI_REC).toBe(6);
     const run = (calls: number) => {
       for (let n = 0; n < calls; n++) {
         const o = progOffset(n % 20);
-        const f = n % 20 === 0 ? 0.25 : 1;
-        fns.taxableYieldsInto(drag, 0, 0.03, f, 500000 + n, 200000, 300000, 190000, ty);
-        fns.employeePayrollTaxInto(t.prog, o, 120000 + n, 60000, 1, f, pt);
-        fns.contributionLimitsInto(t.prog, o, 50 + (n % 20), f, true, 12 - (n % 13), cl);
-        fns.contributionLimitsInto(t.prog, o, 45, f, true, 12, cl);
+        const months = n % 20 === 0 ? 3 : 12;
+        tyIn[TYI.YEAR_FRACTION] = months / 12;
+        tyIn[TYI.STOCK] = 500000 + n;
+        wages[0] = 120000 + n;
+        fns.taxableYieldsInto(drag, 0, tyIn, 0, ty);
+        fns.employeePayrollTaxInto(t.prog, o, wages, 0, 1, months, pt);
+        fns.contributionLimitsInto(t.prog, o, 50 + (n % 20), months, true, 12 - (n % 13), cl);
+        fns.contributionLimitsInto(t.prog, o, 45, months, true, 12, cl);
         sink[0] = sink[0]! + ty[TY.DIVIDENDS]! + pt[PT.TOTAL]! + cl[CL.EMPLOYEE_DEFERRAL]! + cl[CL.HSA]!;
       }
     };

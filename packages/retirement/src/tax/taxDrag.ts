@@ -34,7 +34,7 @@
  */
 
 import { AssetClass, DEFAULT_ASSET_CLASS_MAP, type AssetClassMap, type TaxDragOverride } from "@meridian/shared";
-import { AD, AD_REC, INTEREST_BILL_RETURN, INTEREST_NONE, INTEREST_PRIOR_BILL_PLUS_SPREAD, TD, TD_REC, TY } from "./layout.js";
+import { AD, AD_REC, INTEREST_BILL_RETURN, INTEREST_NONE, INTEREST_PRIOR_BILL_PLUS_SPREAD, TD, TD_REC, TY, TYI, TYI_REC } from "./layout.js";
 import { loadTaxData, type TaxData, type TaxDragClass } from "./taxData.js";
 
 /** The six classes in the order of every per-class array (`AssetClass` options, the frozen input's order). */
@@ -219,6 +219,31 @@ export function taxableYieldsInto(
   bondBasis: number,
   out: Float64Array,
 ): void {
+  const x = INPUT;
+  x[TYI.BILL_REF] = billRef;
+  x[TYI.YEAR_FRACTION] = f;
+  x[TYI.STOCK] = stock;
+  x[TYI.BOND] = bond;
+  x[TYI.STOCK_BASIS] = stockBasis;
+  x[TYI.BOND_BASIS] = bondBasis;
+  taxableYieldsFrom(drag, off, x, 0, out);
+}
+
+/** Scratch of `taxableYieldsInto`'s inputs. */
+const INPUT = new Float64Array(TYI_REC);
+
+/**
+ * `taxableYieldsInto` with its inputs read from the record `input` at `inOff` (`TYI`): the form
+ * the year loop calls through `TAX_FUNCTIONS.taxableYieldsInto`, because V8 boxes a double passed
+ * to a call it does not inline. The same operations on the same values.
+ */
+export function taxableYieldsFrom(drag: Float64Array, off: number, input: Float64Array, inOff: number, out: Float64Array): void {
+  const billRef = input[inOff + TYI.BILL_REF]!;
+  const f = input[inOff + TYI.YEAR_FRACTION]!;
+  const stock = input[inOff + TYI.STOCK]!;
+  const bond = input[inOff + TYI.BOND]!;
+  const stockBasis = input[inOff + TYI.STOCK_BASIS]!;
+  const bondBasis = input[inOff + TYI.BOND_BASIS]!;
   const g = f > 0 && f < 1 ? f : 1;
   const dividends = drag[off + AD.STOCK_DIVIDEND_YIELD]! * stock * g;
   const rate = billRef + drag[off + AD.BOND_INTEREST_SPREAD]!;
