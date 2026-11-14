@@ -1,4 +1,5 @@
 import { formatCents, parseDecimalToCents } from "@meridian/shared";
+import { fitsWire, TOO_LARGE_IN_SENTENCE } from "./amounts.js";
 import type { TransactionSplitView, TransactionView } from "@meridian/shared";
 
 /**
@@ -88,6 +89,7 @@ export function buildSplitLines(totalCents: bigint, drafts: readonly SplitDraftL
     if (d.categoryId === "") return { ok: false, error: `Line ${i + 1}: pick a category` };
     const cents = parseSplitAmount(d.amount, totalCents);
     if (cents === null) return { ok: false, error: `Line ${i + 1}: not an amount` };
+    if (!fitsWire(cents)) return { ok: false, error: `Line ${i + 1}: ${TOO_LARGE_IN_SENTENCE}` };
     if (cents === 0n) return { ok: false, error: `Line ${i + 1}: the amount can't be zero` };
     sum += cents;
     lines.push({ categoryId: d.categoryId, amountCents: cents.toString(), memo: d.memo.trim() || null });

@@ -158,14 +158,14 @@ describe.skipIf(!TEST_DATABASE_URL)("Phase 1 routes", () => {
 
   it("merges payees and keeps the alias", async () => {
     const payees = await t.call({ method: "GET", url: "/api/payees" });
-    expect(payees.json().map((p: { name: string; transactionCount: number }) => [p.name, p.transactionCount])).toEqual([
+    expect(payees.json().items.map((p: { name: string; transactionCount: number }) => [p.name, p.transactionCount])).toEqual([
       ["Blue Bottle Coffee", 1],
       ["King Soopers", 1],
       ["Transfer To Savings", 2],
       ["Transfer from checking", 1],
     ]);
-    const king = payees.json().find((p: { name: string }) => p.name === "King Soopers");
-    const coffee = payees.json().find((p: { name: string }) => p.name === "Blue Bottle Coffee");
+    const king = payees.json().items.find((p: { name: string }) => p.name === "King Soopers");
+    const coffee = payees.json().items.find((p: { name: string }) => p.name === "Blue Bottle Coffee");
     const merged = await t.call({ method: "PATCH", url: `/api/payees/${king.id}`, payload: { mergeFromId: coffee.id, defaultCategoryId: groceriesId } });
     expect(merged.json()).toMatchObject({ name: "King Soopers", aliases: ["Blue Bottle Coffee"], defaultCategoryId: groceriesId, transactionCount: 2 });
   });

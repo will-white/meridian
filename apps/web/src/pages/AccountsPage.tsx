@@ -1,12 +1,13 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
-import { AccountType, TaxTreatment, formatCents, isInvestmentAccountType, parseDecimalToCents, type AccountView, type LinkFeedAccountResult } from "@meridian/shared";
+import { AccountType, TaxTreatment, formatCents, isInvestmentAccountType, type AccountView, type LinkFeedAccountResult } from "@meridian/shared";
 import { api, query } from "../lib/api.js";
-import { money, shortDate, titleCase } from "../lib/format.js";
+import { accountTypeLabel, money, shortDate } from "../lib/format.js";
 import { lastReconciliationText, positionsMatchText } from "../lib/investmentForms.js";
+import { taxTreatmentLabel } from "../lib/investments.js";
 import { linkableFeedAccounts, linkResultText } from "../lib/ledgerCorrections.js";
-import { balanceFieldLabel, isDebtType, owedText, parseManualBalance } from "../lib/accountForms.js";
+import { balanceFieldLabel, closeQuestion, isDebtType, netWorthCents, owedText, parseManualBalance, parseThreshold, reopenNotice, typeChangeQuestion } from "../lib/accountForms.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
 import { FidelityBadge } from "../components/investments/FidelityBadge.js";
 import { useIsViewer } from "../components/investments/queries.js";
@@ -52,15 +53,10 @@ function editorForm(a: AccountView): EditorForm {
 /** Only the fields that changed; payment day and paying account always travel together (the API requires it). */
 function buildCashFlowPatch(form: EditorForm, a: AccountView): { ok: true; patch: CashFlowPatch } | { ok: false; error: string } {
   const patch: CashFlowPatch = {};
-  const raw = form.threshold.replace(/[$,\s]/g, "");
-  let threshold: string | null = null;
-  if (raw !== "") {
-    try {
-      threshold = parseDecimalToCents(raw).toString();
-    } catch {
-      return { ok: false, error: "The threshold is not an amount" };
-    }
-  }
+  // String math, bounded like every amount (audit a8-ledger-ui-14).
+  const parsed = parseThreshold(form.threshold);
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+  const threshold = parsed.cents === null ? null : parsed.cents.toString();
   if (threshold !== a.lowBalanceThresholdCents) patch.lowBalanceThresholdCents = threshold;
   if (a.type === "credit") {
     const day = form.paymentDay === "" ? null : Number(form.paymentDay);
@@ -213,10 +209,26 @@ export function AccountsPage() {
     void qc.invalidateQueries({ queryKey: ["cashflow"] });
     void qc.invalidateQueries({ queryKey: ["dashboard"] });
   };
+  const [notice, setNotice] = useState<string | null>(null);
   const update = useMutation({
     mutationFn: ({ id, ...body }: { id: string } & Record<string, unknown>) => api<AccountView>(`/accounts/${id}`, { method: "PATCH", body }),
-    onSuccess: invalidate,
+    onSuccess: (a, v) => {
+      // Audit a8-ledger-ui-02: a reopened feed account's missed transactions are being read again.
+      setNotice(v["closed"] === false ? reopenNotice(a) : null);
+      invalidate();
+      if (v["closed"] === false && a.connectionId !== null) void qc.invalidateQueries({ queryKey: ["connections"] });
+    },
   });
+  const changeType = (a: AccountView, next: AccountView["type"]) => {
+    // Audit a8-ledger-ui-01: say what the balance becomes before a hand-entered balance changes sign.
+    const question = typeChangeQuestion(a, next);
+    if (question !== null && !window.confirm(question)) return;
+    update.mutate({ id: a.id, type: next });
+  };
+  const close = (a: AccountView) => {
+    // Audit a8-ledger-ui-02: closing stops a feed account's transactions; it is a deliberate act.
+    if (window.confirm(closeQuestion(a))) update.mutate({ id: a.id, closed: true });
+  };
   const saveCashFlow = useMutation({
     mutationFn: ({ id, ...body }: { id: string } & CashFlowPatch) => api<AccountView>(`/accounts/${id}`, { method: "PATCH", body }),
     onSuccess: () => {
@@ -259,7 +271,8 @@ export function AccountsPage() {
 
   const all = accounts.data ?? [];
   const visible = all.filter((a) => showClosed || !a.closed);
-  const netWorth = sum(visible);
+  // Today's net worth leaves closed accounts out whatever is listed (Phase 2 plan A16; audit a8-ledger-ui-17).
+  const netWorth = netWorthCents(all);
   const nameOf = (id: string): string => all.find((a) => a.id === id)?.name ?? "an account";
 
   return (
@@ -277,7 +290,9 @@ export function AccountsPage() {
       <ErrorText error={accounts.error} />
       <ErrorText error={update.error} />
       <ErrorText error={link.error} />
+      {accounts.isPending && <p className="muted">Loading accounts…</p>}
       {linkNotice && <p className="notice">{linkNotice}</p>}
+      {notice && <p className="notice">{notice}</p>}
       {accounts.data !== undefined && all.length === 0 && <Empty>No accounts yet. Connect SimpleFIN or add a manual account below.</Empty>}
       {GROUPS.map(([label, types]) => {
         const rows = visible.filter((a) => types.includes(a.type));
@@ -337,22 +352,30 @@ export function AccountsPage() {
                       </td>
                       <td>{a.institution ?? "—"}</td>
                       <td>
-                        <select value={a.type} onChange={(e) => update.mutate({ id: a.id, type: e.target.value })} aria-label={`${a.name} type`}>
-                          {AccountType.options.map((t) => (
-                            <option key={t} value={t}>
-                              {titleCase(t)}
-                            </option>
-                          ))}
-                        </select>
+                        {viewer ? (
+                          accountTypeLabel(a.type)
+                        ) : (
+                          <select value={a.type} onChange={(e) => changeType(a, e.target.value as AccountView["type"])} aria-label={`${a.name} type`} disabled={update.isPending}>
+                            {AccountType.options.map((t) => (
+                              <option key={t} value={t}>
+                                {accountTypeLabel(t)}
+                              </option>
+                            ))}
+                          </select>
+                        )}
                       </td>
                       <td>
-                        <select value={a.taxTreatment} onChange={(e) => update.mutate({ id: a.id, taxTreatment: e.target.value })} aria-label={`${a.name} tax treatment`}>
-                          {TaxTreatment.options.map((t) => (
-                            <option key={t} value={t}>
-                              {titleCase(t)}
-                            </option>
-                          ))}
-                        </select>
+                        {viewer ? (
+                          taxTreatmentLabel(a.taxTreatment)
+                        ) : (
+                          <select value={a.taxTreatment} onChange={(e) => update.mutate({ id: a.id, taxTreatment: e.target.value })} aria-label={`${a.name} tax treatment`}>
+                            {TaxTreatment.options.map((t) => (
+                              <option key={t} value={t}>
+                                {taxTreatmentLabel(t)}
+                              </option>
+                            ))}
+                          </select>
+                        )}
                       </td>
                       <td className={`num ${a.balanceCents?.startsWith("-") ? "neg" : ""}`}>
                         {money(a.balanceCents, a.currency)}
@@ -367,9 +390,13 @@ export function AccountsPage() {
                       <td className="num muted">{money(a.availableCents, a.currency)}</td>
                       <td className="muted">{shortDate(a.balanceDate)}</td>
                       <td>
-                        <label className="inline">
-                          <input type="checkbox" checked={a.onBudget} onChange={(e) => update.mutate({ id: a.id, onBudget: e.target.checked })} /> on budget
-                        </label>
+                        {viewer ? (
+                          a.onBudget ? "on budget" : "off budget"
+                        ) : (
+                          <label className="inline">
+                            <input type="checkbox" checked={a.onBudget} onChange={(e) => update.mutate({ id: a.id, onBudget: e.target.checked })} /> on budget
+                          </label>
+                        )}
                         {isInvestmentAccountType(a.type) && a.onBudget && !viewer && (
                           <div className="small">
                             <button type="button" className="link small" onClick={() => update.mutate({ id: a.id, onBudget: false })} disabled={update.isPending} title="Investment accounts are usually off budget: their buys and sells are not spending">
@@ -379,21 +406,24 @@ export function AccountsPage() {
                         )}
                       </td>
                       <td className="acct-cf">
-                        <button className="link small" onClick={() => setEditing(editing === a.id ? null : a.id)} aria-expanded={editing === a.id}>
-                          {editing === a.id ? "close" : "edit"}
-                        </button>
+                        {!viewer && (
+                          <button className="link small" onClick={() => setEditing(editing === a.id ? null : a.id)} aria-expanded={editing === a.id}>
+                            {editing === a.id ? "close" : "edit"}
+                          </button>
+                        )}
                         <div className="muted small">{cashFlowSummary(a, nameOf)}</div>
                       </td>
                       <td>
-                        {a.closed ? (
-                          <button className="link" onClick={() => update.mutate({ id: a.id, closed: false })}>
-                            Reopen
-                          </button>
-                        ) : (
-                          <button className="link" onClick={() => update.mutate({ id: a.id, closed: true })}>
-                            Close
-                          </button>
-                        )}
+                        {!viewer &&
+                          (a.closed ? (
+                            <button className="link" onClick={() => update.mutate({ id: a.id, closed: false })} disabled={update.isPending}>
+                              Reopen
+                            </button>
+                          ) : (
+                            <button className="link" onClick={() => close(a)} disabled={update.isPending}>
+                              Close
+                            </button>
+                          ))}
                         {a.closed && <Badge tone="neutral">closed</Badge>}
                       </td>
                     </tr>
@@ -414,7 +444,7 @@ export function AccountsPage() {
                         </td>
                       </tr>
                     )}
-                    {editing === a.id && (
+                    {editing === a.id && !viewer && (
                       <tr className="acct-editor">
                         <td colSpan={10}>
                           <CashFlowEditor
@@ -440,41 +470,43 @@ export function AccountsPage() {
           </Card>
         );
       })}
-      <Card title="Add a manual account">
-        <form
-          className="row wrap"
-          onSubmit={(e) => {
-            e.preventDefault();
-            // Integer cents by string math (audit a6-text-rules-accounts-09); a card or a loan takes the amount owed (-05).
-            const parsed = parseManualBalance(newBalance, newType);
-            if (!parsed.ok) return setCreateError(parsed.error);
-            setCreateError(null);
-            create.mutate({ name: newName.trim(), type: newType, ...(parsed.cents !== null ? { balanceCents: parsed.cents.toString() } : {}) });
-          }}
-        >
-          <input placeholder="Name (e.g. House, Car loan, Cash)" aria-label="Account name" value={newName} onChange={(e) => setNewName(e.target.value)} required />
-          <select value={newType} onChange={(e) => setNewType(e.target.value as AccountView["type"])} aria-label="Account type">
-            {AccountType.options.map((t) => (
-              <option key={t} value={t}>
-                {titleCase(t)}
-              </option>
-            ))}
-          </select>
-          <input
-            placeholder={isDebtType(newType) ? "Amount owed (e.g. 15000.00)" : "Balance (e.g. 12500.00)"}
-            aria-label={balanceFieldLabel(newType)}
-            value={newBalance}
-            onChange={(e) => setNewBalance(e.target.value)}
-            inputMode="decimal"
-          />
-          <button type="submit" disabled={create.isPending}>
-            Add
-          </button>
-        </form>
-        <p className="muted small">Houses, vehicles and loans start off budget, so they stay out of the cash-flow projection; the Budget column switches that.</p>
-        {createError && <ErrorText error={new Error(createError)} />}
-        <ErrorText error={create.error} />
-      </Card>
+      {!viewer && (
+        <Card title="Add a manual account">
+          <form
+            className="row wrap"
+            onSubmit={(e) => {
+              e.preventDefault();
+              // Integer cents by string math (audit a6-text-rules-accounts-09); a card or a loan takes the amount owed (-05).
+              const parsed = parseManualBalance(newBalance, newType);
+              if (!parsed.ok) return setCreateError(parsed.error);
+              setCreateError(null);
+              create.mutate({ name: newName.trim(), type: newType, ...(parsed.cents !== null ? { balanceCents: parsed.cents.toString() } : {}) });
+            }}
+          >
+            <input placeholder="Name (e.g. House, Car loan, Cash)" aria-label="Account name" value={newName} onChange={(e) => setNewName(e.target.value)} required />
+            <select value={newType} onChange={(e) => setNewType(e.target.value as AccountView["type"])} aria-label="Account type">
+              {AccountType.options.map((t) => (
+                <option key={t} value={t}>
+                  {accountTypeLabel(t)}
+                </option>
+              ))}
+            </select>
+            <input
+              placeholder={isDebtType(newType) ? "Amount owed (e.g. 15000.00)" : "Balance (e.g. 12500.00)"}
+              aria-label={balanceFieldLabel(newType)}
+              value={newBalance}
+              onChange={(e) => setNewBalance(e.target.value)}
+              inputMode="decimal"
+            />
+            <button type="submit" disabled={create.isPending}>
+              Add
+            </button>
+          </form>
+          <p className="muted small">Houses, vehicles and loans start off budget, so they stay out of the cash-flow projection; the Budget column switches that.</p>
+          {createError && <ErrorText error={new Error(createError)} />}
+          <ErrorText error={create.error} />
+        </Card>
+      )}
     </>
   );
 }

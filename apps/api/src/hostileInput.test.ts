@@ -256,7 +256,7 @@ describe.skipIf(!TEST_DATABASE_URL)("hostile but well-formed input", () => {
   });
 
   it("matches %, _ and \\ in a payee search literally, as the transaction search does", async () => {
-    const names = async (q: string) => ((await get(`/api/payees?q=${encodeURIComponent(q)}`)).json() as Array<{ name: string }>).map((p) => p.name);
+    const names = async (q: string) => ((await get(`/api/payees?q=${encodeURIComponent(q)}`)).json().items as Array<{ name: string }>).map((p) => p.name);
     const all = await names("");
     expect(all).toEqual(expect.arrayContaining(["100% Juice", "Plain Coffee", "under_score"]));
     expect(await names("%")).toEqual(["100% Juice"]);

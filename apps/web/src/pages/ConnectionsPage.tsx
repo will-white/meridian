@@ -52,6 +52,8 @@ export function ConnectionsPage() {
     onSuccess: invalidate,
   });
   const remove = useMutation({ mutationFn: (id: string) => api(`/connections/${id}`, { method: "DELETE" }), onSuccess: invalidate });
+  // A CSV profile's delete has its own mutation, so its error shows beside the profiles (audit a8-ledger-ui-07).
+  const removeProfile = useMutation({ mutationFn: (id: string) => api(`/connections/${id}`, { method: "DELETE" }), onSuccess: invalidate });
   // Phase 3: replay the stored sync payloads through the holdings parser (plan decision 18).
   // Audit a5-ingest-transfers-13: replay the stored payloads' transactions.
   const reprocessTransactions = useMutation({
@@ -86,25 +88,33 @@ export function ConnectionsPage() {
           hours. While a bank needs attention at the Bridge nothing is lost: the first complete sync afterwards fetches everything since the last one. Nothing
           here can move money.
         </p>
-        <form
-          className="row"
-          onSubmit={(e) => {
-            e.preventDefault();
-            add.mutate({ name: name.trim() || "SimpleFIN", token: token.trim() });
-          }}
-        >
-          <input placeholder="Name (e.g. Chase + Fidelity)" aria-label="Connection name" value={name} onChange={(e) => setName(e.target.value)} />
-          <input placeholder="Paste setup token" aria-label="SimpleFIN setup token" value={token} onChange={(e) => setToken(e.target.value)} required className="grow" />
-          <button type="submit" disabled={add.isPending}>
-            Connect
-          </button>
-        </form>
+        {/* Audit a8-ledger-ui-05: a viewer reads the connections and changes none of them. */}
+        {!viewer && (
+          <form
+            className="row wrap"
+            onSubmit={(e) => {
+              e.preventDefault();
+              add.mutate({ name: name.trim() || "SimpleFIN", token: token.trim() });
+            }}
+          >
+            <input placeholder="Name (e.g. Chase + Fidelity)" aria-label="Connection name" value={name} onChange={(e) => setName(e.target.value)} />
+            <input placeholder="Paste setup token" aria-label="SimpleFIN setup token" value={token} onChange={(e) => setToken(e.target.value)} required className="grow" />
+            <button type="submit" disabled={add.isPending}>
+              Connect
+            </button>
+          </form>
+        )}
         <ErrorText error={add.error} />
         <ErrorText error={sync.error} />
         <ErrorText error={reprocess.error} />
         <ErrorText error={reprocessTransactions.error} />
+        {/* Audit a8-ledger-ui-07: a failed Disable, Enable or Remove says so. */}
+        <ErrorText error={toggle.error} />
+        <ErrorText error={remove.error} />
+        {/* Audit a8-ledger-ui-06: a list that did not load is an error, never "no connections". */}
+        <ErrorText error={connections.error} />
         {connections.isLoading && <p className="muted">Loading…</p>}
-        {simplefin.length === 0 && !connections.isLoading && <Empty>No SimpleFIN connections yet.</Empty>}
+        {connections.data !== undefined && simplefin.length === 0 && <Empty>No SimpleFIN connections yet.</Empty>}
         <ul className="list">
           {simplefin.map((c) => (
             <li key={c.id} className="list-item">
@@ -128,21 +138,25 @@ export function ConnectionsPage() {
                       .filter((e) => !e.code.startsWith("holdings."))
                       .map((e, i) => (
                         <li key={i}>
+                          {/* The message names the account (audit a8-ledger-ui-11); the Bridge's id means nothing here. */}
                           <code>{e.code}</code> {e.message}
-                          {e.accountId ? ` (account ${e.accountId})` : ""}
                         </li>
                       ))}
                   </ul>
                 )}
                 {openLog === c.id && <ImportLogs connectionId={c.id} />}
               </div>
-              <div className="row">
-                <button onClick={() => sync.mutate({ id: c.id })} disabled={sync.isPending || !syncControls(c).syncNow}>
-                  Sync now
-                </button>
-                <button className="secondary" onClick={() => sync.mutate({ id: c.id, balancesOnly: true })} disabled={sync.isPending || !syncControls(c).balancesOnly}>
-                  Balances only
-                </button>
+              <div className="row wrap conn-actions">
+                {!viewer && (
+                  <button onClick={() => sync.mutate({ id: c.id })} disabled={sync.isPending || !syncControls(c).syncNow}>
+                    Sync now
+                  </button>
+                )}
+                {!viewer && (
+                  <button className="secondary" onClick={() => sync.mutate({ id: c.id, balancesOnly: true })} disabled={sync.isPending || !syncControls(c).balancesOnly}>
+                    Balances only
+                  </button>
+                )}
                 {!viewer && (
                   <button
                     className="secondary"
@@ -176,24 +190,30 @@ export function ConnectionsPage() {
                 <button className="secondary" onClick={() => setOpenLog(openLog === c.id ? null : c.id)}>
                   {openLog === c.id ? "Hide log" : "Log"}
                 </button>
-                <button className="secondary" onClick={() => toggle.mutate({ id: c.id, status: c.status === "disabled" ? "ok" : "disabled" })}>
-                  {c.status === "disabled" ? "Enable" : "Disable"}
-                </button>
-                <button
-                  className="danger"
-                  onClick={() => {
-                    if (confirm(`Remove ${c.name}? Accounts and transactions stay; the access URL is deleted. Adding the connection again attaches the same accounts.`)) remove.mutate(c.id);
-                  }}
-                >
-                  Remove
-                </button>
+                {!viewer && (
+                  <button className="secondary" onClick={() => toggle.mutate({ id: c.id, status: c.status === "disabled" ? "ok" : "disabled" })} disabled={toggle.isPending}>
+                    {c.status === "disabled" ? "Enable" : "Disable"}
+                  </button>
+                )}
+                {!viewer && (
+                  <button
+                    className="danger"
+                    onClick={() => {
+                      if (confirm(`Remove ${c.name}? Accounts and transactions stay; the access URL is deleted. Adding the connection again attaches the same accounts.`)) remove.mutate(c.id);
+                    }}
+                    disabled={remove.isPending}
+                  >
+                    Remove
+                  </button>
+                )}
               </div>
             </li>
           ))}
         </ul>
       </Card>
       <Card title="CSV mapping profiles">
-        {profiles.length === 0 ? (
+        <ErrorText error={removeProfile.error} />
+        {connections.data === undefined ? null : profiles.length === 0 ? (
           <Empty>No saved mappings. Import a CSV and tick "save this mapping" to add one.</Empty>
         ) : (
           <ul className="list">
@@ -222,9 +242,11 @@ export function ConnectionsPage() {
                     </div>
                   )}
                 </div>
-                <button className="danger" onClick={() => remove.mutate(p.id)}>
-                  Delete
-                </button>
+                {!viewer && (
+                  <button className="danger" onClick={() => removeProfile.mutate(p.id)} disabled={removeProfile.isPending}>
+                    Delete
+                  </button>
+                )}
               </li>
             ))}
           </ul>
@@ -245,7 +267,6 @@ function HoldingsLine({ connection }: { connection: ConnectionView }) {
         {notes.map((e, i) => (
           <li key={i}>
             <code>{e.code}</code> {e.message}
-            {e.accountId ? ` (account ${e.accountId})` : ""}
           </li>
         ))}
       </ul>

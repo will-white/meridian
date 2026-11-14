@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { DetectResponse, type AccountView, type CategoryView, type JobView, type PayeeView, type RecurringList, type RecurringStatus, type RecurringView } from "@meridian/shared";
+import { DetectResponse, type AccountView, type CategoryView, type JobView, type PayeeList, type RecurringList, type RecurringStatus, type RecurringView } from "@meridian/shared";
 import { api, query } from "../lib/api.js";
 import { money, shortDate } from "../lib/format.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
@@ -63,7 +63,8 @@ export function RecurringPage() {
   });
   const categories = useQuery({ queryKey: ["categories"], queryFn: () => api<CategoryView[]>("/categories") });
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api<AccountView[]>("/accounts") });
-  const payees = useQuery({ queryKey: ["payees"], queryFn: () => api<PayeeView[]>("/payees"), enabled: adding });
+  // Suggestions for the payee field (free text, so any name works): one page of names (audit a8-ledger-ui-03 made the list a page).
+  const payees = useQuery({ queryKey: ["payees", "suggest-all"], queryFn: async () => (await api<PayeeList>("/payees?limit=500")).items, enabled: adding });
 
   // Deep links (/recurring?focus=<id>, from alerts and the dashboard): find the item wherever it is, switch to its tab and scroll to it.
   const focusLookup = useQuery({

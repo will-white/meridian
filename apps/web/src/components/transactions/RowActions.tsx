@@ -2,12 +2,15 @@ import { useQuery } from "@tanstack/react-query";
 import type { TransactionView, TransferCandidateView } from "@meridian/shared";
 import { api } from "../../lib/api.js";
 import { canDelete, candidateLabel, deleteWarning } from "../../lib/ledgerCorrections.js";
+import { splitTransferQuestion, type TransactionEditBody } from "../../lib/register.js";
 import { ErrorText } from "../ui.js";
+import { TransactionEditor } from "./TransactionEditor.js";
 
 /**
  * The register's corrections for one row (audit a5-ingest-transfers-09 and -12): pair it with
  * the other leg of a transfer the automatic pairing missed, mark it as a transfer whose other
- * leg is not in the app, or delete it (a duplicate, a typo, a row imported by mistake).
+ * leg is not in the app, or delete it (a duplicate, a typo, a row imported by mistake); and its
+ * payee, notes and tags (audit a8-ledger-ui-04). A viewer sees the candidates only.
  */
 export function RowActions({
   transaction: t,
@@ -17,6 +20,9 @@ export function RowActions({
   onPair,
   onMarkTransfer,
   onDelete,
+  onEdit,
+  editPending,
+  editError,
   onClose,
 }: {
   transaction: TransactionView;
@@ -26,8 +32,16 @@ export function RowActions({
   onPair: (otherId: string) => void;
   onMarkTransfer: () => void;
   onDelete: () => void;
+  onEdit: (body: TransactionEditBody) => void;
+  editPending: boolean;
+  editError: unknown;
   onClose: () => void;
 }) {
+  // A split row loses its lines as a transfer (audit a8-ledger-ui-10): asked first.
+  const confirmed = (action: "mark" | "pair") => {
+    const question = splitTransferQuestion(t, action);
+    return question === null || window.confirm(question);
+  };
   const candidates = useQuery({
     queryKey: ["transactions", "transfer-candidates", t.id],
     queryFn: () => api<TransferCandidateView[]>(`/transactions/${t.id}/transfer-candidates`),
@@ -35,6 +49,7 @@ export function RowActions({
   });
   return (
     <div className="row-actions">
+      {!viewer && <TransactionEditor key={t.id} transaction={t} pending={editPending} error={editError} onSave={onEdit} />}
       {!t.isTransfer && (
         <div>
           <strong className="small">Pair with the other leg of a transfer</strong>
@@ -45,7 +60,7 @@ export function RowActions({
               <li key={c.id} className="small">
                 {candidateLabel(c)}{" "}
                 {!viewer && (
-                  <button className="link small" disabled={pending} onClick={() => onPair(c.id)}>
+                  <button className="link small" disabled={pending} onClick={() => confirmed("pair") && onPair(c.id)}>
                     pair
                   </button>
                 )}
@@ -53,7 +68,7 @@ export function RowActions({
             ))}
           </ul>
           {!viewer && (
-            <button className="link small" disabled={pending} onClick={onMarkTransfer} title="A move to an account that is not in the app: it leaves the plan">
+            <button className="link small" disabled={pending} onClick={() => confirmed("mark") && onMarkTransfer()} title="A move to an account that is not in the app: it leaves the plan">
               mark as a transfer without its other leg
             </button>
           )}

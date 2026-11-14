@@ -6,6 +6,8 @@ import {
   alert,
   containsPattern,
   createCategory,
+  decodeCursor,
+  encodeCursor,
   createCategoryGroup,
   deleteCategory,
   deleteCategoryGroup,
@@ -26,6 +28,8 @@ import {
   CreateCategoryBodyV2,
   CreateCategoryGroupBody,
   OkResponse,
+  PayeeList,
+  PayeeQuery,
   PayeeView,
   ReorderCategoriesBody,
   ReorderCategoryGroupsBody,
@@ -121,14 +125,29 @@ export async function categoryRoutes(app: FastifyInstance): Promise<void> {
     transactionCount: sql<number>`(select count(*)::int from "transaction" t where t.payee_id = "payee"."id")`,
   };
 
-  r.get("/payees", { schema: { querystring: z.object({ q: z.string().max(100).optional() }), response: { 200: z.array(PayeeView) } } }, async (request) =>
-    app.db
-      .select(payeeSelect)
-      .from(payee)
-      .where(request.query.q ? sql`${payee.name} ilike ${containsPattern(request.query.q)}` : undefined)
-      .orderBy(asc(payee.name))
-      .limit(500),
-  );
+  /**
+   * Audit a8-ledger-ui-03: one page of payees by name with the number that match, so every payee
+   * can be reached (the list stopped at the first 500 by name, and so did the merge targets). `q`
+   * matches the name or any other name the payee answers to (a merged or earlier name), escaped
+   * like every search. The cursor is the offset of the next page (400 `invalid_cursor` for one the
+   * server did not issue).
+   */
+  r.get("/payees", { schema: { querystring: PayeeQuery, response: { 200: PayeeList } } }, async (request) => {
+    const { q, limit } = request.query;
+    let offset = 0;
+    if (request.query.cursor !== undefined) {
+      const fields = decodeCursor(request.query.cursor, ["int"]);
+      if (!fields || Number(fields[0]) < 0) throw new HttpError(400, "That page marker is not valid; reload the list", "invalid_cursor");
+      offset = Number(fields[0]);
+    }
+    const pattern = q?.trim() ? containsPattern(q.trim()) : undefined;
+    // Raw identifiers on purpose, as in payeeSelect.
+    const where = pattern ? sql`("payee"."name" ilike ${pattern} or exists (select 1 from jsonb_array_elements_text("payee"."aliases") a where a ilike ${pattern}))` : undefined;
+    const [count] = await app.db.select({ n: sql<number>`count(*)::int` }).from(payee).where(where);
+    const items = await app.db.select(payeeSelect).from(payee).where(where).orderBy(asc(payee.name), asc(payee.id)).limit(limit).offset(offset);
+    const total = count?.n ?? 0;
+    return { items, total, nextCursor: offset + items.length < total && items.length > 0 ? encodeCursor([offset + items.length]) : null };
+  });
 
   r.patch("/payees/:id", { schema: { params: UuidParams, body: UpdatePayeeBody, response: { 200: PayeeView } } }, async (request) => {
     const [target] = await app.db.select().from(payee).where(eq(payee.id, request.params.id));

@@ -258,7 +258,8 @@ describe.skipIf(!TEST_DATABASE_URL)("applyAccountSet on odd values from the feed
     );
     expect(result.errors).toEqual([
       { code: "con.auth", message: "The bank connection needs to be re-authenticated at the SimpleFIN Bridge. (Please re-login)" },
-      { code: "act.failed", message: "The Bridge could not read this account. It will retry on the next sync. (Could not read account Visa)", accountId: "VISA" },
+      // No local account has the Bridge's id VISA, so the entry says it as the Bridge's (audit a8-ledger-ui-11).
+      { code: "act.failed", message: "The Bridge could not read this account. It will retry on the next sync. (Could not read account Visa) (Bridge account VISA)", accountId: "VISA" },
       { code: "error", message: "Scheduled maintenance tonight" },
     ]);
   });

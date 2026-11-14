@@ -340,6 +340,18 @@ export const PayeeView = z.object({
   transactionCount: z.number().int(),
 });
 export type PayeeView = z.infer<typeof PayeeView>;
+/**
+ * `GET /api/payees` (audit a8-ledger-ui-03): one page of payees by name, how many match in all,
+ * and the marker of the next page. `q` matches a payee's name or any of its other names.
+ */
+export const PayeeQuery = z.object({
+  q: z.string().max(100).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+  /** Opaque cursor from the previous page. */
+  cursor: z.string().max(100).optional(),
+});
+export const PayeeList = z.object({ items: z.array(PayeeView), total: z.number().int(), nextCursor: z.string().nullable() });
+export type PayeeList = z.infer<typeof PayeeList>;
 export const UpdatePayeeBody = z.object({
   name: z.string().min(1).max(200).optional(),
   defaultCategoryId: z.string().uuid().nullable().optional(),
@@ -357,6 +369,8 @@ export const TransactionSplitView = z.object({
   memo: z.string().nullable(),
 });
 export type TransactionSplitView = z.infer<typeof TransactionSplitView>;
+export const TransferPartnerView = z.object({ id: z.string().uuid(), accountId: z.string().uuid(), accountName: z.string(), date: IsoDateString });
+export type TransferPartnerView = z.infer<typeof TransferPartnerView>;
 export const TransactionView = z.object({
   id: z.string().uuid(),
   accountId: z.string().uuid(),
@@ -379,6 +393,8 @@ export const TransactionView = z.object({
   recurringId: z.string().uuid().nullable(),
   /** Split lines (empty when the row is not split). They replace the row in the plan; `categoryId` is null then. */
   splits: z.array(TransactionSplitView),
+  /** The other leg of a paired transfer (audit a8-ledger-ui-12); null when the row is not paired, a transfer marked without its other leg included. */
+  transferPartner: TransferPartnerView.nullable(),
 });
 export type TransactionView = z.infer<typeof TransactionView>;
 export const TransactionQuery = z.object({

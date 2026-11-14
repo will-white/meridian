@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
-import { formatCents, localDateInTimeZone, parseDecimalToCents } from "@meridian/shared";
+import { formatCents, localDateInTimeZone } from "@meridian/shared";
 import type { AccountView, CategoryView, HouseholdSettingView, SecurityView } from "@meridian/shared";
 import { api } from "../lib/api.js";
-import { money, titleCase } from "../lib/format.js";
+import { parseThreshold } from "../lib/accountForms.js";
+import { accountTypeLabel, money } from "../lib/format.js";
 import { bpToPpInput, dollarsToCents, ppToBp } from "../lib/investments.js";
 import { securityLabel } from "../lib/investmentForms.js";
 import { Card, ErrorText } from "../components/ui.js";
@@ -12,7 +13,7 @@ import { useIsViewer } from "../components/investments/queries.js";
 import { SecuritySettings } from "../components/settings/SecuritySettings.js";
 import "./SettingsPage.css";
 
-interface Form {
+export interface Form {
   planStartMonth: string;
   zeroBased: boolean;
   threshold: string;
@@ -46,7 +47,7 @@ const HORIZON_PRESETS = [30, 60, 90, 180, 365] as const;
 /** Keys that depend on the settings: plan start month moves carried-in, threshold and horizon move the projection; the benchmark, band and feed category move the investments views. */
 const DEPENDENT_KEYS = [["settings"], ["plan"], ["dashboard"], ["cashflow"], ["investments"], ["valuation"]] as const;
 
-function fromView(v: HouseholdSettingView): Form {
+export function fromView(v: HouseholdSettingView): Form {
   return {
     planStartMonth: v.planStartMonth,
     zeroBased: v.zeroBased,
@@ -62,17 +63,15 @@ function fromView(v: HouseholdSettingView): Form {
 }
 
 /** The fields that differ from the saved settings, parsed; or what is wrong. */
-function buildPatch(form: Form, current: HouseholdSettingView): { ok: true; patch: Patch } | { ok: false; error: string } {
+export function buildPatch(form: Form, current: HouseholdSettingView): { ok: true; patch: Patch } | { ok: false; error: string } {
   const patch: Patch = {};
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(form.planStartMonth)) return { ok: false, error: "Plan start month must be a month (YYYY-MM)" };
   if (form.planStartMonth !== current.planStartMonth) patch.planStartMonth = form.planStartMonth;
   if (form.zeroBased !== current.zeroBased) patch.zeroBased = form.zeroBased;
-  let threshold: bigint;
-  try {
-    threshold = parseDecimalToCents(form.threshold.replace(/[$,\s]/g, "") || "0");
-  } catch {
-    return { ok: false, error: "The low-balance threshold is not an amount" };
-  }
+  // String math, bounded like every amount, "Too large" in dollars (audit a8-ledger-ui-14); blank is 0.
+  const parsedThreshold = parseThreshold(form.threshold);
+  if (!parsedThreshold.ok) return { ok: false, error: parsedThreshold.error };
+  const threshold = parsedThreshold.cents ?? 0n;
   if (threshold.toString() !== current.lowBalanceThresholdCents) patch.lowBalanceThresholdCents = threshold.toString();
   const primary = form.primaryAccountId === "" ? null : form.primaryAccountId;
   if (primary !== current.primaryAccountId) patch.primaryAccountId = primary;
@@ -214,7 +213,7 @@ export function SettingsPage() {
                     <option value="">— none (first checking account) —</option>
                     {candidates.map((a) => (
                       <option key={a.id} value={a.id}>
-                        {a.name} ({titleCase(a.type)})
+                        {a.name} ({accountTypeLabel(a.type)})
                       </option>
                     ))}
                     {primaryMissing && <option value={form.primaryAccountId}>(current: not an on-budget open account)</option>}

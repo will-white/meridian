@@ -108,6 +108,7 @@ const txn = (n: number, over: Partial<TransactionView> = {}): TransactionView =>
   source: "manual",
   recurringId: null,
   splits: [],
+  transferPartner: null,
   ...over,
 });
 

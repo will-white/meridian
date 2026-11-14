@@ -149,6 +149,15 @@ export function isInvestmentAccountType(type: AccountType): type is InvestmentAc
   return (INVESTMENT_ACCOUNT_TYPES as readonly AccountType[]).includes(type);
 }
 
+/**
+ * Account types whose balance is what the household owes: stored negative, entered as the amount
+ * owed (phase 1 decision 64). A type change across this line flips a hand-entered balance's sign
+ * (audit a8-ledger-ui-01).
+ */
+export function isDebtAccountType(type: AccountType): boolean {
+  return type === "credit" || type === "loan";
+}
+
 export const SecurityType = z.enum(["stock", "etf", "fund", "bond", "cash", "cd", "other"]);
 export type SecurityType = z.infer<typeof SecurityType>;
 

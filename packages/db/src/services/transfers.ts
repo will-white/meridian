@@ -5,6 +5,7 @@ import type { DbOrTx } from "../index.js";
 import { account, investmentTxn, payee, transaction, transferDismissal } from "../schema/index.js";
 import { PlanError, writeAudit, type AuditContext } from "./audit.js";
 import { applyRulesToRow } from "./rules.js";
+import { dropTransferSplits } from "./transferSplits.js";
 
 export interface PairTransfersInDbOptions {
   /** Only consider rows dated on or after this (minus the pairing window). */
@@ -69,6 +70,7 @@ export async function pairTransfersInDb(tx: DbOrTx, options: PairTransfersInDbOp
       .update(transaction)
       .set({ categoryId: null })
       .where(and(inArray(transaction.id, [pair.outflowId, pair.inflowId]), eq(transaction.categoryLocked, false)));
+    await dropTransferSplits(tx, [pair.outflowId, pair.inflowId]);
   }
   return pairs.length;
 }
@@ -95,6 +97,10 @@ export async function markAsTransfers(tx: DbOrTx, transactionIds: readonly strin
       .update(transaction)
       .set({ categoryId: null })
       .where(and(inArray(transaction.id, rows.map((r) => r.id)), eq(transaction.categoryLocked, false)));
+    await dropTransferSplits(
+      tx,
+      rows.map((r) => r.id),
+    );
   }
   return changed;
 }
@@ -219,7 +225,8 @@ export async function transferCandidates(tx: DbOrTx, transactionId: string, limi
 /**
  * Audit a5-ingest-transfers-12: the household says two rows are one transfer. Both get one pair
  * id and `is_transfer`; a category automation gave them goes (a hand-picked one stays, as with
- * pairing), and a dismissal between the two is removed. Refused when the rows are in one
+ * pairing), split lines go (a transfer has no split, audit a8-ledger-ui-10), and a dismissal
+ * between the two is removed. Refused when the rows are in one
  * account, are not equal and opposite, or either is paired already (undo that pair first).
  * Returns the pair id.
  */
@@ -240,6 +247,8 @@ export async function pairTransactionsByHand(tx: DbOrTx, firstId: string, second
     .update(transaction)
     .set({ categoryId: null })
     .where(and(inArray(transaction.id, [a.id, b.id]), eq(transaction.categoryLocked, false)));
+  // A transfer has no split (audit a8-ledger-ui-10): a split row paired by hand loses its lines.
+  await dropTransferSplits(tx, [a.id, b.id]);
   const [lo, hi] = [a.id, b.id].sort();
   await tx.delete(transferDismissal).where(and(eq(transferDismissal.firstId, lo!), eq(transferDismissal.secondId, hi!)));
   for (const r of [a, b]) {

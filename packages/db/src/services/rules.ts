@@ -4,6 +4,7 @@ import type { Db, DbOrTx } from "../index.js";
 import { category, payee, rule, transaction } from "../schema/index.js";
 import { PayeeCache } from "./payees.js";
 import { addTransactionTags } from "./tags.js";
+import { dropTransferSplits } from "./transferSplits.js";
 
 export interface LoadedRule extends RuleLike {
   name: string;
@@ -102,6 +103,8 @@ export async function applyRulesToRow(tx: DbOrTx, rules: readonly RuleLike[], ro
   if (Object.keys(patch).length === 0) return outcome.tags.length > 0;
   patch.updatedAt = new Date();
   await tx.update(transaction).set(patch).where(eq(transaction.id, row.id));
+  // A transfer has no split (audit a8-ledger-ui-10): a rule that marks a split row a transfer removes its lines.
+  if (patch.isTransfer === true) await dropTransferSplits(tx, [row.id]);
   return true;
 }
 
