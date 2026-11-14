@@ -22,9 +22,17 @@ export interface PostedIncoming {
   description: string;
 }
 
-export interface MatchPendingOptions {
-  /** Maximum calendar days between the pending date and the posted date. Default 5. */
+export interface MatchPendingOptions<R extends PendingRow = PendingRow, P extends PostedIncoming = PostedIncoming> {
+  /** Maximum days between the pending date and the posted date (as `dayDistance` counts them). Default 5. */
   maxDays?: number;
+  /**
+   * Days between a row and an item, for the window and the closest-date tie-break. Default: the
+   * calendar days between their dates. A caller that knows more about the two dates passes its
+   * own (audit a5-ingest-transfers-01, second round): a bank's file dates a purchase by the day
+   * it posted, the feed by the day it was made, so across sources the posting day counts too; a
+   * distance above `maxDays` (`Infinity` included) keeps the two apart.
+   */
+  dayDistance?: (row: R, item: P) => number;
   /**
    * Also match a posted amount that differs from the pending one (a tip added, a hold that
    * settled for another amount): same direction, at most half again either way, and a strong
@@ -83,14 +91,15 @@ export function descriptionSimilarity(a: string, b: string): number {
  *    theirs in the same direction: a tip, or a hold that settled for another amount (audit
  *    a5-ingest-transfers-06). The closest amount wins, then the date.
  */
-export function matchPendingToPosted(
-  pending: readonly PendingRow[],
-  posted: readonly PostedIncoming[],
-  options: MatchPendingOptions = {},
+export function matchPendingToPosted<R extends PendingRow, P extends PostedIncoming>(
+  pending: readonly R[],
+  posted: readonly P[],
+  options: MatchPendingOptions<R, P> = {},
 ): Map<string, string> {
   const maxDays = options.maxDays ?? 5;
   const minSimilarity = options.minSimilarity ?? 0;
-  const byAmount = new Map<string, PendingRow[]>();
+  const days = options.dayDistance ?? ((row: R, item: P) => Math.abs(dayDiff(row.date, item.date)));
+  const byAmount = new Map<string, R[]>();
   for (const p of pending) {
     const list = byAmount.get(p.amountCents.toString()) ?? [];
     list.push(p);
@@ -103,13 +112,13 @@ export function matchPendingToPosted(
   for (const item of ordered) {
     const list = byAmount.get(item.amountCents.toString());
     if (!list) continue;
-    let best: PendingRow | undefined;
+    let best: R | undefined;
     let bestScore = 0;
     let bestDistance = Number.POSITIVE_INFINITY;
     for (const row of list) {
       if (used.has(row.id)) continue;
-      const distance = Math.abs(dayDiff(row.date, item.date));
-      if (distance > maxDays) continue;
+      const distance = days(row, item);
+      if (!(distance <= maxDays)) continue;
       const score = descriptionSimilarity(row.description, item.description);
       if (score < minSimilarity) continue;
       if (score > bestScore || (score === bestScore && score > 0 && distance < bestDistance)) {
@@ -128,14 +137,14 @@ export function matchPendingToPosted(
   const abs = (v: bigint) => (v < 0n ? -v : v);
   for (const item of ordered) {
     if (result.has(item.externalId)) continue;
-    let best: PendingRow | undefined;
+    let best: R | undefined;
     let bestScore = 0;
     let bestGap = 0n;
     let bestDistance = Number.POSITIVE_INFINITY;
     for (const row of pending) {
       if (used.has(row.id) || !isChangedAmountMatch(row.amountCents, item.amountCents)) continue;
-      const distance = Math.abs(dayDiff(row.date, item.date));
-      if (distance > maxDays) continue;
+      const distance = days(row, item);
+      if (!(distance <= maxDays)) continue;
       const score = descriptionSimilarity(row.description, item.description);
       if (score < STRONG_SIMILARITY) continue;
       const gap = abs(row.amountCents - item.amountCents);

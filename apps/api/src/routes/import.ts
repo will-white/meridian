@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
-import type { z } from "zod";
+import { z } from "zod";
 import {
   account,
   balanceSnapshot,
@@ -15,6 +15,7 @@ import {
   HOLDING_SOURCE_RANK,
   importCsvRows,
   importLog,
+  listCsvImports,
   importTrades,
   investmentTxn,
   learnAliases,
@@ -37,6 +38,7 @@ import {
   addDays,
   CsvCommitBody,
   CsvImportError,
+  CsvImportHistoryItem,
   CsvMapping,
   CsvPreviewBody,
   CsvPreviewResponse,
@@ -447,7 +449,8 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
 
     const [log] = await app.db
       .insert(importLog)
-      .values({ connectionId: profileId, kind: "csv", rawPayload: { csvText: request.body.csvText, mapping: request.body.mapping } })
+      // The account it goes into is kept with the file, for the Import page's history (audit a5-ingest-transfers, second round).
+      .values({ connectionId: profileId, kind: "csv", rawPayload: { csvText: request.body.csvText, mapping: request.body.mapping, accountId: acct.id } })
       .returning({ id: importLog.id });
     let result: Awaited<ReturnType<typeof importCsvRows>>;
     try {
@@ -475,6 +478,28 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
     const result = await undoCsvImport(app.db, request.params.id, auditContext(request));
     await enqueueJob(app.db, "recurring.detect", { reason: "ledger" }, { dedupe: true });
     return result;
+  });
+
+  /**
+   * Audit a5-ingest-transfers, second round: the latest bank CSV imports (newest first), so the
+   * Import page can undo one after the page that made it is gone.
+   */
+  r.get("/import/csv/history", { schema: { response: { 200: z.array(CsvImportHistoryItem) } } }, async () => {
+    const rows = await listCsvImports(app.db, 25);
+    return rows.map((h) => ({
+      id: h.id,
+      startedAt: h.startedAt.toISOString(),
+      status: h.status,
+      accountId: h.accountId,
+      accountName: h.accountName,
+      profileName: h.profileName,
+      rowsRead: h.rowsRead,
+      created: h.created,
+      duplicates: h.duplicates,
+      rowsHeld: h.rowsHeld,
+      undoneAt: h.undoneAt ? h.undoneAt.toISOString() : null,
+      canUndo: h.status === "ok" && h.undoneAt === null,
+    }));
   });
 
   // ---- Phase 3: positions and trade-history CSV ----

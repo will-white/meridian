@@ -1,4 +1,4 @@
-import type { AccountView, LinkFeedAccountResult, TransactionView, TransferCandidateView, UndoImportResult } from "@meridian/shared";
+import type { AccountView, CsvImportHistoryItem, LinkFeedAccountResult, TransactionView, TransferCandidateView, UndoImportResult } from "@meridian/shared";
 import { money, shortDate } from "./format.js";
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -28,16 +28,45 @@ export function undoResultText(r: UndoImportResult): string {
 }
 
 /**
- * The feed accounts an account could take over (audit a5-ingest-transfers-02): only an account
- * without a connection can, and only a feed account that is open and not itself.
+ * The feed accounts an account could take over (audit a5-ingest-transfers-02): for an account
+ * without a connection, any open feed account but itself. Second round: an account the Bridge no
+ * longer lists (`inFeed` false: a re-link on the same connection gave it a new id, and the sync
+ * created a second account) may take over an open account of its own connection that the Bridge
+ * does list (or of which that is not known). An account the Bridge still sends is offered none.
  */
-export function linkableFeedAccounts(target: Pick<AccountView, "id" | "connectionId">, all: readonly AccountView[]): AccountView[] {
-  if (target.connectionId !== null) return [];
-  return all.filter((a) => a.id !== target.id && a.connectionId !== null && a.externalId !== null && !a.closed);
+export function linkableFeedAccounts(target: Pick<AccountView, "id" | "connectionId" | "inFeed">, all: readonly AccountView[]): AccountView[] {
+  const feeds = all.filter((a) => a.id !== target.id && a.connectionId !== null && a.externalId !== null && !a.closed);
+  if (target.connectionId === null) return feeds;
+  if (target.inFeed !== false) return [];
+  return feeds.filter((a) => a.connectionId === target.connectionId && a.inFeed !== false);
+}
+
+/** What linking a feed account into an account does, asked before it is done (audit a5-ingest-transfers-02). */
+export function linkConfirmText(target: Pick<AccountView, "name" | "connectionId">, feed: Pick<AccountView, "name" | "connectionName">): string {
+  const source = feed.connectionName ? ` (${feed.connectionName})` : "";
+  if (target.connectionId === null) return `Make ${target.name} the account the feed fills, and fold "${feed.name}"${source} into it? Transactions both have are kept once.`;
+  // Second round: the Bridge re-issued the account on the same connection, often under the same name.
+  return `The bank no longer sends ${target.name}. Make it the account the feed fills under the new account's id, and fold the new "${feed.name}"${source} into it? Transactions both have are kept once.`;
 }
 
 export function linkResultText(r: LinkFeedAccountResult): string {
   const parts = [`${plural(r.merged, "transaction was", "transactions were")} already here`, `${plural(r.moved, "was", "were")} moved in`];
   if (r.dropped > 0) parts.push(`${r.dropped} had the same id`);
   return `Linked: ${parts.join(", ")}.`;
+}
+
+/**
+ * One past bank import on the Import page (audit a5-ingest-transfers, second round): when, into
+ * which account, what it did, the saved mapping it used, and whether it failed or was undone.
+ */
+export function importHistoryLine(h: CsvImportHistoryItem): string {
+  const at = new Date(h.startedAt);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  // The time tells two imports of one day apart.
+  const when = Number.isNaN(at.getTime()) ? shortDate(h.startedAt) : `${shortDate(h.startedAt)} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+  const parts = [when, h.accountName ?? "an account no longer here", `${plural(h.rowsRead, "row", "rows")}: ${h.created} added, ${h.duplicates} already there`];
+  if (h.profileName) parts.push(`mapping ${h.profileName}`);
+  if (h.status === "error") parts.push("failed");
+  if (h.undoneAt) parts.push(`undone ${shortDate(h.undoneAt)}`);
+  return parts.join(" · ");
 }

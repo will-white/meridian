@@ -12,6 +12,7 @@ import {
   feedCategory,
   holdingSnapshot,
   investmentTxn,
+  feedListedAccountIds,
   linkFeedAccount,
   manualBalanceProblem,
   rebuildLotsForAccounts,
@@ -184,7 +185,13 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
       app.db,
       rows.map((row) => row.acct.id),
     );
-    return rows.map((row) => toAccountView({ ...row.acct, connectionName: row.connectionName, transactionCount: row.transactionCount }, fidelities.get(row.acct.id)));
+    // Audit a5-ingest-transfers-02, second round: whether each feed account was in its connection's latest response.
+    const listed = await feedListedAccountIds(app.db, [...new Set(rows.flatMap((row) => (row.acct.connectionId ? [row.acct.connectionId] : [])))]);
+    return rows.map((row) => {
+      const ids = row.acct.connectionId ? listed.get(row.acct.connectionId) : undefined;
+      const inFeed = ids && row.acct.externalId !== null ? ids.has(row.acct.externalId) : null;
+      return toAccountView({ ...row.acct, connectionName: row.connectionName, transactionCount: row.transactionCount, inFeed }, fidelities.get(row.acct.id));
+    });
   }
 
   r.get("/accounts", { schema: { response: { 200: z.array(AccountView) } } }, async () => list());

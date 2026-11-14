@@ -240,6 +240,37 @@ export async function recordManualBalance(db: Db, input: RecordManualBalanceInpu
   });
 }
 
+/**
+ * Audit a5-ingest-transfers-02, second round: the Bridge's account ids in each connection's
+ * latest stored response that worked (a full sync or a balances refresh), the accounts an
+ * `errlist` entry names included (the Bridge knows them though it may not have sent them). A
+ * connection with no stored response is left out: nothing says what it lists.
+ */
+export async function feedListedAccountIds(tx: DbOrTx, connectionIds: readonly string[]): Promise<Map<string, Set<string>>> {
+  const out = new Map<string, Set<string>>();
+  if (connectionIds.length === 0) return out;
+  // One stored response per connection, read from the newest back by the (connection, started_at) index: only that one is read whole.
+  const rows = await tx.execute<{ connection_id: string; ids: unknown; named: unknown }>(sql`
+    select c.id as connection_id,
+      jsonb_path_query_array(l.raw_payload, '$.accounts[*].id') as ids,
+      jsonb_path_query_array(l.raw_payload, '$.errlist[*].account_id') as named
+    from unnest(array[${sql.join(
+      connectionIds.map((id) => sql`${id}::uuid`),
+      sql`, `,
+    )}]) as c(id)
+    cross join lateral (
+      select raw_payload from ${importLog}
+      where connection_id = c.id and kind in ('simplefin.sync', 'simplefin.balances') and status = 'ok' and raw_payload is not null
+      order by started_at desc, id desc
+      limit 1
+    ) l`);
+  for (const r of rows) {
+    const ids = [...(Array.isArray(r.ids) ? r.ids : []), ...(Array.isArray(r.named) ? r.named : [])].filter((v): v is string => typeof v === "string");
+    out.set(r.connection_id, new Set(ids));
+  }
+  return out;
+}
+
 export interface LinkFeedAccountResult {
   /** Feed rows that were purchases the account already had: its rows took over their ids, the edits on them stayed. */
   merged: number;
@@ -264,6 +295,13 @@ export interface LinkFeedAccountResult {
  * when the account has a connection of its own (409 `account_connected`), when the other
  * account is not from a feed (400 `not_feed_account`), and when the feed account already holds
  * investment history of its own (409 `feed_account_has_history`). Audited as `account`.
+ *
+ * Second round of the audit: a Bridge that re-links a bank on the same connection issues the
+ * account a new id, and the sync creates a second account beside the one the household has. An
+ * account of the feed account's own connection may take it over too, once the Bridge no longer
+ * lists the account's id (`feedListedAccountIds`; 409 `account_still_listed` while it does, as
+ * the next sync would create it again). An account of another connection is still refused (409
+ * `account_connected`).
  */
 export async function linkFeedAccount(db: Db, input: { accountId: string; feedAccountId: string }, audit?: AuditContext): Promise<LinkFeedAccountResult> {
   if (input.accountId === input.feedAccountId) throw new PlanError(400, "same_account", "Choose the feed account to link to this one");
@@ -273,8 +311,13 @@ export async function linkFeedAccount(db: Db, input: { accountId: string; feedAc
     const [target] = await tx.select().from(account).where(eq(account.id, input.accountId));
     const [feedAccount] = await tx.select().from(account).where(eq(account.id, input.feedAccountId));
     if (!target || !feedAccount) throw new PlanError(404, "not_found", "Account not found");
-    if (target.connectionId !== null) throw new PlanError(409, "account_connected", "This account is fed by a connection already; only an account without one can take over a feed account");
+    if (target.connectionId !== null && target.connectionId !== feedAccount.connectionId) {
+      throw new PlanError(409, "account_connected", "This account is fed by another connection; only an account without one, or one of the feed account's own connection, can take over a feed account");
+    }
     if (feedAccount.connectionId === null || feedAccount.externalId === null) throw new PlanError(400, "not_feed_account", "The other account does not come from a bank connection");
+    if (target.connectionId !== null && target.externalId !== null && (await feedListedAccountIds(tx, [target.connectionId])).get(target.connectionId)?.has(target.externalId)) {
+      throw new PlanError(409, "account_still_listed", "The bank connection still sends this account; it can take over another feed account once the Bridge no longer lists it");
+    }
     const history = await tx.execute<{ n: number }>(sql`
       select (select count(*) from ${investmentTxn} where ${investmentTxn.accountId} = ${feedAccount.id})
            + (select count(*) from ${lot} where ${lot.accountId} = ${feedAccount.id})
