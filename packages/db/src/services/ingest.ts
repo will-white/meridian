@@ -2,11 +2,13 @@ import { and, eq, gte, inArray, lte } from "drizzle-orm";
 import {
   addDays,
   classifyInvestmentInflow,
+  csvIdScheme,
   evaluateRules,
   matchPendingToPosted,
   normalizePayee,
   STRONG_SIMILARITY,
   type AccountType,
+  type CsvIdScheme,
   type IsoDate,
   type PendingRow,
   type PostedIncoming,
@@ -16,9 +18,10 @@ import type { DbOrTx } from "../index.js";
 import { account, transaction, transactionAlias } from "../schema/index.js";
 import { PayeeCache } from "./payees.js";
 import { addTransactionTags } from "./tags.js";
+import { lockLedger } from "./ledgerLock.js";
 import { applyRulesToRow } from "./rules.js";
 import { dropSplitsAfterAmountChange } from "./transactions.js";
-import { releaseTransferPartners } from "./transfers.js";
+import { releaseTransferPairs, releaseTransferPartners } from "./transfers.js";
 
 export interface IncomingTransaction {
   externalId: string;
@@ -29,6 +32,13 @@ export interface IncomingTransaction {
   memo?: string;
   pending: boolean;
   postedAt?: Date;
+  /**
+   * The feed gave the item no date (a pending item with neither `transacted_at` nor `posted`):
+   * `date` is the household's day it was read (plan decision 33). A row already stored keeps
+   * its date, the day the item was first seen, so a hold pending for weeks is not moved to each
+   * sync's day (audit a10-conformance-ledger-05).
+   */
+  undated?: boolean;
 }
 
 export interface IngestOptions {
@@ -104,7 +114,13 @@ const asIncoming = (i: IncomingTransaction): PostedIncoming => ({ externalId: i.
  * (best similarity, then the closest date; each row once). Returns item external id -> row.
  *
  * - Items from a CSV file match rows from the feed (pending or posted) or entered by hand that
- *   no other CSV id points at yet.
+ *   no CSV id of the item's id scheme points at yet (`csvIdScheme`). Audit
+ *   a10-conformance-ledger-02: within one scheme the ids decide (two equal coffees of one file
+ *   are two rows), but the same file read with another id column, or rows stored under the ids
+ *   the payee normalizer used to shape, carry ids of another scheme, so across schemes the
+ *   content decides. In order: a CSV row of another scheme with the same date, amount and
+ *   description (similarity at least `STRONG_SIMILARITY`); a feed or manual row no CSV id points
+ *   at; a feed or manual row only ids of another scheme point at.
  * - Items from the feed match CSV and manual rows that no feed id points at yet; a pending item
  *   only a posted row. `rekeyed` adds the account's posted feed rows that the feed stopped
  *   listing by id (a re-keyed account).
@@ -122,7 +138,7 @@ export async function findSameTransactions(
   const from = addDays(dates[0]!, -DUPLICATE_MAX_DAYS);
   const to = addDays(dates[dates.length - 1]!, DUPLICATE_MAX_DAYS);
   const amounts = [...new Set(items.map((i) => i.amountCents))];
-  const otherSources = source === "csv" ? (["simplefin", "manual"] as const) : (["csv", "manual"] as const);
+  const otherSources = source === "csv" ? (["simplefin", "manual", "csv"] as const) : (["csv", "manual"] as const);
   const rows: TxnRow[] = [];
   for (let i = 0; i < amounts.length; i += 500) {
     rows.push(
@@ -140,27 +156,61 @@ export async function findSameTransactions(
         )),
     );
   }
-  // A row another id of the same source already points at is that id's purchase, not this one's.
-  const claimed = new Set<string>();
+  // The ids of this source that already point at each row: that id's purchase, not this one's (for a CSV file, per id scheme).
+  const pointing = new Map<string, string[]>();
   if (rows.length > 0) {
     for (let i = 0; i < rows.length; i += 500) {
       const ids = rows.slice(i, i + 500).map((r) => r.id);
       const aliases = await tx
-        .select({ transactionId: transactionAlias.transactionId })
+        .select({ transactionId: transactionAlias.transactionId, externalId: transactionAlias.externalId })
         .from(transactionAlias)
         .where(and(inArray(transactionAlias.transactionId, ids), eq(transactionAlias.source, source)));
-      for (const a of aliases) if (a.transactionId) claimed.add(a.transactionId);
+      for (const a of aliases) if (a.transactionId) pointing.set(a.transactionId, [...(pointing.get(a.transactionId) ?? []), a.externalId]);
     }
   }
   const exclude = options.exclude ?? new Set<string>();
   const open = rows.filter((r) => !exclude.has(r.id));
   if (source === "csv") {
-    const unclaimed = open.filter((r) => !claimed.has(r.id));
-    for (const [ext, id] of matchPendingToPosted(unclaimed.map(asCandidate), items.map(asIncoming), { changedAmounts: false, maxDays: DUPLICATE_MAX_DAYS })) {
-      out.set(ext, unclaimed.find((r) => r.id === id)!);
+    const used = new Set<string>();
+    const schemesOf = (r: TxnRow): Set<CsvIdScheme> => {
+      const ids = [...(pointing.get(r.id) ?? []), ...(r.source === "csv" && r.externalId ? [r.externalId] : [])];
+      return new Set(ids.map((id) => csvIdScheme(id) ?? "csv"));
+    };
+    const byScheme = new Map<CsvIdScheme, IncomingTransaction[]>();
+    for (const item of items) {
+      const scheme = csvIdScheme(item.externalId) ?? "csv2";
+      byScheme.set(scheme, [...(byScheme.get(scheme) ?? []), item]);
+    }
+    for (const [scheme, group] of byScheme) {
+      let left = group;
+      const take = (candidates: TxnRow[], match: Parameters<typeof matchPendingToPosted>[2]) => {
+        if (left.length === 0 || candidates.length === 0) return;
+        for (const [ext, id] of matchPendingToPosted(candidates.map(asCandidate), left.map(asIncoming), match)) {
+          out.set(ext, candidates.find((r) => r.id === id)!);
+          used.add(id);
+        }
+        left = left.filter((i) => !out.has(i.externalId));
+      };
+      const free = () => open.filter((r) => !used.has(r.id));
+      // The same file under another id scheme: one of its rows, the same day, amount and description.
+      take(
+        free().filter((r) => r.source === "csv" && !schemesOf(r).has(scheme)),
+        { changedAmounts: false, maxDays: 0, minSimilarity: STRONG_SIMILARITY },
+      );
+      // A feed or manual row no file has named yet (decision 42).
+      take(
+        free().filter((r) => r.source !== "csv" && schemesOf(r).size === 0),
+        { changedAmounts: false, maxDays: DUPLICATE_MAX_DAYS },
+      );
+      // A feed or manual row only another id scheme named: the same file's purchase, read before under another id.
+      take(
+        free().filter((r) => r.source !== "csv" && schemesOf(r).size > 0 && !schemesOf(r).has(scheme)),
+        { changedAmounts: false, maxDays: DUPLICATE_MAX_DAYS },
+      );
     }
     return out;
   }
+  const claimed = new Set(pointing.keys());
   // A feed id pointing at a CSV or manual row is a pending copy (a posted item takes the row over), so the posted form may still take it.
   const postedItems = items.filter((i) => !i.pending);
   const postedCandidates = [...open, ...(options.rekeyed ?? []).filter((r) => !exclude.has(r.id))];
@@ -230,6 +280,8 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
   };
 
   await db.transaction(async (tx) => {
+    // One ingest at a time (a10-conformance-ledger-01): a CSV commit and a sync of the same days must each see the other's rows.
+    await lockLedger(tx);
     const payees = new PayeeCache(tx);
     const existing = new Map<string, TxnRow>();
     const aliased = new Set<string>();
@@ -258,7 +310,7 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
       // A replayed payload is older than the live feed, which keeps a known row's bank-owned fields current.
       if (options.replay) continue;
       const patch: Partial<typeof transaction.$inferInsert> = {};
-      if (row.date !== item.date) patch.date = item.date;
+      if (row.date !== item.date && !item.undated) patch.date = item.date;
       if (row.amountCents !== item.amountCents) patch.amountCents = item.amountCents;
       if (row.rawDescription !== item.description) patch.rawDescription = item.description;
       if ((row.memo ?? null) !== (item.memo ?? null)) patch.memo = item.memo ?? null;
@@ -270,6 +322,12 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
         await tx.update(transaction).set(patch).where(eq(transaction.id, row.id));
         // Split lines must add up to the row: a changed amount sends a split row back to review.
         if (patch.amountCents !== undefined) await dropSplitsAfterAmountChange(tx, row.id);
+        // A pair is no longer equal and opposite (a10-conformance-ledger-06, as for a replaced pending row): both legs are released and may pair again.
+        if (patch.amountCents !== undefined && row.transferPairId !== null) {
+          const released = await releaseTransferPairs(tx, [row.id], options.rules);
+          noteReleased(released.filter((r) => r.id !== row.id));
+          for (const r of released) if (!stats.earliestReleased || r.date < stats.earliestReleased) stats.earliestReleased = r.date;
+        }
         stats.updated++;
       }
     }
@@ -345,6 +403,7 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
           }
         }
         if (!local.categoryLocked) {
+          const releasedByRule: Array<{ id: string; date: IsoDate }> = [];
           await applyRulesToRow(
             tx,
             options.rules,
@@ -362,9 +421,12 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
               categoryLocked: local.categoryLocked,
               payeeLocked: local.payeeLocked,
               isTransfer: local.isTransfer && (local.transferPairId === null || item.amountCents === local.amountCents),
+              notTransfer: local.notTransfer,
+              transferPairId: item.amountCents === local.amountCents ? local.transferPairId : null,
             },
-            { payees },
+            { payees, released: releasedByRule },
           );
+          noteReleased(releasedByRule);
         }
         stats.replacedPending++;
         continue;
@@ -434,6 +496,8 @@ export async function ingestTransactions(db: DbOrTx, incoming: readonly Incoming
           categoryId: categoryId ?? null,
           pending: item.pending,
           isTransfer: contribution !== null ? true : (outcome.transfer ?? false),
+          // A rule's "not a transfer" holds over the pairing pass (a10-conformance-ledger-03).
+          notTransfer: outcome.transfer === false,
         })
         .onConflictDoNothing()
         .returning({ id: transaction.id });

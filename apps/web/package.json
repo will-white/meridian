@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@meridian/shared": "workspace:*",
+    "@simplewebauthn/browser": "13.3.0",
     "@tanstack/react-query": "^5.62.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

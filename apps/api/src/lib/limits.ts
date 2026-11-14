@@ -6,6 +6,8 @@ export const BODY_LIMIT = {
   signIn: 8 * 1024,
   /** CSV uploads travel in JSON bodies (`csvText` is capped at 10,000,000 characters). */
   csvImport: 12 * 1024 * 1024,
+  /** A passkey's answer (attestation or assertion, base64url): a few kilobytes at most. */
+  passkey: 64 * 1024,
 } as const;
 
 /**
@@ -24,4 +26,6 @@ export const SIGN_IN_LIMIT = {
    * Separately (in the database, not here) a password-only session is deleted at its fifth wrong code.
    */
   codePerUser: { max: 5, timeWindow: "15 minutes" },
+  /** A passkey sign-in is two requests (the prompt, the answer); an answer cannot be guessed, the limit only bounds the stored prompts. */
+  passkeyPerAddress: { max: 20, timeWindow: "1 minute" },
 } as const;

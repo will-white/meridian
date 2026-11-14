@@ -55,3 +55,18 @@ export function syncControls(c: Pick<ConnectionView, "status" | "activeJob">): S
   const idle = c.activeJob === null && c.status !== "disabled";
   return { syncNow: idle, balancesOnly: idle && c.status === "ok", fullResync: idle && c.status !== "claiming" };
 }
+
+/**
+ * Audit a10-conformance-ledger-04: what removing a SimpleFIN connection keeps and loses, asked
+ * before it happens. The stored bank responses stay (they are what Re-read transactions and
+ * reopening a closed account replay), and adding the connection again takes them over with the
+ * accounts.
+ */
+export function removeConnectionPrompt(name: string): string {
+  return `Remove ${name}? Accounts, transactions and the stored bank responses stay; the access URL is deleted. Adding the connection again attaches the same accounts and their stored responses.`;
+}
+
+/** Audit a10-conformance-ledger-04: deleting a CSV mapping profile removes the saved mapping only; the imports made with it stay and can still be undone. */
+export function deleteProfilePrompt(name: string): string {
+  return `Delete the mapping "${name}"? Only the saved column mapping goes; the imports made with it, and their rows, stay, and each can still be undone from the Import page.`;
+}

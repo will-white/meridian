@@ -4,6 +4,7 @@ import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import {
   alert,
+  category,
   containsPattern,
   createCategory,
   decodeCursor,
@@ -152,6 +153,11 @@ export async function categoryRoutes(app: FastifyInstance): Promise<void> {
   r.patch("/payees/:id", { schema: { params: UuidParams, body: UpdatePayeeBody, response: { 200: PayeeView } } }, async (request) => {
     const [target] = await app.db.select().from(payee).where(eq(payee.id, request.params.id));
     if (!target) throw notFound("Payee not found");
+    // Audit a10-conformance-ledger-07: a default category that does not exist is the caller's 400, not the foreign key's 500.
+    if (request.body.defaultCategoryId) {
+      const [known] = await app.db.select({ id: category.id }).from(category).where(eq(category.id, request.body.defaultCategoryId));
+      if (!known) throw badRequest("That category does not exist (it may have been deleted); choose another", "unknown_category");
+    }
     await app.db.transaction(async (tx) => {
       const patch: Partial<typeof payee.$inferInsert> = {};
       let aliases = target.aliases;

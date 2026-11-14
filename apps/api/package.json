@@ -7,7 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "node ../../scripts/bundle.mjs src/server.ts dist/server.js && node ../../scripts/bundle.mjs src/admin.ts dist/admin.js",
     "admin": "tsx src/admin.ts",
-    "start": "node dist/server.js",
+    "start": "node --enable-source-maps dist/server.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },
@@ -19,6 +19,7 @@
     "@meridian/db": "workspace:*",
     "@meridian/shared": "workspace:*",
     "@node-rs/argon2": "^2.0.2",
+    "@simplewebauthn/server": "13.3.3",
     "drizzle-orm": "^0.38.3",
     "fastify": "^5.2.0",
     "fastify-plugin": "^5.0.1",

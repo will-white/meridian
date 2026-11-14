@@ -75,12 +75,18 @@ export const connection = pgTable("connection", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-/** Every raw import response is kept so it can be re-processed. */
+/**
+ * Every raw import response is kept so it can be re-processed. Removing the connection or the
+ * CSV mapping profile an import came through keeps it (`connection_id` becomes null; audit
+ * a10-conformance-ledger-04): the responses are what Re-read transactions and reopening a closed
+ * account replay, and a CSV import is undone through its log. A connection added again takes
+ * over the stored responses that list one of its accounts.
+ */
 export const importLog = pgTable(
   "import_log",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    connectionId: uuid("connection_id").references(() => connection.id, { onDelete: "cascade" }),
+    connectionId: uuid("connection_id").references(() => connection.id, { onDelete: "set null" }),
     kind: text("kind", { enum: IMPORT_LOG_KINDS }).notNull(),
     status: text("status", { enum: ["running", "ok", "error"] }).notNull().default("running"),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),

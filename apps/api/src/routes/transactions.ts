@@ -142,6 +142,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       accountId: b.accountId,
       date: b.date,
       amountCents: BigInt(b.amountCents),
+      today: await serverToday(app),
       payeeName: b.payeeName,
       ...(b.categoryId !== undefined ? { categoryId: b.categoryId } : {}),
       ...(b.notes !== undefined ? { notes: b.notes } : {}),

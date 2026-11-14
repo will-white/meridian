@@ -78,6 +78,13 @@ export const transaction = pgTable(
     isTransfer: boolean("is_transfer").notNull().default(false),
     /** Two legs of a transfer share one pair id. */
     transferPairId: uuid("transfer_pair_id"),
+    /**
+     * A rule said this row is not a transfer (its "not a transfer" action): automatic pairing
+     * leaves it alone, as it does a row categorized by hand. Set and cleared by the rules at
+     * import and on demand; marking or pairing the row by hand clears it (audit
+     * a10-conformance-ledger-03).
+     */
+    notTransfer: boolean("not_transfer").notNull().default(false),
     /** Phase 2: the recurring item this charge belongs to (set by the detector/matcher). */
     recurringId: uuid("recurring_id"),
     notes: text("notes"),

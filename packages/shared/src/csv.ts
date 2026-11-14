@@ -1,7 +1,6 @@
 import { z } from "zod";
 import type { IsoDate } from "./dates.js";
 import { sha256Hex } from "./crypto.js";
-import { normalizePayee } from "./payee.js";
 import { sanitizeText } from "./sanitize.js";
 import { isInputDate, MAX_INPUT_CENTS } from "./wire.js";
 
@@ -112,7 +111,21 @@ export function parseCsvDate(raw: string, format: CsvDateFormat): IsoDate | unde
   }
 }
 
-/** Forgiving money parse for bank exports: "$1,234.56", "(12.34)", "-12.34", "12.34-", "12.34 CR". */
+/**
+ * The shape of an amount written with a decimal comma ("12,50", "-1.234,56", "1 234,56"): a
+ * comma followed by one or two digits at the end of the number. Such an amount is refused, with
+ * this as the reason (audit a10-conformance-ledger-08).
+ */
+export function looksLikeDecimalComma(raw: string): boolean {
+  return /\d?,\d{1,2}(?!\d)\s*(?:-|\)|CR|DR)?\s*$/i.test(raw.trim());
+}
+
+/**
+ * Forgiving money parse for bank exports: "$1,234.56", "(12.34)", "-12.34", "12.34-", "12.34 CR".
+ * A comma is read only as a thousands separator, in groups of three digits before the decimal
+ * point; any other comma ("12,50", "1.234,56", "1,23,456.00") makes the amount unreadable
+ * rather than misread (audit a10-conformance-ledger-08: "12,50" was 1,250.00).
+ */
 export function parseLooseMoney(raw: string): bigint | undefined {
   let s = raw.trim();
   if (!s) return undefined;
@@ -123,7 +136,12 @@ export function parseLooseMoney(raw: string): bigint | undefined {
   }
   if (/\bDR\b/i.test(s)) negative = !negative;
   s = s.replace(/\b(CR|DR)\b/gi, "");
-  s = s.replace(/[$€£,\s]/g, "");
+  s = s.replace(/[$€£\s]/g, "");
+  if (s.includes(",")) {
+    // Commas only as thousands separators: 1-3 digits, then groups of exactly three, then an optional decimal part.
+    if (!/^[-+]?\d{1,3}(?:,\d{3})+(?:\.\d*)?-?$/.test(s)) return undefined;
+    s = s.replace(/,/g, "");
+  }
   if (s.endsWith("-")) {
     negative = !negative;
     s = s.slice(0, -1);
@@ -215,11 +233,43 @@ function resolveColumn(ref: ColumnRef, headers: readonly string[] | undefined): 
   return idx;
 }
 
-/** Stable id for rows without a bank-provided id: csv:<sha256(date|cents|normalized description)>[:n]. */
+/**
+ * The ways a bank CSV row's external id is made (audit a10-conformance-ledger-02):
+ * - `csvid`: `csvid:<the file's own id>`, when the mapping has an id column and the row a value;
+ * - `csv2`: `csv2:<sha256(date|cents|description text)>[:n]`, the content hash of rows without an
+ *   id (current);
+ * - `csv`: `csv:<sha256(date|cents|normalized payee)>[:n]`, the content hash before this audit. It
+ *   hashed `normalizePayee`'s output, so it changed whenever the payee heuristics did; rows and
+ *   ids stored under it keep it and are recognized by their content.
+ * Within one scheme the ids decide; across schemes the same purchase is found by its content
+ * (`findSameTransactions` in packages/db).
+ */
+export type CsvIdScheme = "csvid" | "csv2" | "csv";
+
+/** The scheme of a CSV external id, or undefined for an id that is not one. */
+export function csvIdScheme(externalId: string | null | undefined): CsvIdScheme | undefined {
+  if (!externalId) return undefined;
+  if (externalId.startsWith("csvid:")) return "csvid";
+  if (externalId.startsWith("csv2:")) return "csv2";
+  if (externalId.startsWith("csv:")) return "csv";
+  return undefined;
+}
+
+/**
+ * The description text a content id hashes: the cell as the file has it, in NFC, with runs of
+ * white space as one space, trimmed and in lower case. Nothing heuristic (no payee
+ * normalization, no sanitizer pass), so the id of a row does not change when the app's payee
+ * rules or text cleaning change (audit a10-conformance-ledger-02).
+ */
+export function csvIdText(description: string): string {
+  return description.normalize("NFC").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/** Stable id for rows without a bank-provided id: csv2:<sha256(date|cents|csvIdText(description))>[:n]. */
 export async function csvExternalId(date: IsoDate, amountCents: bigint, description: string, ordinal: number): Promise<string> {
-  const key = `${date}|${amountCents.toString()}|${normalizePayee(description).toLowerCase()}`;
+  const key = `${date}|${amountCents.toString()}|${csvIdText(description)}`;
   const hash = await sha256Hex(key);
-  return ordinal === 0 ? `csv:${hash}` : `csv:${hash}:${ordinal}`;
+  return ordinal === 0 ? `csv2:${hash}` : `csv2:${hash}:${ordinal}`;
 }
 
 /** Apply a mapping to parsed rows. Rows that cannot be mapped are reported, not thrown. */
@@ -268,7 +318,12 @@ export async function mapCsvRows(rows: readonly string[][], mappingInput: CsvMap
       else amountCents = debit;
     }
     if (amountCents === undefined) {
-      errors.push({ rowIndex, message: "Unreadable amount" });
+      const cells = amountCols.mode === "single" ? [row[amountCols.col] ?? ""] : [row[amountCols.debit] ?? "", row[amountCols.credit] ?? ""];
+      const comma = cells.find((c) => looksLikeDecimalComma(c));
+      errors.push({
+        rowIndex,
+        message: comma !== undefined ? `Unreadable amount "${sanitizeText(comma, 50)}": a comma before the cents is not read; export the file with a decimal point` : "Unreadable amount",
+      });
       continue;
     }
     const description = sanitizeText(row[descCol] ?? "", 500);
@@ -278,10 +333,12 @@ export async function mapCsvRows(rows: readonly string[][], mappingInput: CsvMap
     if (providedId) {
       externalId = `csvid:${providedId}`;
     } else {
-      const baseKey = `${date}|${amountCents}|${normalizePayee(description).toLowerCase()}`;
+      // The cell as the file has it (not the sanitized text): the id must not move when the sanitizer does.
+      const rawDescription = row[descCol] ?? "";
+      const baseKey = `${date}|${amountCents}|${csvIdText(rawDescription)}`;
       const ordinal = seen.get(baseKey) ?? 0;
       seen.set(baseKey, ordinal + 1);
-      externalId = await csvExternalId(date, amountCents, description, ordinal);
+      externalId = await csvExternalId(date, amountCents, rawDescription, ordinal);
     }
     const mapped: MappedRow = { rowIndex, date, amountCents, description, externalId };
     if (memo) mapped.memo = memo;

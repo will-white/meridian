@@ -4,6 +4,7 @@ import { addDays, dayDiff, pairTransfers, type IsoDate, type RuleLike } from "@m
 import type { DbOrTx } from "../index.js";
 import { account, investmentTxn, payee, transaction, transferDismissal } from "../schema/index.js";
 import { PlanError, writeAudit, type AuditContext } from "./audit.js";
+import { lockLedger } from "./ledgerLock.js";
 import { applyRulesToRow } from "./rules.js";
 import { dropTransferSplits } from "./transferSplits.js";
 
@@ -40,10 +41,13 @@ const dismissalKey = (a: string, b: string) => (a < b ? `${a}:${b}` : `${b}:${a}
  * Audit a5-ingest-transfers-04: two rows the household unpaired ("transfer · undo") never pair
  * with each other again (`transfer_dismissal`), and a row the household categorized by hand
  * (`category_locked`, a split included) is not a candidate unless it is marked as a transfer:
- * automation never overrides a hand categorization (plan, data model).
+ * automation never overrides a hand categorization (plan, data model). Neither is a row a rule
+ * said is not a transfer (`not_transfer`, audit a10-conformance-ledger-03).
  */
 export async function pairTransfersInDb(tx: DbOrTx, options: PairTransfersInDbOptions = {}): Promise<number> {
   const maxDays = options.maxDays ?? 3;
+  // One pass at a time (a10-conformance-ledger-01): two passes that read the same free legs would pair one leg twice.
+  await lockLedger(tx);
   const rows = await tx
     .select({ id: transaction.id, accountId: transaction.accountId, date: transaction.date, amountCents: transaction.amountCents })
     .from(transaction)
@@ -51,6 +55,8 @@ export async function pairTransfersInDb(tx: DbOrTx, options: PairTransfersInDbOp
       and(
         isNull(transaction.transferPairId),
         or(eq(transaction.categoryLocked, false), eq(transaction.isTransfer, true)),
+        // A rule said the row is not a transfer (a10-conformance-ledger-03): the rule's choice holds, as a hand categorization does.
+        eq(transaction.notTransfer, false),
         options.since ? gte(transaction.date, addDays(options.since, -maxDays)) : undefined,
         options.until ? lte(transaction.date, addDays(options.until, maxDays)) : undefined,
         notInvestmentIncomeRow(tx),
@@ -132,18 +138,33 @@ export async function unpairTransfer(tx: DbOrTx, transactionId: string): Promise
  * Returns the released rows with their dates (for the pairing pass's window).
  */
 export async function releaseTransferPartners(tx: DbOrTx, removedIds: readonly string[], rules?: readonly RuleLike[]): Promise<Array<{ id: string; date: IsoDate }>> {
-  if (removedIds.length === 0) return [];
-  const removed = new Set(removedIds);
+  return releasePairs(tx, removedIds, rules, false);
+}
+
+/**
+ * Release whole pairs: every leg of the pairs the given rows belong to, the rows themselves
+ * included, loses its pair id and `is_transfer`, and the rules run on it again (when given).
+ * For a row that stays but is no longer one leg of an equal and opposite pair: a feed row whose
+ * amount changed under the same id (audit a10-conformance-ledger-06), or one a rule says is not
+ * a transfer (a10-conformance-ledger-03). Returns every released leg with its date.
+ */
+export async function releaseTransferPairs(tx: DbOrTx, rowIds: readonly string[], rules?: readonly RuleLike[]): Promise<Array<{ id: string; date: IsoDate }>> {
+  return releasePairs(tx, rowIds, rules, true);
+}
+
+async function releasePairs(tx: DbOrTx, ids: readonly string[], rules: readonly RuleLike[] | undefined, withSelf: boolean): Promise<Array<{ id: string; date: IsoDate }>> {
+  if (ids.length === 0) return [];
+  const given = new Set(ids);
   const pairIds = new Set<string>();
-  for (let i = 0; i < removedIds.length; i += 500) {
+  for (let i = 0; i < ids.length; i += 500) {
     const rows = await tx
       .select({ pairId: transaction.transferPairId })
       .from(transaction)
-      .where(and(inArray(transaction.id, removedIds.slice(i, i + 500)), sql`${transaction.transferPairId} is not null`));
+      .where(and(inArray(transaction.id, ids.slice(i, i + 500)), sql`${transaction.transferPairId} is not null`));
     for (const r of rows) pairIds.add(r.pairId!);
   }
   if (pairIds.size === 0) return [];
-  const partners = (
+  const legs = (
     await tx
       .select({
         id: transaction.id,
@@ -158,20 +179,21 @@ export async function releaseTransferPartners(tx: DbOrTx, removedIds: readonly s
         categoryId: transaction.categoryId,
         categoryLocked: transaction.categoryLocked,
         payeeLocked: transaction.payeeLocked,
+        notTransfer: transaction.notTransfer,
       })
       .from(transaction)
       .leftJoin(payee, eq(payee.id, transaction.payeeId))
       .where(inArray(transaction.transferPairId, [...pairIds]))
-  ).filter((p) => !removed.has(p.id));
-  if (partners.length === 0) return [];
+  ).filter((p) => withSelf || !given.has(p.id));
+  if (legs.length === 0) return [];
   await tx
     .update(transaction)
     .set({ transferPairId: null, isTransfer: false, updatedAt: new Date() })
-    .where(inArray(transaction.id, partners.map((p) => p.id)));
+    .where(inArray(transaction.id, legs.map((p) => p.id)));
   if (rules && rules.length > 0) {
-    for (const p of partners) await applyRulesToRow(tx, rules, { ...p, isTransfer: false });
+    for (const p of legs) await applyRulesToRow(tx, rules, { ...p, isTransfer: false, transferPairId: null });
   }
-  return partners.map((p) => ({ id: p.id, date: p.date }));
+  return legs.map((p) => ({ id: p.id, date: p.date }));
 }
 
 export interface TransferCandidateRow {
@@ -232,6 +254,7 @@ export async function transferCandidates(tx: DbOrTx, transactionId: string, limi
  */
 export async function pairTransactionsByHand(tx: DbOrTx, firstId: string, secondId: string, audit: AuditContext): Promise<string> {
   if (firstId === secondId) throw new PlanError(400, "same_transaction", "Choose two different transactions");
+  await lockLedger(tx);
   const rows = await tx.select().from(transaction).where(inArray(transaction.id, [firstId, secondId]));
   const a = rows.find((r) => r.id === firstId);
   const b = rows.find((r) => r.id === secondId);
@@ -242,7 +265,8 @@ export async function pairTransactionsByHand(tx: DbOrTx, firstId: string, second
   if (a.transferPairId !== null || b.transferPairId !== null) throw new PlanError(409, "already_paired", "One of the two is paired already; undo that transfer first");
   const pairId = randomUUID();
   const now = new Date();
-  await tx.update(transaction).set({ transferPairId: pairId, isTransfer: true, updatedAt: now }).where(inArray(transaction.id, [a.id, b.id]));
+  // The household's pairing wins over a rule's "not a transfer" (a10-conformance-ledger-03).
+  await tx.update(transaction).set({ transferPairId: pairId, isTransfer: true, notTransfer: false, updatedAt: now }).where(inArray(transaction.id, [a.id, b.id]));
   await tx
     .update(transaction)
     .set({ categoryId: null })

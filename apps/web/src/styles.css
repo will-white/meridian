@@ -117,6 +117,7 @@ button.link.small { font-size: 0.85em; }
 .auth-frame { min-height: 100vh; display: grid; place-items: center; padding: 1rem; }
 .auth-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 2rem; width: min(420px, 100%); }
 .auth-card h1 { margin-bottom: 0.5rem; }
+.auth-alt { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
 .qr { width: 220px; height: 220px; align-self: center; background: #fff; border-radius: 8px; }
 .secret { display: block; word-break: break-all; margin-top: 0.5rem; }
 

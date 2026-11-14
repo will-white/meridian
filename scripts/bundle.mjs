@@ -21,7 +21,11 @@ await build({
   platform: "node",
   target: "node22",
   format: "esm",
+  // The images run the bundles with --enable-source-maps (NODE_OPTIONS), so a logged stack names
+  // the source file and line. The map only needs the positions for that: the sources themselves
+  // are not embedded, which keeps the three maps at about 1.4 MB instead of 6 MB.
   sourcemap: true,
+  sourcesContent: false,
   logLevel: "info",
   banner: {
     // Give bundled CommonJS-style helpers a `require` and keep import.meta.url sane.

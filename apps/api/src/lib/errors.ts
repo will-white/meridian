@@ -29,6 +29,18 @@ function isDataException(error: unknown): boolean {
   return typeof e === "object" && e !== null && e.name === "PostgresError" && typeof e.code === "string" && e.code.startsWith("22");
 }
 
+/**
+ * Postgres foreign-key violation on an insert or update (SQLSTATE 23503): the request named a
+ * row that does not exist (a category, an account). Routes check the references they take
+ * (audit a10-conformance-ledger-07); this is the net under them, so a reference a route does not
+ * check yet is still the caller's 400 (`unknown_reference`), not a 500. A delete that is refused
+ * because rows still point at the row is not this case and stays an error.
+ */
+function isUnknownReference(error: unknown): boolean {
+  const e = error as { name?: unknown; code?: unknown; message?: unknown } | null;
+  return typeof e === "object" && e !== null && e.name === "PostgresError" && e.code === "23503" && typeof e.message === "string" && e.message.startsWith("insert or update");
+}
+
 export function registerErrorHandler(app: FastifyInstance): void {
   app.setErrorHandler((error: FastifyError | HttpError | PlanError | Error, request, reply) => {
     if (error instanceof HttpError) {
@@ -41,6 +53,10 @@ export function registerErrorHandler(app: FastifyInstance): void {
     if (isDataException(error)) {
       request.log.warn({ err: error }, "the database refused a value from the request");
       return reply.status(400).send({ error: "A value in the request is out of range or not valid", code: "invalid_value" });
+    }
+    if (isUnknownReference(error)) {
+      request.log.warn({ err: error }, "the request named a row that does not exist");
+      return reply.status(400).send({ error: "The request refers to something that does not exist (it may have been deleted)", code: "unknown_reference" });
     }
     if (hasZodFastifySchemaValidationErrors(error)) {
       const first = error.validation[0];

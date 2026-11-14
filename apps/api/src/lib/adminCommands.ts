@@ -18,7 +18,7 @@ import { hashPassword } from "./auth.js";
 export const ADMIN_USAGE = `Meridian recovery commands (run on the server):
 
   users                      list the household's members
-  reset-totp <username>      clear a lost authenticator: the member enrolls a new one at the next sign-in
+  reset-totp <username>      clear a lost authenticator and the member's passkeys: they enroll a new authenticator at the next sign-in
   reset-password <username>  set a temporary password (printed once) for a member who forgot theirs
   sign-out <username>        end every session of a member
 
@@ -80,7 +80,7 @@ export async function runAdminCommand(db: Db, argv: readonly string[], io: Admin
 
   if (command === "reset-totp") {
     await resetSecondFactor(db, member.id, audit());
-    io.out(`Two-factor authentication is cleared for ${member.username} and their sessions have ended.`);
+    io.out(`Two-factor authentication (the authenticator and any passkeys) is cleared for ${member.username} and their sessions have ended.`);
     io.out("Until a new authenticator is enrolled the password alone opens the enrollment screen: sign in and enroll one now.");
     return 0;
   }

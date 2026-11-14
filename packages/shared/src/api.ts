@@ -208,6 +208,59 @@ export type SignInEventView = z.infer<typeof SignInEventView>;
 export const SignInActivity = z.object({ items: z.array(SignInEventView), failedLast7Days: z.number().int() });
 export type SignInActivity = z.infer<typeof SignInActivity>;
 
+// ---- Passkeys (audit a10-conformance-ledger-09; spec, Security: "optional passkeys") ----
+/** Base64url text as WebAuthn carries binary fields, bounded. */
+const Base64Url = (max: number) => z.string().max(max).regex(/^[A-Za-z0-9_-]*$/, "base64url");
+const CredentialId = z.string().min(1).max(1400).regex(/^[A-Za-z0-9_-]+$/, "base64url");
+const Transports = z.array(z.string().min(1).max(32)).max(10);
+/** The browser's answer to `navigator.credentials.create()`, as @simplewebauthn/browser serializes it. */
+export const PasskeyRegistrationResponse = z.object({
+  id: CredentialId,
+  rawId: CredentialId,
+  type: z.literal("public-key"),
+  response: z.object({
+    clientDataJSON: Base64Url(4096),
+    attestationObject: Base64Url(16384),
+    authenticatorData: Base64Url(8192).optional(),
+    transports: Transports.optional(),
+    publicKeyAlgorithm: z.number().int().optional(),
+    publicKey: Base64Url(4096).optional(),
+  }),
+  clientExtensionResults: z.record(z.unknown()).default({}),
+  authenticatorAttachment: z.enum(["platform", "cross-platform"]).optional(),
+});
+/** The browser's answer to `navigator.credentials.get()`. */
+export const PasskeyAuthenticationResponse = z.object({
+  id: CredentialId,
+  rawId: CredentialId,
+  type: z.literal("public-key"),
+  response: z.object({
+    clientDataJSON: Base64Url(4096),
+    authenticatorData: Base64Url(8192),
+    signature: Base64Url(2048),
+    userHandle: Base64Url(512).optional(),
+  }),
+  clientExtensionResults: z.record(z.unknown()).default({}),
+  authenticatorAttachment: z.enum(["platform", "cross-platform"]).optional(),
+});
+/** Adding a passkey starts with the member's password, as replacing the authenticator does. */
+export const PasskeyOptionsBody = z.object({ password: z.string().min(1).max(256) });
+/** WebAuthn options for the browser (`optionsJSON` of @simplewebauthn/browser) and the challenge they wait on. */
+export const PasskeyCeremony = z.object({ challengeId: z.string().uuid(), options: z.record(z.unknown()) });
+export type PasskeyCeremony = z.infer<typeof PasskeyCeremony>;
+export const PasskeyName = z.string().trim().min(1, "Name the passkey").max(60);
+export const AddPasskeyBody = z.object({ challengeId: z.string().uuid(), name: PasskeyName, response: PasskeyRegistrationResponse });
+export const PasskeySignInBody = z.object({ challengeId: z.string().uuid(), response: PasskeyAuthenticationResponse });
+export const PasskeyView = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  createdAt: z.string(),
+  lastUsedAt: z.string().nullable(),
+  /** Synced across the member's devices by their platform (a multi-device passkey). */
+  backedUp: z.boolean(),
+});
+export type PasskeyView = z.infer<typeof PasskeyView>;
+
 // ---- Connections ----
 export const ConnectionErrorView = z.object({ code: z.string(), message: z.string(), accountId: z.string().optional() });
 export const ConnectionView = z.object({

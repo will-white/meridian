@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ConnectionView, ImportLogView, JobView } from "@meridian/shared";
 import { api } from "../lib/api.js";
-import { syncAdvice, syncControls, syncSummary } from "../lib/connections.js";
+import { deleteProfilePrompt, removeConnectionPrompt, syncAdvice, syncControls, syncSummary } from "../lib/connections.js";
 import { relativeTime } from "../lib/format.js";
 import { csvKindLabel } from "../lib/importMapping.js";
 import { Badge, Card, Empty, ErrorText } from "../components/ui.js";
@@ -199,7 +199,7 @@ export function ConnectionsPage() {
                   <button
                     className="danger"
                     onClick={() => {
-                      if (confirm(`Remove ${c.name}? Accounts and transactions stay; the access URL is deleted. Adding the connection again attaches the same accounts.`)) remove.mutate(c.id);
+                      if (confirm(removeConnectionPrompt(c.name))) remove.mutate(c.id);
                     }}
                     disabled={remove.isPending}
                   >
@@ -243,7 +243,14 @@ export function ConnectionsPage() {
                   )}
                 </div>
                 {!viewer && (
-                  <button className="danger" onClick={() => removeProfile.mutate(p.id)} disabled={removeProfile.isPending}>
+                  <button
+                    className="danger"
+                    onClick={() => {
+                      // Audit a10-conformance-ledger-04: asked first, saying what stays.
+                      if (confirm(deleteProfilePrompt(p.name))) removeProfile.mutate(p.id);
+                    }}
+                    disabled={removeProfile.isPending}
+                  >
                     Delete
                   </button>
                 )}

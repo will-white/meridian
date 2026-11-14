@@ -5,8 +5,10 @@ import { account, category, payee, savingsGoal, split, transaction, transactionA
 import { PlanError, writeAudit, type AuditContext } from "./audit.js";
 import { resolvePayee } from "./payees.js";
 import { onBudgetOrFeedCategory } from "./planScope.js";
+import { readHouseholdToday } from "./settings.js";
 import { containsPattern, decodeCursor, encodeCursor } from "./queryText.js";
 import { setTransactionTags, tagsForTransactions } from "./tags.js";
+import { lockLedger } from "./ledgerLock.js";
 import { loadRules } from "./rules.js";
 import { pairTransfersInDb, releaseTransferPartners, unpairTransfer } from "./transfers.js";
 import { dropTransferSplits } from "./transferSplits.js";
@@ -279,8 +281,11 @@ export interface TransactionPatch {
 /** Apply a user edit. Hand-picked category and payee are locked against later automation; picking a category, or marking the row a transfer, removes a split. */
 export async function updateTransaction(db: Db, id: string, patch: TransactionPatch): Promise<TransactionListRow | undefined> {
   await db.transaction(async (tx) => {
+    // A transfer marked or undone, or a hand category, changes what the pairing pass may take (a10-conformance-ledger-01).
+    if (patch.isTransfer !== undefined || patch.categoryId !== undefined) await lockLedger(tx);
     const set: Partial<typeof transaction.$inferInsert> = { updatedAt: new Date() };
     if (patch.categoryId !== undefined) {
+      await assertCategoryExists(tx, patch.categoryId);
       set.categoryId = patch.categoryId;
       set.categoryLocked = true;
       // One category for the whole row replaces a split (the lines would otherwise still win in the plan).
@@ -294,6 +299,8 @@ export async function updateTransaction(db: Db, id: string, patch: TransactionPa
     if (patch.notes !== undefined) set.notes = patch.notes;
     if (patch.isTransfer === true) {
       set.isTransfer = true;
+      // A transfer marked by hand wins over a rule's "not a transfer" (a10-conformance-ledger-03).
+      set.notTransfer = false;
       // A transfer leaves the plan, so a category automation gave it goes, as pairing clears it (audit a5-ingest-transfers-12).
       const [row] = await tx.select({ categoryLocked: transaction.categoryLocked }).from(transaction).where(eq(transaction.id, id));
       if (row && !row.categoryLocked && patch.categoryId === undefined) set.categoryId = null;
@@ -317,6 +324,7 @@ export async function updateTransaction(db: Db, id: string, patch: TransactionPa
  */
 export async function deleteTransaction(db: Db, id: string, audit: AuditContext): Promise<boolean> {
   return db.transaction(async (tx) => {
+    await lockLedger(tx);
     const [row] = await tx.select().from(transaction).where(eq(transaction.id, id));
     if (!row) return false;
     if (row.source === "investment") throw new PlanError(400, "investment_row", "This row comes from an investment transaction; remove that one instead");
@@ -346,11 +354,31 @@ export async function deleteTransaction(db: Db, id: string, audit: AuditContext)
   });
 }
 
+/** A category id the household sent must name a category (400 `unknown_category`, never the foreign key's 500). */
+async function assertCategoryExists(tx: DbOrTx, categoryId: string | null | undefined): Promise<void> {
+  if (categoryId === null || categoryId === undefined) return;
+  const [found] = await tx.select({ id: category.id }).from(category).where(eq(category.id, categoryId));
+  if (!found) throw new PlanError(400, "unknown_category", "That category does not exist (it may have been deleted); choose another");
+}
+
+/**
+ * Add transaction (plan decision 93): a row entered by hand into an account. Refused before
+ * anything is written (audit a10-conformance-ledger-07): a zero amount (400 `zero_amount`), a
+ * date after the household's `today` (400 `future_date`), an account that does not exist (404)
+ * and a category that does not (400 `unknown_category`).
+ */
 export async function createManualTransaction(
   db: Db,
-  input: { accountId: string; date: IsoDate; amountCents: bigint; payeeName: string; categoryId?: string | null; notes?: string },
+  input: { accountId: string; date: IsoDate; amountCents: bigint; payeeName: string; categoryId?: string | null; notes?: string; today?: IsoDate },
 ): Promise<TransactionListRow> {
+  if (input.amountCents === 0n) throw new PlanError(400, "zero_amount", "Enter an amount other than zero: negative for money out, positive for money in");
+  // The household's day (the API passes its clock's); by default the household's day now.
+  const today = input.today ?? (await readHouseholdToday(db, new Date()));
+  if (input.date > today) throw new PlanError(400, "future_date", `The date can be today (${today}) at the latest`);
   const id = await db.transaction(async (tx) => {
+    const [acct] = await tx.select({ id: account.id }).from(account).where(eq(account.id, input.accountId));
+    if (!acct) throw new PlanError(404, "not_found", "Account not found");
+    await assertCategoryExists(tx, input.categoryId);
     const p = await resolvePayee(tx, input.payeeName);
     const [row] = await tx
       .insert(transaction)

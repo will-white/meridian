@@ -64,6 +64,20 @@
       "when": 1794618380297,
       "tag": "0008_transfer_splits",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794623398548,
+      "tag": "0009_ledger_conformance",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794624447733,
+      "tag": "0010_passkeys",
+      "breakpoints": true
     }
   ]
 }

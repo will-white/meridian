@@ -17,6 +17,7 @@ import {
   balanceSnapshot,
   holdingSnapshot,
   householdSetting,
+  importLog,
   investmentTxn,
   lot,
   recurring,
@@ -26,6 +27,7 @@ import {
 } from "../schema/index.js";
 import { PlanError, writeAudit, type AuditContext } from "./audit.js";
 import { DUPLICATE_MAX_DAYS } from "./ingest.js";
+import { lockLedger } from "./ledgerLock.js";
 import { loadRules } from "./rules.js";
 import { pairTransfersInDb, releaseTransferPartners } from "./transfers.js";
 
@@ -118,7 +120,15 @@ export async function upsertSimplefinAccount(tx: DbOrTx, connectionId: string, s
   if (existing) {
     id = existing.id;
     const patch: Partial<typeof account.$inferInsert> = { institution, currency, updatedAt: new Date() };
-    if (reattached) patch.connectionId = connectionId;
+    if (reattached) {
+      patch.connectionId = connectionId;
+      // Audit a10-conformance-ledger-04: the responses stored for the account before its connection was removed come with it, so
+      // Re-read transactions and reopening a closed account replay them for the new connection too.
+      await tx
+        .update(importLog)
+        .set({ connectionId })
+        .where(and(isNull(importLog.connectionId), sql`${importLog.kind} like 'simplefin.%'`, sql`${importLog.rawPayload} -> 'accounts' @> ${JSON.stringify([{ id: sf.id }])}::jsonb`));
+    }
     if (balance) {
       patch.balanceCents = balance.cents;
       patch.balanceDate = balanceDate;
@@ -258,6 +268,8 @@ export interface LinkFeedAccountResult {
 export async function linkFeedAccount(db: Db, input: { accountId: string; feedAccountId: string }, audit?: AuditContext): Promise<LinkFeedAccountResult> {
   if (input.accountId === input.feedAccountId) throw new PlanError(400, "same_account", "Choose the feed account to link to this one");
   return db.transaction(async (tx) => {
+    // Folding rows in decides what is the same purchase, as an ingest does (a10-conformance-ledger-01).
+    await lockLedger(tx);
     const [target] = await tx.select().from(account).where(eq(account.id, input.accountId));
     const [feedAccount] = await tx.select().from(account).where(eq(account.id, input.feedAccountId));
     if (!target || !feedAccount) throw new PlanError(404, "not_found", "Account not found");

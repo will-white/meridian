@@ -2,7 +2,8 @@ import { useState, type FormEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { AuthStatus, TotpSetupResponse } from "@meridian/shared";
 import { api } from "../lib/api.js";
-import { AUTH_KEY, noteSignedOut, useAuthMutation, useLogout, useSignInNotice } from "../lib/auth.js";
+import { AUTH_KEY, noteSignedOut, SIGN_IN_NOTICE_KEY, useAuthMutation, useLogout, useSignInNotice } from "../lib/auth.js";
+import { passkeyErrorMessage, passkeysSupported, signInWithPasskey } from "../lib/passkeys.js";
 import { useDocumentTitle } from "../lib/useDocumentTitle.js";
 import { ErrorText } from "../components/ui.js";
 
@@ -87,7 +88,31 @@ export function LoginPage() {
           Continue
         </button>
       </form>
+      <PasskeySignIn />
     </AuthFrame>
+  );
+}
+
+/** Audit a10-conformance-ledger-09: a passkey signs in on its own (the device's screen lock stands for the password and the code). */
+function PasskeySignIn() {
+  const qc = useQueryClient();
+  const [supported] = useState(passkeysSupported);
+  const signIn = useMutation({
+    mutationFn: signInWithPasskey,
+    onSuccess: (status) => {
+      qc.removeQueries({ queryKey: SIGN_IN_NOTICE_KEY });
+      qc.setQueryData(AUTH_KEY, status);
+      void qc.invalidateQueries();
+    },
+  });
+  if (!supported) return null;
+  return (
+    <div className="stack auth-alt">
+      <button type="button" className="secondary" onClick={() => signIn.mutate()} disabled={signIn.isPending}>
+        {signIn.isPending ? "Waiting for the passkey…" : "Sign in with a passkey"}
+      </button>
+      {signIn.error && <p className="error">{passkeyErrorMessage(signIn.error)}</p>}
+    </div>
   );
 }
 

@@ -74,7 +74,7 @@ describe.skipIf(!TEST_DATABASE_URL)("recovery commands", () => {
     const before = await sessionCookies(t, ownerId);
     const { code, out } = await run("reset-totp", "owner");
     expect(code).toBe(0);
-    expect(out[0]).toBe("Two-factor authentication is cleared for owner and their sessions have ended.");
+    expect(out[0]).toBe("Two-factor authentication (the authenticator and any passkeys) is cleared for owner and their sessions have ended.");
     expect(await status(before)).toMatchObject({ authenticated: false });
     expect(await t.db.db.select().from(session).where(eq(session.userId, ownerId))).toEqual([]);
     const [row] = await t.db.db.select({ secret: user.totpSecretEnc, confirmedAt: user.totpConfirmedAt }).from(user).where(eq(user.id, ownerId));
