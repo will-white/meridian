@@ -87,7 +87,8 @@ describe("mapCsvRows", () => {
     const a = await mapCsvRows(rows, mapping);
     const b = await mapCsvRows(rows, mapping);
     expect(a.rows[0]!.externalId).not.toBe(a.rows[1]!.externalId);
-    expect(a.rows[0]!.externalId.startsWith("csv:")).toBe(true);
+    // Audit a10-conformance-ledger-02: content ids are csv2: (the text as the file has it), no longer csv: (the normalized payee).
+    expect(a.rows[0]!.externalId.startsWith("csv2:")).toBe(true);
     expect(a.rows[1]!.externalId.endsWith(":1")).toBe(true);
     expect(a.rows.map((r) => r.externalId)).toEqual(b.rows.map((r) => r.externalId));
   });

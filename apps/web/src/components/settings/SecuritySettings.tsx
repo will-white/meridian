@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { RevokeSessionsResponse, SessionView, SignInActivity, TotpSetupResponse, UserView } from "@meridian/shared";
+import type { PasskeyView, RevokeSessionsResponse, SessionView, SignInActivity, TotpSetupResponse, UserView } from "@meridian/shared";
 import { api } from "../../lib/api.js";
+import { addPasskey, PASSKEY_NAME_MAX, passkeyErrorMessage, passkeyNameProblem, passkeysSupported } from "../../lib/passkeys.js";
 import { showSignedOut, useAuthStatus } from "../../lib/auth.js";
 import { relativeTime } from "../../lib/format.js";
 import { describeDevice, failedSignInWarning, isFailedSignIn, MIN_PASSWORD_LENGTH, newMemberProblem, newPasswordProblem, passwordChangeProblem, signInEventLabel } from "../../lib/security.js";
@@ -11,6 +12,7 @@ import "./SecuritySettings.css";
 const SESSIONS_KEY = ["auth", "sessions"] as const;
 const ACTIVITY_KEY = ["auth", "activity"] as const;
 const USERS_KEY = ["users"] as const;
+const PASSKEYS_KEY = ["auth", "passkeys"] as const;
 
 const when = (iso: string) => new Date(iso).toLocaleString();
 const othersSignedOut = (n: number) => (n === 0 ? "" : n === 1 ? " 1 other session was signed out." : ` ${n} other sessions were signed out.`);
@@ -28,6 +30,7 @@ export function SecuritySettings() {
       <h1 className="security-heading">Sign-in and security</h1>
       <PasswordCard />
       <AuthenticatorCard />
+      <PasskeysCard />
       <SessionsCard />
       {owner && <MembersCard />}
       <ActivityCard owner={owner} />
@@ -186,6 +189,120 @@ function AuthenticatorCard() {
   );
 }
 
+/**
+ * Audit a10-conformance-ledger-09 (spec, Security: "optional passkeys"): passkeys sign this
+ * member in with the device's screen lock, instead of the password and the code. Adding one
+ * asks for the password; the password and the authenticator stay.
+ */
+function PasskeysCard() {
+  const qc = useQueryClient();
+  const [supported] = useState(passkeysSupported);
+  const passkeys = useQuery({ queryKey: PASSKEYS_KEY, queryFn: () => api<PasskeyView[]>("/auth/passkeys") });
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ name: "", password: "" });
+  const [problem, setProblem] = useState<string | null>(null);
+  const add = useMutation({
+    mutationFn: () => addPasskey(form),
+    onSuccess: () => {
+      setOpen(false);
+      setForm({ name: "", password: "" });
+      void qc.invalidateQueries({ queryKey: PASSKEYS_KEY });
+    },
+  });
+  const remove = useMutation({
+    mutationFn: (p: PasskeyView) => api<{ ok: true }>(`/auth/passkeys/${p.id}`, { method: "DELETE" }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: PASSKEYS_KEY }),
+  });
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    const p = passkeyNameProblem(form.name);
+    setProblem(p);
+    if (!p) add.mutate();
+  };
+  const cancel = () => {
+    setOpen(false);
+    setForm({ name: "", password: "" });
+    setProblem(null);
+    add.reset();
+  };
+  const list = passkeys.data ?? [];
+  return (
+    <Card title="Passkeys">
+      <div className="settings-fields">
+        <p className="muted small settings-note">
+          A passkey signs you in with this device&apos;s screen lock (fingerprint, face or PIN) instead of the password and the code. It works only at the address you add it on. Your password and
+          authenticator stay; clearing the authenticator (a lost phone) removes the passkeys too.
+        </p>
+        <ErrorText error={passkeys.error} />
+        <ErrorText error={remove.error} />
+        {passkeys.data !== undefined && list.length === 0 && <p className="muted small">No passkeys yet.</p>}
+        {list.length > 0 && (
+          <ul className="list">
+            {list.map((p) => (
+              <li key={p.id} className="list-item">
+                <div className="grow">
+                  <strong>{p.name}</strong>{" "}
+                  <span className="muted small">
+                    · added {when(p.createdAt)} · {p.lastUsedAt ? `last used ${relativeTime(p.lastUsedAt)}` : "not used yet"}
+                    {p.backedUp ? " · synced to your other devices" : ""}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="link danger small"
+                  onClick={() => {
+                    if (confirm(`Remove the passkey "${p.name}"? It will no longer sign you in.`)) remove.mutate(p);
+                  }}
+                  disabled={remove.isPending}
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {!supported && <p className="muted small">This browser cannot use passkeys here (they need the app&apos;s https address, or localhost).</p>}
+        {supported && !open && (
+          <div className="row wrap">
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                add.reset();
+                setOpen(true);
+              }}
+            >
+              Add a passkey
+            </button>
+          </div>
+        )}
+        {supported && open && (
+          <form className="settings-fields" onSubmit={submit}>
+            <label>
+              Name <span className="muted">(the device or app that holds it)</span>
+              <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} maxLength={PASSKEY_NAME_MAX} placeholder="Phone" autoFocus />
+            </label>
+            <label>
+              Your password
+              <input type="password" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} autoComplete="current-password" required />
+            </label>
+            {problem && <p className="error">{problem}</p>}
+            {add.error && <p className="error">{passkeyErrorMessage(add.error)}</p>}
+            <div className="row wrap">
+              <button type="submit" disabled={add.isPending || form.password === ""}>
+                {add.isPending ? "Waiting for the passkey…" : "Continue"}
+              </button>
+              <button type="button" className="secondary" onClick={cancel}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 function SessionsCard() {
   const qc = useQueryClient();
   const sessions = useQuery({ queryKey: SESSIONS_KEY, queryFn: () => api<SessionView[]>("/auth/sessions") });
@@ -288,7 +405,7 @@ function MembersCard() {
   const resetTotp = useMutation({
     mutationFn: (id: string) => api<UserView>(`/users/${id}/totp/reset`, { method: "POST", body: {} }),
     onSuccess: (u) => {
-      setNotice(`${u.username}'s authenticator is cleared and they were signed out. They set up a new one at the next sign-in; until then their password alone reaches that setup screen, so do it soon.`);
+      setNotice(`${u.username}'s authenticator and passkeys are cleared and they were signed out. They set up a new one at the next sign-in; until then their password alone reaches that setup screen, so do it soon.`);
       refresh();
     },
   });
@@ -349,7 +466,7 @@ function MembersCard() {
                         className="link small"
                         disabled={!u.totpEnrolled || resetTotp.isPending}
                         onClick={() => {
-                          if (window.confirm(`Clear ${u.username}'s authenticator? They are signed out and set up a new one at their next sign-in.`)) resetTotp.mutate(u.id);
+                          if (window.confirm(`Clear ${u.username}'s authenticator and passkeys? They are signed out and set up a new authenticator at their next sign-in.`)) resetTotp.mutate(u.id);
                         }}
                       >
                         Reset two-factor

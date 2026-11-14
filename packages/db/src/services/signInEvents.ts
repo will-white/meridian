@@ -10,7 +10,7 @@ import { signInEvent } from "../schema/index.js";
  */
 
 /** Kinds that count as a failed attempt. */
-export const FAILED_SIGN_IN_KINDS: readonly SignInEventKind[] = ["password_failed", "code_failed", "code_lockout"];
+export const FAILED_SIGN_IN_KINDS: readonly SignInEventKind[] = ["password_failed", "code_failed", "code_lockout", "passkey_failed"];
 /** How long sign-in activity is kept. */
 export const SIGN_IN_EVENT_RETENTION_DAYS = 90;
 
@@ -55,7 +55,7 @@ export async function countFailedSignIns(db: DbOrTx, query: { userId?: string; d
     .where(
       and(
         query.userId !== undefined ? eq(signInEvent.userId, query.userId) : undefined,
-        sql`${signInEvent.kind} in ('password_failed', 'code_failed', 'code_lockout')`,
+        sql`${signInEvent.kind} in ('password_failed', 'code_failed', 'code_lockout', 'passkey_failed')`,
         sql`${signInEvent.at} > now() - make_interval(days => ${days})`,
       ),
     );

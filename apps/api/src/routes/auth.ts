@@ -4,8 +4,25 @@ import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import QRCode from "qrcode";
 import { z } from "zod";
 import {
+  generateAuthenticationOptions,
+  generateRegistrationOptions,
+  verifyAuthenticationResponse,
+  verifyRegistrationResponse,
+  type AuthenticationResponseJSON,
+  type AuthenticatorTransportFuture,
+  type RegistrationResponseJSON,
+} from "@simplewebauthn/server";
+import {
   acceptTotpStep,
   activatePendingTotp,
+  addPasskey,
+  createWebauthnChallenge,
+  deletePasskey,
+  findPasskeyByCredentialId,
+  listPasskeys,
+  recordPasskeyUse,
+  takeWebauthnChallenge,
+  type PasskeyRow,
   confirmTotpEnrollment,
   countFailedSignIns,
   createOwner,
@@ -29,12 +46,18 @@ import {
   type IssuedSession,
 } from "@meridian/db";
 import {
+  AddPasskeyBody,
   AuthStatus,
   ChangePasswordBody,
   decryptSecret,
   encryptSecret,
+  errorMessageText,
   LoginBody,
   OkResponse,
+  PasskeyCeremony,
+  PasskeyOptionsBody,
+  PasskeySignInBody,
+  PasskeyView,
   PasswordConfirmBody,
   RevokeSessionsResponse,
   SessionIdParams,
@@ -43,6 +66,7 @@ import {
   SignInActivity,
   TotpCodeBody,
   TotpSetupResponse,
+  UuidParams,
   type SignInEventKind,
 } from "@meridian/shared";
 import { hashPassword, matchTotpStep, newTotpSecret, totpFor, verifyPassword } from "../lib/auth.js";
@@ -70,6 +94,32 @@ function statusFor(state: AuthState): AuthStatus {
       return { setupRequired: false, authenticated: true, totpRequired: false, totpEnrolled: true, username: state.user.username, role: state.user.role };
   }
 }
+
+/**
+ * Audit a10-conformance-ledger-09: the relying party of a passkey ceremony is the address the
+ * browser is on: the request's `Origin`, which must name the request's own host (as the
+ * same-origin guard requires of every change). A passkey belongs to that host name: one added
+ * on the LAN name does not sign in on the Tailscale name, and the other way round.
+ */
+function relyingParty(request: FastifyRequest): { origin: string; rpID: string } {
+  const header = request.headers.origin;
+  const raw = Array.isArray(header) ? header[0] : header;
+  if (!raw) throw badRequest("A passkey needs the page's origin; use the app in a browser", "origin_required");
+  let from: URL;
+  let own: URL;
+  try {
+    from = new URL(raw);
+    own = new URL(`${from.protocol}//${request.host}`);
+  } catch {
+    throw forbidden("Cross-site request refused", "cross_site_request");
+  }
+  if (from.host !== own.host || (from.protocol !== "https:" && from.protocol !== "http:")) throw forbidden("Cross-site request refused", "cross_site_request");
+  return { origin: from.origin, rpID: from.hostname };
+}
+
+const passkeyView = (p: PasskeyRow): PasskeyView => ({ id: p.id, name: p.name, createdAt: p.createdAt.toISOString(), lastUsedAt: p.lastUsedAt?.toISOString() ?? null, backedUp: p.backedUp });
+/** The user handle a passkey carries: the member's id, as given when it was added. */
+const userHandleOf = (userId: string) => Buffer.from(userId, "utf8").toString("base64url");
 
 /** The caller of a route whose guard level is `full`: signed in, second factor proven. */
 function signedIn(request: FastifyRequest): { user: AuthUser; session: AuthSession } {
@@ -333,6 +383,148 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (request.params.id === state.session.id) clearSessionCookie(reply, app.config);
     return { ok: true as const };
   });
+
+  // ---- Passkeys (audit a10-conformance-ledger-09; spec, Security: "optional passkeys") ----
+  // A passkey signs its member in on its own, the device's screen lock standing in for the code
+  // (user verification is required); the password and the authenticator stay, so a passkey is
+  // never the only way in. Adding one needs the password, as replacing the authenticator does.
+
+  /** Adding a passkey, step 1: the password again, then the options for `navigator.credentials.create()`. */
+  r.post(
+    "/auth/passkeys/options",
+    { bodyLimit: BODY_LIMIT.signIn, config: { ownAccount: true, rateLimit: SIGN_IN_LIMIT.passwordPerAddress }, schema: { body: PasskeyOptionsBody, response: { 200: PasskeyCeremony } } },
+    async (request, reply) => {
+      const state = signedIn(request);
+      const rp = relyingParty(request);
+      await requirePassword(request, reply, state.user.id, request.body.password);
+      const existing = await listPasskeys(app.db, state.user.id);
+      const options = await generateRegistrationOptions({
+        rpName: "Meridian",
+        rpID: rp.rpID,
+        userName: state.user.username,
+        userID: new Uint8Array(Buffer.from(state.user.id, "utf8")),
+        attestationType: "none",
+        excludeCredentials: existing.map((p) => ({ id: p.credentialId, transports: p.transports as AuthenticatorTransportFuture[] })),
+        authenticatorSelection: { residentKey: "required", userVerification: "required" },
+      });
+      const challengeId = await createWebauthnChallenge(app.db, { purpose: "register", challenge: options.challenge, userId: state.user.id, sessionId: state.session.id, now: now() });
+      reply.header("Cache-Control", "no-store");
+      return { challengeId, options: options as unknown as Record<string, unknown> };
+    },
+  );
+
+  /** Step 2: the browser's answer, verified (this host, user verification, the challenge of this session), becomes a passkey. */
+  r.post("/auth/passkeys", { bodyLimit: BODY_LIMIT.passkey, config: { ownAccount: true }, schema: { body: AddPasskeyBody, response: { 200: PasskeyView } } }, async (request) => {
+    const state = signedIn(request);
+    const rp = relyingParty(request);
+    const taken = await takeWebauthnChallenge(app.db, { id: request.body.challengeId, purpose: "register", sessionId: state.session.id, now: now() });
+    if (!taken || taken.userId !== state.user.id) throw badRequest("That passkey prompt has expired. Start again.", "passkey_challenge");
+    let verified: Awaited<ReturnType<typeof verifyRegistrationResponse>>;
+    try {
+      verified = await verifyRegistrationResponse({
+        response: request.body.response as unknown as RegistrationResponseJSON,
+        expectedChallenge: taken.challenge,
+        expectedOrigin: rp.origin,
+        expectedRPID: rp.rpID,
+        requireUserVerification: true,
+      });
+    } catch (err) {
+      throw badRequest(`The passkey could not be verified: ${errorMessageText(err, 200)}`, "passkey_not_verified");
+    }
+    if (!verified.verified) throw badRequest("The passkey could not be verified", "passkey_not_verified");
+    const { credential, credentialBackedUp } = verified.registrationInfo;
+    if (await findPasskeyByCredentialId(app.db, credential.id)) throw new HttpError(409, "This passkey is added already", "passkey_exists");
+    const row = await addPasskey(
+      app.db,
+      {
+        userId: state.user.id,
+        credentialId: credential.id,
+        publicKey: Buffer.from(credential.publicKey).toString("base64url"),
+        counter: credential.counter,
+        transports: credential.transports ?? request.body.response.response.transports ?? [],
+        name: request.body.name,
+        backedUp: credentialBackedUp,
+        now: now(),
+      },
+      auditContext(request),
+    );
+    return passkeyView(row);
+  });
+
+  /** Your passkeys. */
+  r.get("/auth/passkeys", { schema: { response: { 200: z.array(PasskeyView) } } }, async (request, reply) => {
+    const state = signedIn(request);
+    reply.header("Cache-Control", "no-store");
+    return (await listPasskeys(app.db, state.user.id)).map(passkeyView);
+  });
+
+  /** Remove one of your passkeys; it no longer signs in. */
+  r.delete("/auth/passkeys/:id", { config: { ownAccount: true }, schema: { params: UuidParams, response: { 200: OkResponse } } }, async (request) => {
+    const state = signedIn(request);
+    if (!(await deletePasskey(app.db, state.user.id, request.params.id, auditContext(request)))) throw notFound("No such passkey");
+    return { ok: true as const };
+  });
+
+  /** Signing in with a passkey, step 1: the options for `navigator.credentials.get()` (any of this host's passkeys may answer). */
+  r.post(
+    "/auth/passkey/options",
+    { bodyLimit: BODY_LIMIT.signIn, config: { auth: "public", rateLimit: SIGN_IN_LIMIT.passkeyPerAddress }, schema: { body: z.object({}), response: { 200: PasskeyCeremony } } },
+    async (request, reply) => {
+      if (request.auth.kind === "setup_required") throw forbidden("Create the owner account first", "setup_required");
+      const rp = relyingParty(request);
+      const options = await generateAuthenticationOptions({ rpID: rp.rpID, userVerification: "required" });
+      const challengeId = await createWebauthnChallenge(app.db, { purpose: "sign_in", challenge: options.challenge, now: now() });
+      reply.header("Cache-Control", "no-store");
+      return { challengeId, options: options as unknown as Record<string, unknown> };
+    },
+  );
+
+  /** Step 2: the passkey's answer. Verified, it signs its member in (a new signed-in session, as after the code). */
+  r.post(
+    "/auth/passkey/verify",
+    { bodyLimit: BODY_LIMIT.passkey, config: { auth: "public", rateLimit: SIGN_IN_LIMIT.passkeyPerAddress }, schema: { body: PasskeySignInBody, response: { 200: AuthStatus } } },
+    async (request, reply) => {
+      if (request.auth.kind === "setup_required") throw forbidden("Create the owner account first", "setup_required");
+      const rp = relyingParty(request);
+      const taken = await takeWebauthnChallenge(app.db, { id: request.body.challengeId, purpose: "sign_in", now: now() });
+      if (!taken) throw unauthorized("That passkey prompt has expired. Try again.", "passkey_challenge");
+      const found = await findPasskeyByCredentialId(app.db, request.body.response.id);
+      if (!found) throw unauthorized("This passkey is not one of Meridian's. Sign in with your password; you can add the passkey under Settings.", "passkey_unknown");
+      const who = { id: found.userId, username: found.username };
+      const handle = request.body.response.response.userHandle;
+      let ok = handle === undefined || handle === userHandleOf(found.userId);
+      let newCounter = found.counter;
+      if (ok) {
+        try {
+          const result = await verifyAuthenticationResponse({
+            response: request.body.response as unknown as AuthenticationResponseJSON,
+            expectedChallenge: taken.challenge,
+            expectedOrigin: rp.origin,
+            expectedRPID: rp.rpID,
+            credential: { id: found.credentialId, publicKey: new Uint8Array(Buffer.from(found.publicKey, "base64url")), counter: found.counter, transports: found.transports as AuthenticatorTransportFuture[] },
+            requireUserVerification: true,
+          });
+          ok = result.verified;
+          newCounter = result.authenticationInfo.newCounter;
+        } catch {
+          ok = false;
+        }
+      }
+      if (!ok) {
+        await recordEvent(request, who, "passkey_failed");
+        throw unauthorized("The passkey could not be verified. Try again, or sign in with your password.", "passkey_not_verified");
+      }
+      // The session this browser came in on (if any) ends here, and so do this member's expired ones.
+      if ("session" in request.auth) await deleteSession(app.db, request.auth.session.id);
+      await purgeExpiredSessions(app.db, now(), found.userId);
+      const issued = await createSession(app.db, fullSession(request, found.userId));
+      await recordPasskeyUse(app.db, found.id, newCounter, now());
+      setSessionCookie(reply, app.config, issued.token, issued.expiresAt);
+      await recordEvent(request, who, "passkey_signed_in");
+      const enrolled = found.totpConfirmedAt !== null;
+      return { setupRequired: false, authenticated: true, totpRequired: false, totpEnrolled: enrolled, username: found.username, role: found.role };
+    },
+  );
 
   /** Sign-in activity: the owner sees every member's, a viewer their own. */
   r.get("/auth/activity", { schema: { response: { 200: SignInActivity } } }, async (request, reply) => {

@@ -119,7 +119,8 @@ export interface ApplyAccountSetResult {
 /**
  * Map one SimpleFIN transaction to the ingest shape, sanitizing every text field. The amount
  * is read by the caller (`parseSimplefinAmount`), so that one it cannot read skips only this
- * transaction; `fallbackDate` is the household's day, for a pending item without a date.
+ * transaction; `fallbackDate` is the household's day, for a pending item without a date (marked
+ * `undated`, so a row already stored keeps the day it was first seen).
  */
 export function toIncomingTransaction(t: SimplefinAccountSet["accounts"][number]["transactions"][number], amountCents: bigint, fallbackDate: IsoDate): IncomingTransaction {
   const pending = t.pending === true || t.posted === 0;
@@ -130,6 +131,8 @@ export function toIncomingTransaction(t: SimplefinAccountSet["accounts"][number]
     description: sanitizeText(t.description, 500),
     pending,
   };
+  // No date of its own: the household's day dates a new row, and a stored row keeps the day it was first seen (a10-conformance-ledger-05).
+  if (!(t.transacted_at && t.transacted_at > 0) && !(t.posted && t.posted > 0)) out.undated = true;
   const payee = sanitizeText(t.payee, 200);
   if (payee) out.payee = payee;
   const memo = sanitizeText(t.memo, 500);

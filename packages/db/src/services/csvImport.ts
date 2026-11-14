@@ -4,6 +4,7 @@ import type { Db, DbOrTx } from "../index.js";
 import { importLog, transaction, transactionAlias } from "../schema/index.js";
 import { PlanError, writeAudit, type AuditContext } from "./audit.js";
 import { findSameTransactions, ingestTransactions, type IncomingTransaction } from "./ingest.js";
+import { lockLedger } from "./ledgerLock.js";
 import { loadRules } from "./rules.js";
 import { pairTransfersInDb, releaseTransferPartners } from "./transfers.js";
 
@@ -35,8 +36,9 @@ export async function importCsvRows(db: Db, options: { accountId: string; rows: 
   if (options.importLogId) ingestOptions.importLogId = options.importLogId;
   const stats = await ingestTransactions(db, options.rows.map(toIncoming), ingestOptions);
   let transfersPaired = 0;
-  if (stats.created > 0) {
-    const dates = options.rows.map((r) => r.date).sort();
+  // New rows, or legs released because a bank id came back with another amount (a10-conformance-ledger-06), may pair.
+  if (stats.created > 0 || stats.releasedTransfers > 0) {
+    const dates = [...options.rows.map((r) => r.date), ...(stats.earliestReleased ? [stats.earliestReleased] : [])].sort();
     const since = dates[0];
     const until = dates[dates.length - 1];
     transfersPaired = await db.transaction((tx) => pairTransfersInDb(tx, since && until ? { since, until } : {}));
@@ -90,6 +92,7 @@ export interface UndoCsvImportResult {
  */
 export async function undoCsvImport(db: Db, importLogId: string, audit: AuditContext): Promise<UndoCsvImportResult> {
   return db.transaction(async (tx) => {
+    await lockLedger(tx);
     const [log] = await tx.select().from(importLog).where(eq(importLog.id, importLogId));
     if (!log) throw new PlanError(404, "not_found", "Import not found");
     if (log.kind !== "csv") throw new PlanError(400, "not_bank_csv", "Only a bank CSV import can be undone here");

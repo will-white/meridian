@@ -1,7 +1,7 @@
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -47,21 +47,29 @@ describe.skipIf(!TEST_DATABASE_URL)("migration linked_cash_transfers on links ma
     brokerage = a!.id;
     const [income] = await db.insert(category).values({ name: "Other income", bucket: "income", position: 1 }).returning({ id: category.id });
     const [vti] = await db.insert(security).values({ ticker: "VTI", name: "Vanguard Total Stock Market ETF", type: "etf", assetClass: "us_stock", priceMode: "provider" }).returning({ id: security.id });
-    const bank = await db
-      .insert(transaction)
-      .values([
-        // Linked deposits the ingest classifier did not recognise: one with a payee-default category, one the owner categorized by hand.
-        { accountId: brokerage, source: "simplefin", externalId: "B1", date: "2026-09-14", amountCents: 500000n, rawDescription: "MONEYLINK TXN FROM CHK 1234", categoryId: income!.id },
-        { accountId: brokerage, source: "simplefin", externalId: "B2", date: "2026-09-18", amountCents: 250000n, rawDescription: "BRANCH CREDIT 0042", categoryId: income!.id, categoryLocked: true },
-        // A linked withdrawal (outflows were never classified).
-        { accountId: brokerage, source: "simplefin", externalId: "B3", date: "2026-09-25", amountCents: -20000n, rawDescription: "ACH WITHDRAWAL" },
-        // Linked to a dividend, and a row nothing is linked to: neither is a transfer.
-        { accountId: brokerage, source: "simplefin", externalId: "B4", date: "2026-09-28", amountCents: 1234n, rawDescription: "DIV VTI", categoryId: income!.id },
-        { accountId: brokerage, source: "simplefin", externalId: "B5", date: "2026-09-29", amountCents: 900n, rawDescription: "MISC CREDIT", categoryId: income!.id },
-        // Already a transfer: untouched.
-        { accountId: brokerage, source: "simplefin", externalId: "B6", date: "2026-09-30", amountCents: 100000n, rawDescription: "ELECTRONIC FUNDS TRANSFER RECEIVED", isTransfer: true },
-      ])
-      .returning({ id: transaction.id, externalId: transaction.externalId });
+    // Written with SQL, not the schema object: the database is at the migrations before this one, which lack columns added since (not_transfer).
+    const row = (ext: string, date: string, amountCents: bigint, description: string, extra: { categoryId?: string; categoryLocked?: boolean; isTransfer?: boolean } = {}) =>
+      sql`(${brokerage}, 'simplefin', ${ext}, ${date}, ${amountCents}, ${description}, ${extra.categoryId ?? null}, ${extra.categoryLocked ?? false}, ${extra.isTransfer ?? false})`;
+    const bank = (
+      await db.execute<{ id: string; external_id: string }>(sql`
+        insert into "transaction" ("account_id", "source", "external_id", "date", "amount_cents", "raw_description", "category_id", "category_locked", "is_transfer") values
+        ${sql.join(
+          [
+            // Linked deposits the ingest classifier did not recognise: one with a payee-default category, one the owner categorized by hand.
+            row("B1", "2026-09-14", 500000n, "MONEYLINK TXN FROM CHK 1234", { categoryId: income!.id }),
+            row("B2", "2026-09-18", 250000n, "BRANCH CREDIT 0042", { categoryId: income!.id, categoryLocked: true }),
+            // A linked withdrawal (outflows were never classified).
+            row("B3", "2026-09-25", -20000n, "ACH WITHDRAWAL"),
+            // Linked to a dividend, and a row nothing is linked to: neither is a transfer.
+            row("B4", "2026-09-28", 1234n, "DIV VTI", { categoryId: income!.id }),
+            row("B5", "2026-09-29", 900n, "MISC CREDIT", { categoryId: income!.id }),
+            // Already a transfer: untouched.
+            row("B6", "2026-09-30", 100000n, "ELECTRONIC FUNDS TRANSFER RECEIVED", { isTransfer: true }),
+          ],
+          sql`, `,
+        )}
+        returning "id", "external_id"`)
+    ).map((r) => ({ id: r.id, externalId: r.external_id }));
     const id = (ext: string) => bank.find((r) => r.externalId === ext)!.id;
     const cash = (date: string, amountCents: bigint, ext: string) => ({
       accountId: brokerage,

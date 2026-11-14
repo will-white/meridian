@@ -2,6 +2,7 @@ import { and, count, eq, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import type { DbOrTx } from "../index.js";
 import { user } from "../schema/index.js";
 import { PlanError, writeAudit, type AuditContext } from "./audit.js";
+import { deleteUserPasskeys } from "./passkeys.js";
 import { deleteUserSessions } from "./sessions.js";
 
 /**
@@ -60,7 +61,7 @@ export async function listUsers(db: DbOrTx, now: Date): Promise<UserRecord[]> {
       createdAt: user.createdAt,
       passwordChangedAt: user.passwordChangedAt,
       // Correlated subqueries, spelled with qualified names: Drizzle leaves the table off a column in a single-table select.
-      lastSignInAt: sql<Date | null>`(select max(e."at") from "sign_in_event" e where e."user_id" = "user"."id" and e."kind" = 'signed_in')`.mapWith(user.createdAt),
+      lastSignInAt: sql<Date | null>`(select max(e."at") from "sign_in_event" e where e."user_id" = "user"."id" and e."kind" in ('signed_in', 'passkey_signed_in'))`.mapWith(user.createdAt),
       activeSessions: sql<number>`(select count(*)::int from "session" s where s."user_id" = "user"."id" and s."totp_verified" and s."expires_at" > ${nowText}::timestamptz and s."idle_expires_at" > ${nowText}::timestamptz)`,
     })
     .from(user)
@@ -126,14 +127,16 @@ export async function setPassword(db: DbOrTx, input: { userId: string; passwordH
 
 /**
  * Clears a member's second factor (a lost phone): the authenticator secret, the pending
- * replacement and the last used step are removed and every session ends. They enroll a
+ * replacement, the last used step and the member's passkeys are removed and every session ends. They enroll a
  * new authenticator at their next sign-in, before anything opens.
  */
 export async function resetSecondFactor(db: DbOrTx, userId: string, ctx: AuditContext): Promise<void> {
   await db.transaction(async (tx) => {
     const before = await loadUser(tx, userId);
     const [after] = await tx.update(user).set({ totpSecretEnc: null, totpConfirmedAt: null, totpLastStep: null, totpPendingSecretEnc: null }).where(eq(user.id, userId)).returning();
-    await writeAudit(tx, { ...ctx, entity: "user", entityId: userId, action: "update", before: userAuditJson(before), after: userAuditJson(after!) });
+    // The lost phone may hold the member's passkeys as well (audit a10-conformance-ledger-09): they go with the authenticator.
+    const passkeys = await deleteUserPasskeys(tx, userId);
+    await writeAudit(tx, { ...ctx, entity: "user", entityId: userId, action: "update", before: { ...userAuditJson(before), passkeys }, after: { ...userAuditJson(after!), passkeys: 0 } });
     await deleteUserSessions(tx, userId);
   });
 }

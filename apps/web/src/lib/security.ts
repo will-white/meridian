@@ -68,6 +68,8 @@ const EVENT_LABELS: Record<SignInEventKind, string> = {
   password_failed: "Wrong password",
   code_failed: "Wrong authenticator code",
   code_lockout: "Fifth wrong code: sign-in stopped",
+  passkey_signed_in: "Signed in with a passkey",
+  passkey_failed: "Passkey not accepted",
 };
 
 export function signInEventLabel(kind: SignInEventKind): string {
@@ -75,7 +77,7 @@ export function signInEventLabel(kind: SignInEventKind): string {
 }
 
 export function isFailedSignIn(kind: SignInEventKind): boolean {
-  return kind !== "signed_in";
+  return kind !== "signed_in" && kind !== "passkey_signed_in";
 }
 
 /** The line above the activity table; null when there is nothing to warn about. */

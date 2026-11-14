@@ -289,8 +289,9 @@ describe("a8-ledger-ui-07: Disable, Remove, a CSV profile's Delete and a rule's 
   // mutation, whose error showed only while that rule's editor was open).
   const cases: Array<[string, string, RegExp]> = [
     ["ConnectionsPage", "Disable / Enable", /onClick=\{\(\) => (\w+)\.mutate\(\{ id: c\.id, status: c\.status === "disabled"/],
-    ["ConnectionsPage", "Remove", /confirm\(`Remove \$\{c\.name\}[^`]*`\)\) (\w+)\.mutate\(c\.id\)/],
-    ["ConnectionsPage", "a CSV profile's Delete", /onClick=\{\(\) => (\w+)\.mutate\(p\.id\)\}/],
+    // Both ask first, saying what stays (audit a10-conformance-ledger-04).
+    ["ConnectionsPage", "Remove", /confirm\(removeConnectionPrompt\(c\.name\)\)\) (\w+)\.mutate\(c\.id\)/],
+    ["ConnectionsPage", "a CSV profile's Delete", /confirm\(deleteProfilePrompt\(p\.name\)\)\) (\w+)\.mutate\(p\.id\)/],
     ["RulesPage", "a rule's enable / disable", /onClick=\{\(\) => (\w+)\.mutate\(\{ id: r\.id, enabled: !r\.enabled \}\)\}/],
   ];
   for (const [page, label, button] of cases) {
