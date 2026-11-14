@@ -20,7 +20,6 @@ import {
   setRecurringStatus,
   updateRecurring,
   upsertDetections,
-  type RecurringRowWithLinks,
 } from "./recurring.js";
 
 /**
@@ -240,22 +239,21 @@ describe.skipIf(!TEST_DATABASE_URL)("b5-04: the detector keeps a suggestion's ed
     expect((await row(f.db, s!.id)).categoryId).toBe(f.cat("Entertainment"));
   });
 
-  it("a run that read the suggestion before the owner confirmed it only stamps detected_at", async () => {
+  it("a run that detected before the owner confirmed the suggestion only stamps detected_at", async () => {
     await addSeries(f.db, f.oldVisa, "Max", -999n, APR_TO_SEP, f.cat("Entertainment"));
     await runRecurringDetection(f.db, { today: "2026-10-16", now: at("2026-10-16T08:00:00Z") });
     const [s] = await itemsOf(f.db, "Max");
     expect(s).toMatchObject({ status: "suggested", categoryId: f.cat("Entertainment") });
 
-    // The scan reads the ledger and the rows ...
+    // The scan reads the ledger and detects ...
     const input = await loadDetectionInput(f.db, "2026-10-16");
-    const existing: RecurringRowWithLinks[] = [{ ...(await row(f.db, s!.id)), linkedIds: await linksOf(f.db, s!.id) }];
     // ... the owner confirms in Subscriptions meanwhile ...
     await updateRecurring(f.db, s!.id, { categoryId: f.cat("Subscriptions"), status: "active" }, "2026-10-16", at("2026-10-16T09:00:00Z"));
     const confirmed = await row(f.db, s!.id);
     // ... and the scan writes what it detected.
     const key = `${s!.payeeId}|-1`;
     const runStart = at("2026-10-16T09:00:01Z");
-    const stats = await upsertDetections(f.db, s!.payeeId, -1n, detectRecurring(input.groups.get(key)!, "2026-10-16"), existing, runStart, "2026-10-16", input.historyStartByAccount);
+    const stats = await upsertDetections(f.db, s!.payeeId, -1n, detectRecurring(input.groups.get(key)!, "2026-10-16"), runStart, "2026-10-16", input.historyStartByAccount);
     expect(stats).toEqual({ created: 0, updated: 0, alertsCreated: 0 });
     const after = await row(f.db, s!.id);
     expect(after).toMatchObject({ status: "active", categoryId: f.cat("Subscriptions"), missedFromDate: confirmed.missedFromDate, detectedAt: runStart });
@@ -520,5 +518,209 @@ describe.skipIf(!TEST_DATABASE_URL)("b5-11, b5-12, b5-13: history guard, moving 
     expect(await matchRecurringItems(f.db, "2026-10-02", noon("2026-10-02"), { ids: [id] })).toBe(1);
     expect(await alertsOf(f.db, id)).toEqual([]);
     expect(await row(f.db, id)).toMatchObject({ amountMode: "fixed", expectedCents: 530000n, lastChargeCents: 530000n });
+  });
+});
+
+/**
+ * Waits until a statement of another transaction in this database waits on a row lock, so a
+ * test can commit a writer exactly when the detection run has read the rows and blocks on them.
+ */
+async function waitForLockWait(t: TestDb): Promise<void> {
+  for (let tries = 0; ; tries++) {
+    const [waiting] = await t.client<{ n: number }[]>`select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`;
+    if (waiting!.n > 0) return;
+    if (tries > 500) throw new Error("the detection run never waited on the other transaction's row");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+/**
+ * Runs `write` in its own transaction and keeps it open while a detection run starts, reads the
+ * rows and blocks on the written row; then commits. Returns the run's stats.
+ */
+async function runWhileWriteInFlight(f: Fixture, write: (tx: Db) => Promise<void>, run: { today: IsoDate; now: Date }) {
+  let written!: () => void;
+  let commit!: () => void;
+  const rowWritten = new Promise<void>((resolve) => (written = resolve));
+  const mayCommit = new Promise<void>((resolve) => (commit = resolve));
+  const writer = f.db.transaction(async (tx) => {
+    await write(tx as unknown as Db);
+    written();
+    await mayCommit;
+  });
+  try {
+    await rowWritten;
+    const detection = runRecurringDetection(f.db, run);
+    await waitForLockWait(f.t);
+    commit();
+    await writer;
+    return await detection;
+  } finally {
+    commit();
+    await writer.catch(() => {});
+  }
+}
+
+describe.skipIf(!TEST_DATABASE_URL)("b5-04 (second round): an edit or a confirm that lands while a detection run is in flight", () => {
+  let f: Fixture;
+  beforeAll(async () => {
+    f = await setup();
+  });
+  afterAll(async () => {
+    await f?.t.cleanup();
+  });
+
+  it("an edit to a suggestion made after the run read the rows is kept: the rewrite builds on the edited row", async () => {
+    const ids = await addSeries(f.db, f.oldVisa, "Paramount", -999n, APR_TO_SEP);
+    await runRecurringDetection(f.db, { today: "2026-10-16", now: at("2026-10-16T08:00:00Z") });
+    const [s] = await itemsOf(f.db, "Paramount");
+    expect(s).toMatchObject({ status: "suggested", expectedCents: -999n, amountLocked: false, categoryId: null });
+    // The charges get a category, so a run would now fill the suggestion's empty one.
+    await f.db.update(transaction).set({ categoryId: f.cat("Entertainment") }).where(inArray(transaction.id, ids));
+
+    // The owner raises the amount and picks a category without confirming, while a run is in flight.
+    const runStart = at("2026-10-16T09:00:01Z");
+    const stats = await runWhileWriteInFlight(
+      f,
+      (tx) => updateRecurring(tx, s!.id, { expectedCents: -1299n, categoryId: f.cat("Subscriptions") }, "2026-10-16", at("2026-10-16T09:00:00Z")),
+      { today: "2026-10-16", now: runStart },
+    );
+    expect(stats).toMatchObject({ suggestionsCreated: 0, suggestionsUpdated: 1, suggestionsDeleted: 0 });
+    expect(await row(f.db, s!.id)).toMatchObject({
+      status: "suggested",
+      expectedCents: -1299n,
+      amountLocked: true,
+      categoryId: f.cat("Subscriptions"),
+      anchorDay: 5,
+      chargeCount: 6,
+      detectedAt: runStart,
+    });
+    expect(await linksOf(f.db, s!.id)).toEqual([...ids].sort());
+  });
+
+  it("a suggestion the owner confirms while the run is about to delete it as not reproduced is kept with its links", async () => {
+    // The series lapsed (last charge 09-05, more than two periods before 11-20), so the run no longer reproduces it.
+    const ids = await addSeries(f.db, f.oldVisa, "Peacock", -799n, APR_TO_SEP, f.cat("Entertainment"));
+    await runRecurringDetection(f.db, { today: "2026-09-06", now: at("2026-09-06T08:00:00Z") });
+    const [s] = await itemsOf(f.db, "Peacock");
+    expect(s).toMatchObject({ status: "suggested", chargeCount: 6 });
+
+    const stats = await runWhileWriteInFlight(f, (tx) => updateRecurring(tx, s!.id, { status: "active" }, "2026-11-20", at("2026-11-20T09:00:00Z")), {
+      today: "2026-11-20",
+      now: at("2026-11-20T09:00:01Z"),
+    });
+    // Only Paramount, from the test before, lapsed as a suggestion and is gone.
+    expect(stats.suggestionsDeleted).toBe(1);
+    expect(await itemsOf(f.db, "Paramount")).toEqual([]);
+    expect(await row(f.db, s!.id)).toMatchObject({ status: "active", categoryId: f.cat("Entertainment"), chargeCount: 6, lastChargeDate: "2026-09-05" });
+    expect(await linksOf(f.db, s!.id)).toEqual([...ids].sort());
+  });
+});
+
+describe.skipIf(!TEST_DATABASE_URL)("b5-05 (second round): every cancelled item hands on the charges after its cancel", () => {
+  let f: Fixture;
+  beforeAll(async () => {
+    f = await setup();
+  });
+  afterAll(async () => {
+    await f?.t.cleanup();
+  });
+
+  const OLD_ON_THE_5TH: IsoDate[] = ["2026-03-05", "2026-04-05", "2026-05-05", "2026-06-05", "2026-07-05", "2026-08-05"];
+
+  /** A series on the 5th from March to August 2026, confirmed on 08-06 and cancelled on 08-10. */
+  async function cancelledSeries(payeeName: string, cents: bigint): Promise<{ id: string; old: string[] }> {
+    const old = await addSeries(f.db, f.checking, payeeName, cents, OLD_ON_THE_5TH);
+    await runRecurringDetection(f.db, { today: "2026-08-06", now: at("2026-08-06T08:00:00Z") });
+    const item = (await itemsOf(f.db, payeeName)).find((r) => r.expectedCents === cents)!;
+    await updateRecurring(f.db, item.id, { categoryId: f.cat("Subscriptions"), status: "active" }, "2026-08-06", at("2026-08-06T09:00:00Z"));
+    await setRecurringStatus(f.db, item.id, "cancelled", { today: "2026-08-10", now: at("2026-08-10T12:00:00Z") });
+    return { id: item.id, old };
+  }
+
+  it("a resubscription billed on a different day is suggested, with a new-subscription alert, and stays one suggestion as it grows", async () => {
+    const cancelled = await cancelledSeries("Netflix", -1549n);
+    const fresh = await addSeries(f.db, f.checking, "Netflix", -1549n, ["2026-11-20", "2026-12-20", "2027-01-20"]);
+    // The old and new charges do not score as one series, so no detection maps to the cancelled item.
+    const input = await loadDetectionInput(f.db, "2027-01-22");
+    const { payeeId } = await row(f.db, cancelled.id);
+    expect(detectRecurring(input.groups.get(`${payeeId}|-1`)!, "2027-01-22")).toEqual([]);
+
+    const stats = await runRecurringDetection(f.db, { today: "2027-01-22", now: at("2027-01-22T08:00:00Z") });
+    expect(stats).toMatchObject({ suggestionsCreated: 1, alertsCreated: 1 });
+    const rows = await itemsOf(f.db, "Netflix");
+    expect(rows.map((r) => [r.id === cancelled.id, r.status])).toEqual([
+      [true, "cancelled"],
+      [false, "suggested"],
+    ]);
+    const again = rows[1]!;
+    expect(await linksOf(f.db, cancelled.id)).toEqual([...cancelled.old].sort());
+    expect(await linksOf(f.db, again.id)).toEqual([...fresh].sort());
+    expect(again).toMatchObject({ expectedCents: -1549n, amountMode: "fixed", anchorDay: 20, chargeCount: 3, firstChargeDate: "2026-11-20", nextDueDate: "2027-02-20", accountId: f.checking, categoryId: f.cat("Subscriptions") });
+    // Checking's history starts 2026-03-05; the first new charge is 260 days in and 63 days old: new.
+    expect((await alertsOf(f.db, again.id)).map((a) => a.kind)).toEqual(["new_recurring"]);
+
+    // Monthly runs as the new series grows update the same suggestion and raise nothing.
+    const alerts = await alertCount(f.db);
+    for (const date of ["2027-02-20", "2027-03-20", "2027-04-20", "2027-05-20", "2027-06-20", "2027-07-20"] as IsoDate[]) {
+      fresh.push(await addTx(f.db, { accountId: f.checking, payee: "Netflix", date, cents: -1549n }));
+      const day = `${date.slice(0, 8)}22` as IsoDate;
+      expect(await runRecurringDetection(f.db, { today: day, now: at(`${day}T08:00:00Z`) })).toMatchObject({ suggestionsCreated: 0, suggestionsUpdated: 1, suggestionsDeleted: 0 });
+    }
+    expect((await itemsOf(f.db, "Netflix")).map((r) => [r.id, r.status])).toEqual([
+      [cancelled.id, "cancelled"],
+      [again.id, "suggested"],
+    ]);
+    expect(await row(f.db, again.id)).toMatchObject({ chargeCount: 9, lastChargeDate: "2027-07-20", nextDueDate: "2027-08-20" });
+    expect(await linksOf(f.db, again.id)).toEqual([...fresh].sort());
+    expect(await alertCount(f.db)).toBe(alerts);
+
+    // Confirmed, it is projected on its own billing day.
+    await updateRecurring(f.db, again.id, { status: "active" }, "2027-07-22", at("2027-07-22T09:00:00Z"));
+    const cf = await projectForHousehold(f.db, { today: "2027-07-22", horizonDays: 40 });
+    expect(cf.events.filter((e) => e.label === "Netflix").map((e) => [e.recurringId, e.date, e.amountCents])).toEqual([[again.id, "2027-08-20", -1549n]]);
+  });
+
+  it("a resubscription the owner dismissed stays dismissed as its charges continue", async () => {
+    const cancelled = await cancelledSeries("Hulu", -1799n);
+    await addSeries(f.db, f.checking, "Hulu", -1799n, ["2026-11-20", "2026-12-20", "2027-01-20"]);
+    await runRecurringDetection(f.db, { today: "2027-01-22", now: at("2027-01-22T08:00:00Z") });
+    const again = (await itemsOf(f.db, "Hulu")).find((r) => r.id !== cancelled.id)!;
+    await setRecurringStatus(f.db, again.id, "dismissed", { today: "2027-01-22", now: at("2027-01-22T09:00:00Z") });
+
+    await addSeries(f.db, f.checking, "Hulu", -1799n, ["2027-02-20", "2027-03-20"]);
+    const alerts = await alertCount(f.db);
+    const stats = await runRecurringDetection(f.db, { today: "2027-03-22", now: at("2027-03-22T08:00:00Z") });
+    expect(stats.suggestionsCreated).toBe(0);
+    expect((await itemsOf(f.db, "Hulu")).map((r) => [r.id, r.status])).toEqual([
+      [cancelled.id, "cancelled"],
+      [again.id, "dismissed"],
+    ]);
+    expect(await alertCount(f.db)).toBe(alerts);
+  });
+
+  it("another series of the same payee is not suggested a second time beside the resubscription", async () => {
+    // Apple bills iCloud on the 10th all along; Music on the 5th is cancelled and taken again on the same day.
+    const icloudDates: IsoDate[] = [];
+    for (let m = 3; m <= 12; m++) icloudDates.push(`2026-${String(m).padStart(2, "0")}-10` as IsoDate);
+    icloudDates.push("2027-01-10");
+    const icloud = await addSeries(f.db, f.checking, "Apple", -299n, icloudDates.filter((d) => d <= "2026-08-10"));
+    const music = await cancelledSeries("Apple", -1099n);
+    const icloudItem = (await itemsOf(f.db, "Apple")).find((r) => r.expectedCents === -299n)!;
+    expect(icloudItem.status).toBe("suggested");
+    icloud.push(...(await addSeries(f.db, f.checking, "Apple", -299n, icloudDates.filter((d) => d > "2026-08-10"))));
+    const fresh = await addSeries(f.db, f.checking, "Apple", -1099n, ["2026-11-05", "2026-12-05", "2027-01-05"]);
+
+    const stats = await runRecurringDetection(f.db, { today: "2027-01-16", now: at("2027-01-16T08:00:00Z") });
+    expect(stats).toMatchObject({ suggestionsCreated: 1, alertsCreated: 1 });
+    const rows = await itemsOf(f.db, "Apple");
+    expect(rows).toHaveLength(3);
+    const again = rows.find((r) => r.id !== icloudItem.id && r.id !== music.id)!;
+    expect(await linksOf(f.db, icloudItem.id)).toEqual([...icloud].sort());
+    expect(await row(f.db, icloudItem.id)).toMatchObject({ status: "suggested", expectedCents: -299n, chargeCount: 11 });
+    expect(await linksOf(f.db, music.id)).toEqual([...music.old].sort());
+    expect(await linksOf(f.db, again.id)).toEqual([...fresh].sort());
+    expect(again).toMatchObject({ status: "suggested", expectedCents: -1099n, anchorDay: 5, chargeCount: 3 });
+    expect((await alertsOf(f.db, again.id)).map((a) => a.kind)).toEqual(["new_recurring"]);
   });
 });

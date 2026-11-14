@@ -253,23 +253,39 @@ export async function loadDetectionInput(db: DbOrTx, today: IsoDate): Promise<De
   return { groups, historyStartByAccount, outflowsByPayee };
 }
 
-async function loadRowsWithLinks(tx: DbOrTx): Promise<Map<string, RecurringRowWithLinks[]>> {
-  const rows = await tx.select().from(recurring).orderBy(asc(recurring.createdAt), asc(recurring.id));
-  const links = await tx.select({ id: transaction.id, recurringId: transaction.recurringId }).from(transaction).where(isNotNull(transaction.recurringId));
+/**
+ * The rows of one (payee, sign) group with their links, read under `FOR UPDATE` inside the run's
+ * transaction (audit decision A10, second round). The run maps and rewrites what these rows hold
+ * now, not what they held when it started: an edit, confirm or dismiss that committed meanwhile
+ * is what it builds on, and one still in flight is waited for (it holds the row) and then read.
+ * An edit that starts after this read waits for the run instead and lands on top of its rewrite.
+ * Ordered by (created_at, id), the identity mapping's tie order.
+ */
+async function lockGroupRows(tx: DbOrTx, payeeId: string, sign: 1n | -1n): Promise<RecurringRowWithLinks[]> {
+  const rows = await tx
+    .select()
+    .from(recurring)
+    .where(and(eq(recurring.payeeId, payeeId), sign < 0n ? lt(recurring.expectedCents, 0n) : gte(recurring.expectedCents, 0n)))
+    .orderBy(asc(recurring.createdAt), asc(recurring.id))
+    .for("update");
+  if (rows.length === 0) return [];
+  const links = await tx
+    .select({ id: transaction.id, recurringId: transaction.recurringId })
+    .from(transaction)
+    .where(inArray(transaction.recurringId, rows.map((r) => r.id)));
   const linksByRow = new Map<string, string[]>();
   for (const l of links) {
     const list = linksByRow.get(l.recurringId!) ?? [];
     list.push(l.id);
     linksByRow.set(l.recurringId!, list);
   }
-  const out = new Map<string, RecurringRowWithLinks[]>();
-  for (const row of rows) {
-    const key = groupKey(row.payeeId, signOf(row.expectedCents));
-    const list = out.get(key) ?? [];
-    list.push({ ...row, linkedIds: linksByRow.get(row.id) ?? [] });
-    out.set(key, list);
-  }
-  return out;
+  return rows.map((row) => ({ ...row, linkedIds: linksByRow.get(row.id) ?? [] }));
+}
+
+/** The (payee, sign) group keys that have a cancelled row: those groups are upserted even without a detection. */
+async function groupsWithCancelledRows(tx: DbOrTx): Promise<Set<string>> {
+  const rows = await tx.selectDistinct({ payeeId: recurring.payeeId, outflow: sql<boolean>`${recurring.expectedCents} < 0` }).from(recurring).where(eq(recurring.status, "cancelled"));
+  return new Set(rows.map((r) => groupKey(r.payeeId, r.outflow ? -1n : 1n)));
 }
 
 /** The most common category among the given transactions (tie → smaller id); null when none is categorized. */
@@ -346,55 +362,74 @@ function suggestionRewrite(best: StoredRecurring, d: Detection, chargeCount: num
   return set;
 }
 
+/** The pure engine threw for one group inside `upsertDetections`, before it wrote anything. */
+class DetectionEngineError extends Error {
+  constructor(readonly engineError: unknown) {
+    super("recurring detection failed for one payee group");
+  }
+}
+
 /**
- * A cancelled row keeps the series it was cancelled with, so a detection that maps to it is the
- * old subscription. Charges dated after the cancel that the row does not hold are a new series
- * (the household subscribed again): they are detected on their own and suggested anew (audit
- * decision A11). Dismissed rows stay sticky: their links keep absorbing the series.
+ * A cancelled row keeps the series it was cancelled with: charges dated after its cancel cannot
+ * belong to it. The group's charges after the cancel (`status_changed_at`) that no cancelled row
+ * holds are detected on their own (audit decision A11), whether or not a detection of the whole
+ * group mapped to the row: a resubscription billed on another day does not score as one series
+ * with the old charges, so the whole group often yields nothing.
  */
-function resubscriptionDetections(cancelled: RecurringRowWithLinks, groupCharges: readonly ChargeLike[], today: IsoDate): Detection[] {
+function resubscriptionDetections(cancelled: RecurringRowWithLinks, endedIds: ReadonlySet<string>, groupCharges: readonly ChargeLike[], today: IsoDate): Detection[] {
   const cancelledOn = cancelled.statusChangedAt.toISOString().slice(0, 10);
-  const held = new Set(cancelled.linkedIds);
-  const after = groupCharges.filter((c) => c.date > cancelledOn && !held.has(c.id));
+  const after = groupCharges.filter((c) => c.date > cancelledOn && !endedIds.has(c.id));
   return after.length >= MIN_CHARGES ? detectRecurring(after, today) : [];
 }
 
 /**
- * Map one group's detections onto its existing rows by link overlap (largest overlap wins,
- * tie → oldest row; each row is claimed once). A mapped suggestion is rewritten in place
- * (keeping what the owner locked or chose, `suggestionRewrite`) and relinked, but only while it
- * is still a suggestion: a row confirmed or dismissed since the run read it only gets
- * `detected_at`, as a mapped row of any other status does (its parameters and links belong to
- * the user and the matcher). A mapped cancelled row hands the charges after its cancel to a
- * detection of their own (`resubscriptionDetections`). An unmapped detection inserts a new
- * suggestion, with a `new_recurring` alert for a new outflow series. `groupCharges` is the
- * group the detections came from.
+ * Map one group's detections onto its rows by link overlap (largest overlap wins, tie → oldest
+ * row; each row is claimed once). The rows are read here under lock (`lockGroupRows`), so the
+ * mapping and the rewrite use what the owner has done up to now. A mapped suggestion is
+ * rewritten in place (keeping what the owner locked or chose, `suggestionRewrite`) and relinked;
+ * a mapped row of any other status only gets `detected_at` (its parameters and links belong to
+ * the user and the matcher). An unmapped detection inserts a new suggestion, with a
+ * `new_recurring` alert for a new outflow series.
+ *
+ * Then every cancelled row of the group hands the charges after its cancel to detections of
+ * their own (`resubscriptionDetections`), mapped the same way: the suggestion of an earlier run
+ * is updated in place, a dismissed one absorbs them as designed, and a new series becomes a
+ * suggestion. Such a detection is dropped when it shares a charge with a series this run already
+ * placed on a row that is not cancelled (another series of the payee, or a resubscription the
+ * whole group already proposes), so nothing is suggested twice. `groupCharges` is the group the
+ * detections came from.
  */
 export async function upsertDetections(
   tx: DbOrTx,
   payeeId: string,
   sign: 1n | -1n,
   detections: readonly Detection[],
-  existing: readonly RecurringRowWithLinks[],
   runStart: Date,
   today: IsoDate,
   historyStartByAccount: ReadonlyMap<string, IsoDate>,
   groupCharges: readonly ChargeLike[] = [],
 ): Promise<UpsertStats> {
   const stats: UpsertStats = { created: 0, updated: 0, alertsCreated: 0 };
-  if (detections.length === 0) return stats;
+  const candidates = await lockGroupRows(tx, payeeId, sign);
+  const cancelled = candidates.filter((r) => r.status === "cancelled");
+  if (detections.length === 0 && cancelled.length === 0) return stats;
+  // Detected before anything is written, so an engine error leaves the group's rows untouched.
+  const endedIds = new Set(cancelled.flatMap((r) => r.linkedIds));
+  let resubscriptions: Detection[][];
+  try {
+    resubscriptions = cancelled.map((c) => resubscriptionDetections(c, endedIds, groupCharges, today));
+  } catch (error) {
+    throw new DetectionEngineError(error);
+  }
   const claimed = new Set<string>();
-  // Only rows of this payee and direction can be the same series.
-  const candidates = existing.filter((r) => r.payeeId === payeeId && signOf(r.expectedCents) === sign);
   // Charges linked to a user-owned row are never re-pointed by the detector.
   const protectedIds = new Set(candidates.filter((r) => r.status !== "suggested").flatMap((r) => r.linkedIds));
+  // Charges of the series this run placed on a row that is not cancelled, or inserted.
+  const covered = new Set<string>();
   const [payeeRow] = await tx.select({ name: payee.name, defaultCategoryId: payee.defaultCategoryId }).from(payee).where(eq(payee.id, payeeId));
   if (!payeeRow) return stats;
 
-  // Detections to place; a mapped cancelled row may append the detection of its resubscription.
-  const queue: Detection[] = [...detections];
-  for (let i = 0; i < queue.length; i++) {
-    const d = queue[i]!;
+  const place = async (d: Detection): Promise<void> => {
     const onCycle = new Set(d.onCycleIds);
     let best: RecurringRowWithLinks | undefined;
     let bestOverlap = 0;
@@ -411,30 +446,25 @@ export async function upsertDetections(
 
     if (best) {
       claimed.add(best.id);
+      if (best.status !== "cancelled") for (const id of [...d.onCycleIds, ...best.linkedIds]) covered.add(id);
       if (best.status !== "suggested") {
         await tx.update(recurring).set({ detectedAt: runStart }).where(eq(recurring.id, best.id));
-        if (best.status === "cancelled") queue.push(...resubscriptionDetections(best, groupCharges, today));
-        continue;
+        return;
       }
       const linkIds = d.onCycleIds.filter((id) => !protectedIds.has(id));
       const categoryId = best.categoryId ?? (await modalCategory(tx, linkIds)) ?? payeeRow.defaultCategoryId ?? null;
-      // Conditional on the row still being a suggestion: a confirm that raced this run wins.
-      const rewritten = await tx
+      await tx
         .update(recurring)
         .set({ ...suggestionRewrite(best, d, linkIds.length, categoryId), detectedAt: runStart, updatedAt: runStart })
-        .where(and(eq(recurring.id, best.id), eq(recurring.status, "suggested")))
-        .returning({ id: recurring.id });
-      if (rewritten.length === 0) {
-        await tx.update(recurring).set({ detectedAt: runStart }).where(eq(recurring.id, best.id));
-        continue;
-      }
+        .where(eq(recurring.id, best.id));
       const drop = best.linkedIds.filter((id) => !onCycle.has(id));
       if (drop.length > 0) await tx.update(transaction).set({ recurringId: null }).where(and(inArray(transaction.id, drop), eq(transaction.recurringId, best.id)));
       if (linkIds.length > 0) await tx.update(transaction).set({ recurringId: best.id }).where(inArray(transaction.id, linkIds));
       stats.updated++;
-      continue;
+      return;
     }
 
+    for (const id of d.onCycleIds) covered.add(id);
     const linkIds = d.onCycleIds.filter((id) => !protectedIds.has(id));
     const categoryId = (await modalCategory(tx, linkIds)) ?? payeeRow.defaultCategoryId ?? null;
     const [inserted] = await tx
@@ -462,6 +492,12 @@ export async function upsertDetections(
     if (d.expectedCents < 0n && isNewSeries(d.firstChargeDate, historyStart, today)) {
       if (await raiseAlert(tx, { kind: "new_recurring", dedupeKey: `new:${id}`, recurringId: id, payeeId })) stats.alertsCreated++;
     }
+  };
+
+  for (const d of detections) await place(d);
+  for (const d of resubscriptions.flat()) {
+    if (d.onCycleIds.some((id) => covered.has(id))) continue;
+    await place(d);
   }
   return stats;
 }
@@ -496,7 +532,7 @@ export async function runRecurringDetection(db: Db, opts: DetectionRunOptions): 
 
   await db.transaction(async (tx) => {
     const input = await loadDetectionInput(tx, today);
-    const existingByKey = await loadRowsWithLinks(tx);
+    const cancelledKeys = await groupsWithCancelledRows(tx);
     const skippedPayees = new Set<string>();
 
     for (const [key, charges] of input.groups) {
@@ -511,7 +547,17 @@ export async function runRecurringDetection(db: Db, opts: DetectionRunOptions): 
         opts.onGroupError?.(payeeId, error);
         continue;
       }
-      const r = await upsertDetections(tx, payeeId, sign, detections, existingByKey.get(key) ?? [], runStart, today, input.historyStartByAccount, charges);
+      if (detections.length === 0 && !cancelledKeys.has(key)) continue;
+      let r: UpsertStats;
+      try {
+        r = await upsertDetections(tx, payeeId, sign, detections, runStart, today, input.historyStartByAccount, charges);
+      } catch (error) {
+        if (!(error instanceof DetectionEngineError)) throw error;
+        skippedPayees.add(payeeId);
+        stats.groupsSkipped++;
+        opts.onGroupError?.(payeeId, error.engineError);
+        continue;
+      }
       stats.suggestionsCreated += r.created;
       stats.suggestionsUpdated += r.updated;
       stats.alertsCreated += r.alertsCreated;
@@ -527,7 +573,9 @@ export async function runRecurringDetection(db: Db, opts: DetectionRunOptions): 
           skippedPayees.size > 0 ? notInArray(recurring.payeeId, [...skippedPayees]) : undefined,
           or(isNull(recurring.detectedAt), lt(recurring.detectedAt, runStart)),
         ),
-      );
+      )
+      // Locked and re-checked: a suggestion confirmed or dismissed meanwhile is no longer one, and is kept.
+      .for("update");
     if (stale.length > 0) {
       const ids = stale.map((s) => s.id);
       await tx.update(transaction).set({ recurringId: null }).where(inArray(transaction.recurringId, ids));
