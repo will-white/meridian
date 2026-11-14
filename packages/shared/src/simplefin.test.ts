@@ -4,12 +4,15 @@ import {
   describeSimplefinError,
   highWaterMarkAfterBalances,
   highWaterMarkAfterSync,
+  JSONB_DEPTH_MARKER,
+  JSONB_SAFE_MAX_DEPTH,
   jsonbSafe,
   parseAccessUrl,
   parseSimplefinAmount,
   readSimplefinAccountSet,
   SimplefinAccountSet,
   simplefinFeedHealth,
+  SimplefinShapeError,
   simplefinTransactionDate,
   syncGapRange,
   syncWindowStart,
@@ -313,6 +316,95 @@ describe("readSimplefinAccountSet (a4-sync-parse-03)", () => {
   });
 });
 
+describe("a4-sync-parse, second round: lists that are not lists, a missing account list, a body nested too deep", () => {
+  const chk = { org: { name: "Bank" }, id: "CHK", name: "Checking", currency: "USD", balance: "1.00", "balance-date": 1760000000, transactions: [] };
+
+  it("a4-sync-parse-03: errors and errlist that are not lists are read, and only an errlist nothing can be read from holds the response back", () => {
+    // errors: one message is one entry; a value that is no message reads as absent (errors never hold the mark).
+    let read = readSimplefinAccountSet({ errors: "Scheduled maintenance tonight", accounts: [chk] });
+    expect(read.set.errors).toEqual(["Scheduled maintenance tonight"]);
+    expect(read.set.accounts.map((a) => a.id)).toEqual(["CHK"]);
+    expect(read.problems).toEqual([]);
+    expect(readSimplefinAccountSet({ errors: 503, accounts: [] }).set.errors).toEqual(["503"]);
+    expect(readSimplefinAccountSet({ errors: { msg: "x" }, accounts: [] }).set.errors).toEqual([]);
+    expect(readSimplefinAccountSet({ errors: true, accounts: [] }).problems).toEqual([]);
+
+    // errlist: one entry is a list of one, read by the rules of a list's entries.
+    read = readSimplefinAccountSet({ errlist: { code: "act.failed", account_id: "CARD", msg: null }, accounts: [chk] });
+    expect(read.set.errlist).toEqual([{ code: "act.failed", account_id: "CARD" }]);
+    expect(read.problems).toEqual([]);
+    expect(readSimplefinAccountSet({ errlist: "Scheduled maintenance", accounts: [] }).set.errlist).toEqual([{ code: "unknown", msg: "Scheduled maintenance" }]);
+
+    // A value that is neither a list, an entry nor a message: the problem report itself cannot be read.
+    for (const odd of [true, 42, false]) {
+      read = readSimplefinAccountSet({ errors: [], errlist: odd, accounts: [chk] });
+      expect(read.set.errlist).toEqual([]);
+      expect(read.set.accounts.map((a) => a.id)).toEqual(["CHK"]);
+      expect(read.problems).toEqual([
+        {
+          code: "errlist.unreadable",
+          message: "The Bridge's list of problems could not be read, so this response was not taken as complete: pending items were kept, and the next sync asks again from the last complete one",
+        },
+      ]);
+    }
+  });
+
+  it("new issue: a body whose accounts is missing or null is not an account set, and says what the Bridge said; an empty list is one", () => {
+    expect(() => readSimplefinAccountSet({ errors: ["Temporary failure, try later"], accounts: null })).toThrow(
+      new SimplefinShapeError("accounts: missing (the Bridge said: Temporary failure, try later)"),
+    );
+    expect(() => readSimplefinAccountSet({ message: "Service temporarily unavailable" })).toThrow(new SimplefinShapeError("accounts: missing"));
+    expect(() => readSimplefinAccountSet({ errors: ["<b>Down</b>", "Try later"], errlist: [{ code: "con.auth" }, { code: "act.failed", msg: "Down" }] })).toThrow(
+      new SimplefinShapeError(
+        // The errlist entries as the connection shows them, then the plain messages that do not repeat one (a4-sync-parse-12).
+        "accounts: missing (the Bridge said: The bank connection needs to be re-authenticated at the SimpleFIN Bridge.; The Bridge could not read this account. It will retry on the next sync. (Down); Try later)",
+      ),
+    );
+    expect(() => readSimplefinAccountSet({ errors: [], accounts: { CHK: {} } })).toThrow(new SimplefinShapeError("accounts: expected a list"));
+    const empty = readSimplefinAccountSet({ errors: [], accounts: [] });
+    expect(empty.set.accounts).toEqual([]);
+    expect(empty.problems).toEqual([]);
+  });
+
+  it("a4-sync-parse-05: jsonbSafe keeps 1000 levels of nesting and cuts off what is deeper, so the copy can be written", () => {
+    const nest = (levels: number): unknown => {
+      let v: unknown = "x\u0000";
+      for (let i = 0; i < levels; i++) v = [v];
+      return v;
+    };
+    const depthOf = (v: unknown): { arrays: number; leaf: unknown } => {
+      let arrays = 0;
+      while (Array.isArray(v)) {
+        v = v[0];
+        arrays++;
+      }
+      return { arrays, leaf: v };
+    };
+    expect(JSONB_SAFE_MAX_DEPTH).toBe(1000);
+    // The value itself is level 1: 1000 nested lists are all kept, the string inside them included.
+    expect(depthOf(jsonbSafe(nest(1000)))).toEqual({ arrays: 1000, leaf: "x�" });
+    // The 1001st list would be level 1001: it becomes the marker, inside the 1000 that stay.
+    expect(depthOf(jsonbSafe(nest(1001)))).toEqual({ arrays: 1000, leaf: JSONB_DEPTH_MARKER });
+    // In a body, the root object is level 1, so a field holds 999 levels of lists.
+    const body = jsonbSafe({ errors: [], accounts: [], junk: nest(20_000) }) as { accounts: unknown[]; junk: unknown };
+    expect(body.accounts).toEqual([]);
+    expect(depthOf(body.junk)).toEqual({ arrays: 999, leaf: JSONB_DEPTH_MARKER });
+    // What the database driver does with it: before, 20,000 levels threw "Maximum call stack size exceeded".
+    expect(() => JSON.stringify(body)).not.toThrow();
+    // Objects count as levels too.
+    let objects: unknown = 1;
+    for (let i = 0; i < 1500; i++) objects = { k: objects };
+    let cut = jsonbSafe(objects);
+    let levels = 0;
+    while (typeof cut === "object" && cut !== null) {
+      cut = (cut as { k: unknown }).k;
+      levels++;
+    }
+    expect(levels).toBe(1000);
+    expect(cut).toBe(JSONB_DEPTH_MARKER);
+  });
+});
+
 describe("transacted_at (a4-sync-parse-04, a4-sync-parse-08)", () => {
   it("dates a transaction by when it happened, then when it posted, then the household's day", () => {
     // posted 2026-10-30T12:00Z, transacted_at 2026-10-27T12:00Z
@@ -338,8 +430,14 @@ describe("jsonbSafe (a4-sync-parse-05)", () => {
     let deep: unknown = "x\u0000";
     for (let i = 0; i < 100_000; i++) deep = [deep];
     let out = jsonbSafe(deep);
-    for (let i = 0; i < 100_000; i++) out = (out as unknown[])[0];
-    expect(out).toBe("x\uFFFD");
+    // Second round: what is nested deeper than 1000 levels is not kept (the database could not take it).
+    let levels = 0;
+    while (Array.isArray(out)) {
+      out = out[0];
+      levels++;
+    }
+    expect(levels).toBe(JSONB_SAFE_MAX_DEPTH);
+    expect(out).toBe(JSONB_DEPTH_MARKER);
   });
 });
 

@@ -63,8 +63,9 @@ export function syncGapNotice(previous: IsoDate | null, windowStart: IsoDate, co
  *
  * Audit batch a4-sync-parse: the response is stored before it is read, whatever its shape
  * (one that is not JSON as `{ notJson }`), with NUL characters and unpaired surrogates made
- * safe for jsonb; it is read one account and one transaction at a time, so an entry that
- * cannot be read is skipped and reported instead of failing the sync. "Today" (the window,
+ * safe for jsonb and nesting deeper than 1000 levels cut off; it is read one account and one
+ * transaction at a time, so an entry that cannot be read is skipped and reported instead of
+ * failing the sync, and only a body without a list of accounts fails (second round). "Today" (the window,
  * the mark, a pending item's date) is the household's day. Error text is sanitized and
  * bounded before it is stored for display.
  */

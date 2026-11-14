@@ -98,7 +98,7 @@ export const importLog = pgTable(
     status: text("status", { enum: ["running", "ok", "error"] }).notNull().default("running"),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
-    /** Raw SimpleFIN response or the CSV text, as received (a response that is not JSON as `{ notJson }`; NUL characters and unpaired surrogates, which jsonb refuses, as U+FFFD). */
+    /** Raw SimpleFIN response or the CSV text, as received (a response that is not JSON as `{ notJson }`; NUL characters and unpaired surrogates, which jsonb refuses, as U+FFFD; nesting deeper than 1000 levels as a marker, audit decision 123). */
     rawPayload: jsonb("raw_payload"),
     stats: jsonb("stats").$type<Record<string, number>>(),
     errors: jsonb("errors").$type<ConnectionError[]>().notNull().default([]),
