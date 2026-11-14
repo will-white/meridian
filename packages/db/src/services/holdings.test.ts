@@ -225,7 +225,10 @@ describe.skipIf(!TEST_DATABASE_URL)("holding snapshots", () => {
     await t.db.update(holdingSnapshot).set({ price: "37.81" }).where(and(eq(holdingSnapshot.accountId, M2), eq(holdingSnapshot.securityId, tgt)));
     expect(await rebuildImpliedPrices(t.db, { securityIds: [tgt], dates: ["2026-10-31"] })).toEqual({ written: 0, removed: 0 });
     expect((await getPrice(t.db, tgt, "2026-10-31"))!.close).toBe(f8("37.8"));
-    await t.db.update(holdingSnapshot).set({ valueCents: 4725001n }).where(and(eq(holdingSnapshot.accountId, M2), eq(holdingSnapshot.securityId, tgt)));
+    // M2's row grows to 1,250 units at 37.81 = 47,262.50 and now wins the tie with its own (consistent) price. (It used to be
+    // set to 4,725,001 cents beside 250 units at 37.81, a price that does not produce its value, which the rebuild now
+    // replaces by value ÷ quantity like the snapshot writer: b2-investment-engines, second round.)
+    await t.db.update(holdingSnapshot).set({ quantity: "1250", valueCents: 4726250n }).where(and(eq(holdingSnapshot.accountId, M2), eq(holdingSnapshot.securityId, tgt)));
     // The household-wide repair also derives VTI's 10-10 close (500) from the first test's manual set, which never ran a rebuild.
     expect(await rebuildImpliedPrices(t.db, {})).toEqual({ written: 2, removed: 0 });
     expect((await getPrice(t.db, S.securities.vti, "2026-10-10"))!).toMatchObject({ source: "implied", close: f8("500") });
@@ -360,5 +363,20 @@ describe.skipIf(!TEST_DATABASE_URL)("holding snapshots", () => {
     await t.db.update(price).set({ close: "0" }).where(and(eq(price.securityId, xyzf), eq(price.date, "2026-09-30")));
     expect(await rebuildImpliedPrices(t.db, { securityIds: [xyzf], dates: ["2026-09-30"] })).toEqual({ written: 1, removed: 0 });
     expect((await getPrice(t.db, xyzf, "2026-09-30"))!).toMatchObject({ source: "implied", close: f8("123.456") });
+
+    // b2-investment-engines (second round): so does a row stored before the rule with a non-zero price that does not
+    // produce its value (a mis-mapped column: 1.00 beside 10 units worth 1,234.56), and the close it once wrote.
+    const legacy = and(eq(holdingSnapshot.accountId, P1), eq(holdingSnapshot.securityId, xyzf), eq(holdingSnapshot.date, "2026-09-30"));
+    await t.db.update(holdingSnapshot).set({ price: "1" }).where(legacy);
+    await t.db.update(price).set({ close: "1" }).where(and(eq(price.securityId, xyzf), eq(price.date, "2026-09-30")));
+    expect(await rebuildImpliedPrices(t.db, { securityIds: [xyzf], dates: ["2026-09-30"] })).toEqual({ written: 1, removed: 0 });
+    expect((await getPrice(t.db, xyzf, "2026-09-30"))!).toMatchObject({ source: "implied", close: f8("123.456") });
+    expect(await rebuildImpliedPrices(t.db, { securityIds: [xyzf], dates: ["2026-09-30"] })).toEqual({ written: 0, removed: 0 });
+    // A reported price that produces the value within max(1 cent, 0.5 %) still stands: 10 × 123.45 = 1,234.50 against 1,234.56.
+    await t.db.update(holdingSnapshot).set({ price: "123.45" }).where(legacy);
+    expect(await rebuildImpliedPrices(t.db, { securityIds: [xyzf], dates: ["2026-09-30"] })).toEqual({ written: 1, removed: 0 });
+    expect((await getPrice(t.db, xyzf, "2026-09-30"))!).toMatchObject({ source: "implied", close: f8("123.45") });
+    // The worthless position's 0 beside a value of 0 is still its close.
+    expect((await getPrice(t.db, dead, "2026-09-30"))!).toMatchObject({ source: "implied", close: 0n });
   });
 });

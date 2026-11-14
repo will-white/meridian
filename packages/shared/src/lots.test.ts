@@ -374,6 +374,103 @@ describe("the 0.001-share tolerance on disposals (split rounding and statement p
   });
 });
 
+describe("b2-investment-engines (second round), p3-09: a pick within 0.001 shares of its lot takes exactly the lot and counts as satisfied", () => {
+  // Two 1-share lots at 5.00, 1:3 reverse split: each scales to 0.33333333 (basis 500 each); the sales are at 20.00 on 09-02.
+  const two = [buy("b1", "2025-03-03", "X", "1", "5", -500n), buy("b2", "2025-03-04", "X", "1", "5", -500n), split("sp", "2025-09-01", "X", 1, 3)];
+  const pick = (lotId: string, quantity: string, position = 0): EngineLotPick => ({ sellTxnId: "s1", lotId, quantity: f(quantity), position });
+  const sale = (qty: string, proceeds: bigint) => sell("s1", "2025-09-02", "X", qty, "20", proceeds);
+  const pieces = (r: LotBuildResult) => r.disposals.map((d) => [d.lotId, d.quantity, d.proceedsCents, d.basisCents, d.gainCents]);
+
+  it("a pick a hair above its lot takes the lot and nothing of the other lot (the reviewer's 0.00046667 case)", () => {
+    // 0.3338 × 20.00 = 6.676 → 668; b1 holds 0.33333333, 0.00046667 less than the pick.
+    const r = build([...two, sale("0.3338", 668n)], "specific", [pick("b1", "0.3338")]);
+    expect(r.warnings).toEqual([]);
+    expect(pieces(r)).toEqual([["b1", f("0.33333333"), 668n, 500n, 168n]]);
+    expect(lotById(r, "b1")).toMatchObject({ quantity: 0n, costBasisCents: 0n, closedDate: "2025-09-02" });
+    expect(lotById(r, "b2")).toMatchObject({ quantity: f("0.33333333"), costBasisCents: 500n, closedDate: null });
+    expect(lastPosition(r, "X")).toBe(f("0.33333333"));
+  });
+
+  it("a pick a hair below its lot takes the lot: no dust lot of 0.00003333 shares and 0 basis stays open", () => {
+    // 0.3333 × 20.00 = 6.666 → 667.
+    const r = build([...two, sale("0.3333", 667n)], "specific", [pick("b1", "0.3333")]);
+    expect(r.warnings).toEqual([]);
+    expect(pieces(r)).toEqual([["b1", f("0.33333333"), 667n, 500n, 167n]]);
+    expect(lotById(r, "b1")).toMatchObject({ quantity: 0n, costBasisCents: 0n, closedDate: "2025-09-02" });
+    expect(lotById(r, "b2")).toMatchObject({ quantity: f("0.33333333"), costBasisCents: 500n, closedDate: null });
+  });
+
+  it("is bounded by 0.001 shares on both sides of the lot", () => {
+    // Exactly 0.001 above (0.33433333 × 20.00 = 6.6866666 → 669) and below (0.33233333 → 6.6466666 → 665): the lot, no warning.
+    const atAbove = build([...two, sale("0.33433333", 669n)], "specific", [pick("b1", "0.33433333")]);
+    expect(atAbove.warnings).toEqual([]);
+    expect(pieces(atAbove)).toEqual([["b1", f("0.33333333"), 669n, 500n, 169n]]);
+    const atBelow = build([...two, sale("0.33233333", 665n)], "specific", [pick("b1", "0.33233333")]);
+    expect(atBelow.warnings).toEqual([]);
+    expect(pieces(atBelow)).toEqual([["b1", f("0.33333333"), 665n, 500n, 165n]]);
+    // 0.00116667 above (0.3345): pick_exceeds_lot as before, and the rest of the sale is FIFO from b2.
+    const beyond = build([...two, sale("0.3345", 669n)], "specific", [pick("b1", "0.3345")]);
+    expect(beyond.warnings).toEqual([{ code: "pick_exceeds_lot", txnId: "s1", securityId: "X", quantity: f("0.3345"), detail: "b1" }]);
+    expect(beyond.disposals.map((d) => [d.lotId, d.quantity])).toEqual([
+      ["b1", f("0.33333333")],
+      ["b2", f("0.00116667")],
+    ]);
+    // 0.00133333 below (0.332): a partial pick that leaves those shares open (basis 500 − round(500 × 0.332 / 0.33333333) = 500 − 498).
+    const short = build([...two, sale("0.332", 664n)], "specific", [pick("b1", "0.332")]);
+    expect(short.warnings).toEqual([]);
+    expect(lotById(short, "b1")).toMatchObject({ quantity: f("0.00133333"), costBasisCents: 2n, closedDate: null });
+  });
+
+  it("the FIFO remainder is the sale less the pick, whichever side of its lot the pick is", () => {
+    // 0.5 × 20.00 = 10.00. Pick 0.3338: b1 whole, FIFO 0.5 − 0.3338 = 0.1662 from b2.
+    // Proceeds 1000 over [0.33333333, 0.1662]: 667.29 + 332.71 → 667 + 333. b2's basis round(500 × 0.1662 / 0.33333333) = 249.
+    const above = build([...two, sale("0.5", 1000n)], "specific", [pick("b1", "0.3338")]);
+    expect(above.warnings).toEqual([]);
+    expect(pieces(above)).toEqual([
+      ["b1", f("0.33333333"), 667n, 500n, 167n],
+      ["b2", f("0.1662"), 333n, 249n, 84n],
+    ]);
+    expect(lotById(above, "b2")).toMatchObject({ quantity: f("0.16713333"), costBasisCents: 251n, closedDate: null });
+    // Pick 0.3333: b1 whole, FIFO 0.1667 from b2. 1000 over [0.33333333, 0.1667]: 666.62 + 333.38 → 667 + 333; round(500 × 0.1667 / 0.33333333) = 250.
+    const below = build([...two, sale("0.5", 1000n)], "specific", [pick("b1", "0.3333")]);
+    expect(below.warnings).toEqual([]);
+    expect(pieces(below)).toEqual([
+      ["b1", f("0.33333333"), 667n, 500n, 167n],
+      ["b2", f("0.1667"), 333n, 250n, 83n],
+    ]);
+    expect(lotById(below, "b2")).toMatchObject({ quantity: f("0.16663333"), costBasisCents: 250n, closedDate: null });
+  });
+
+  it("a whole-position sale with such picks takes every lot once: no dust pieces, no oversell", () => {
+    // 0.6666 is within 0.001 of the position (0.66666666): picks of 0.3333 on b2 then b1 take both lots and nothing is left for FIFO.
+    // 0.6666 × 20.00 = 13.332 → 1333 over two equal pieces: 667 + 666.
+    const both = build([...two, sale("0.6666", 1333n)], "specific", [pick("b2", "0.3333", 0), pick("b1", "0.3333", 1)]);
+    expect(both.warnings).toEqual([]);
+    expect(pieces(both)).toEqual([
+      ["b2", f("0.33333333"), 667n, 500n, 167n],
+      ["b1", f("0.33333333"), 666n, 500n, 166n],
+    ]);
+    expect(lastPosition(both, "X")).toBe(0n);
+    // A sale a hair below the position (0.666) whose stored picks name the lots' own 0.33333333 each: both lots, no pick_exceeds_sale (13.32 → 666 + 666).
+    const named = build([...two, sale("0.666", 1332n)], "specific", [pick("b1", "0.33333333", 0), pick("b2", "0.33333333", 1)]);
+    expect(named.warnings).toEqual([]);
+    expect(pieces(named)).toEqual([
+      ["b1", f("0.33333333"), 666n, 500n, 166n],
+      ["b2", f("0.33333333"), 666n, 500n, 166n],
+    ]);
+    // Three lots (Σ 0.99999999) and a sale of 1.0008 with one pick of 0.3338: the pick takes b1, FIFO the other two (2002 → 668 + 667 + 667).
+    const three = [...two.slice(0, 2), buy("b3", "2025-03-05", "X", "1", "5", -500n), split("sp", "2025-09-01", "X", 1, 3)];
+    const r = build([...three, sale("1.0008", 2002n)], "specific", [pick("b1", "0.3338")]);
+    expect(r.warnings).toEqual([]);
+    expect(pieces(r)).toEqual([
+      ["b1", f("0.33333333"), 668n, 500n, 168n],
+      ["b2", f("0.33333333"), 667n, 500n, 167n],
+      ["b3", f("0.33333333"), 667n, 500n, 167n],
+    ]);
+    expect(r.lots.every((l) => l.quantity === 0n && l.closedDate === "2025-09-02")).toBe(true);
+  });
+});
+
 describe("TC5. reinvested dividend (re-derived: two rows, plan decision 6)", () => {
   // The design had one `reinvest` row carrying income with cash effect 0. Under the plan the
   // importer lands a `dividend` (+5100, income) and a `reinvest` (−5100, a purchase); the
