@@ -4,6 +4,10 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  drizzle-orm>react: '-'
+  drizzle-orm>@types/react: '-'
+
 importers:
 
   .:
@@ -55,7 +59,7 @@ importers:
         version: 13.3.3
       drizzle-orm:
         specifier: ^0.38.3
-        version: 0.38.4(@types/react@19.3.0)(postgres@3.4.9)(react@19.3.0)
+        version: 0.38.4(postgres@3.4.9)
       fastify:
         specifier: ^5.2.0
         version: 5.12.7
@@ -141,7 +145,7 @@ importers:
         version: link:../../packages/shared
       drizzle-orm:
         specifier: ^0.38.3
-        version: 0.38.4(@types/react@19.3.0)(postgres@3.4.9)(react@19.3.0)
+        version: 0.38.4(postgres@3.4.9)
       postgres:
         specifier: ^3.4.5
         version: 3.4.9
@@ -163,7 +167,7 @@ importers:
         version: link:../shared
       drizzle-orm:
         specifier: ^0.38.3
-        version: 0.38.4(@types/react@19.3.0)(postgres@3.4.9)(react@19.3.0)
+        version: 0.38.4(postgres@3.4.9)
       postgres:
         specifier: ^3.4.5
         version: 3.4.9
@@ -2350,7 +2354,7 @@ packages:
       '@tidbcloud/serverless': '*'
       '@types/better-sqlite3': '*'
       '@types/pg': '*'
-      '@types/react': '>=18'
+      '@types/react': '*'
       '@types/sql.js': '*'
       '@vercel/postgres': '>=0.8.0'
       '@xata.io/client': '*'
@@ -2363,7 +2367,7 @@ packages:
       pg: '>=8'
       postgres: '>=3'
       prisma: '*'
-      react: '>=18'
+      react: '*'
       sql.js: '>=1'
       sqlite3: '>=5'
     peerDependenciesMeta:
@@ -5859,11 +5863,9 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  drizzle-orm@0.38.4(@types/react@19.3.0)(postgres@3.4.9)(react@19.3.0):
+  drizzle-orm@0.38.4(postgres@3.4.9):
     optionalDependencies:
-      '@types/react': 19.3.0
       postgres: 3.4.9
-      react: 19.3.0
 
   dunder-proto@1.0.1:
     dependencies:

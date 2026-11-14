@@ -5,8 +5,8 @@ import type { Db } from "./index.js";
 
 /**
  * Folder with drizzle-kit output. Resolved from this file in development; the
- * bundled API and worker set MERIDIAN_MIGRATIONS_DIR because import.meta.url then
- * points at the bundle.
+ * bundled API sets MERIDIAN_MIGRATIONS_DIR because import.meta.url then points at
+ * the bundle. Only the API runs migrations (at boot); the worker image has none.
  */
 export const migrationsFolder =
   process.env.MERIDIAN_MIGRATIONS_DIR ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "drizzle");

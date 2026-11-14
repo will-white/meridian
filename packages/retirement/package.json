@@ -7,7 +7,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "reference:write": "tsx reference/independent.ts --write",
-    "reference:check": "tsx reference/independent.ts --check"
+    "reference:check": "tsx reference/independent.ts --check",
+    "bench": "tsx bench/run.ts"
   },
   "dependencies": {
     "@meridian/shared": "workspace:*",

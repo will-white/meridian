@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "node ../../scripts/bundle.mjs src/main.ts dist/main.js",
-    "start": "node dist/main.js",
+    "start": "node --enable-source-maps dist/main.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },

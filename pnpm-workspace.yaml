@@ -1,3 +1,12 @@
 packages:
   - "apps/*"
   - "packages/*"
+
+# drizzle-orm declares react and @types/react as optional peers (for its Expo and op-sqlite live
+# queries, which Meridian does not use). pnpm fills an optional peer that is already in the
+# workspace's graph (auto-install-peers and dedupe-peer-dependents, both on by default), so every
+# drizzle-orm install got the web app's React, the API and worker images included. "-" removes
+# the two from drizzle-orm (audit a9-dependencies-01).
+overrides:
+  "drizzle-orm>react": "-"
+  "drizzle-orm>@types/react": "-"

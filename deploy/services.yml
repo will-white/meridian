@@ -95,7 +95,6 @@ services:
     environment:
       - NODE_ENV=production
       - MERIDIAN_DB_HOST=db
-      - MERIDIAN_MIGRATIONS_DIR=/app/packages/db/drizzle
       # Touched by the job runner after every pass over the queue; read by the healthcheck.
       - WORKER_HEARTBEAT_FILE=/tmp/meridian-worker-heartbeat
       - POSTGRES_USER

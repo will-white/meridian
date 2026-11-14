@@ -241,6 +241,8 @@ describe("thread counts and chunks", () => {
   it("run options are checked", async () => {
     await expect(runSimulation(t20(100), { threads: 0, chunkPaths: 0 })).rejects.toThrow(RangeError);
     await expect(runSimulation(t20(100), { threads: 0, maxRunMs: 0 })).rejects.toThrow(RangeError);
+    await expect(runSimulation(t20(100), { threads: 0, maxRunMs: 2 ** 31 })).rejects.toThrow(RangeError);
+    await expect(runSimulation(t20(100), { threads: 0, maxRunMs: Number.NaN })).rejects.toThrow(RangeError);
   });
 });
 

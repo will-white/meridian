@@ -46,6 +46,8 @@ export const MAX_THREADS = 64;
 /** A run's time limit when the caller gives none (engine-and-returns §3.13 item 8); the job passes `RETIREMENT_RUN_MAX_MS`. */
 export const DEFAULT_MAX_RUN_MS = 600_000;
 
+const MAX_TIMER_MS = 2_147_483_647;
+
 /** The package's own thread entry (development and its tests, C10); production passes the worker app's bundled `simThread.js`. */
 export const DEV_THREAD_ENTRY = new URL("./thread.boot.mjs", import.meta.url);
 
@@ -111,7 +113,8 @@ function checkThreads(threads: number): number {
 function checkRunOptions(opts: RunOptions): { maxRunMs: number; chunkPaths: number } {
   const maxRunMs = opts.maxRunMs ?? DEFAULT_MAX_RUN_MS;
   const chunkPaths = opts.chunkPaths ?? CHUNK_PATHS;
-  if (!(maxRunMs > 0) || !Number.isFinite(maxRunMs)) throw new RangeError(`maxRunMs must be a positive number of milliseconds, got ${maxRunMs}`);
+  // A timer longer than 2^31 − 1 ms would fire at once.
+  if (!(maxRunMs > 0) || !(maxRunMs <= MAX_TIMER_MS)) throw new RangeError(`maxRunMs must be 1 to ${MAX_TIMER_MS} milliseconds, got ${maxRunMs}`);
   if (!Number.isSafeInteger(chunkPaths) || chunkPaths < 1) throw new RangeError(`chunkPaths must be a whole number 1 or more, got ${chunkPaths}`);
   return { maxRunMs, chunkPaths };
 }
