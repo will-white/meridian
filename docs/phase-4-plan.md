@@ -397,3 +397,33 @@ The budget Stage A left unmet is met: no garbage collection during the simulate 
 - `bench/run.ts`'s GC count covers the window only (above).
 
 (Stage B entries follow as its steps land: the measured run time and storage in Postgres, anything built differently from the design and why.)
+
+- **Step 23, the resolver, the contributions aggregation and the baseline diff (2026-11-14).** `packages/shared/src/retirement/resolve.ts` (`resolvePlan`, `freezeInput`, `PlannerEnv`, `ResolveContext`, `EffectiveInputs` and `effectiveInputsView`, `PLAN_ERROR_CODES`, `PLAN_WARNING_CODES`, `formatPlanDollars`), `contributions.ts` (`aggregateContributions`, §3.2 B8, and `withRecurringFallback`), `baselineDiff.ts` (`baselineHash`, B10, and `diffBaselines`, §3.6), the fixture's T, B and R contribution records with `fixtureResolveContext` and `fixtureResolveArgs`, and `packages/retirement/src/plannerEnv.test.ts`, which resolves the fixture through the real `PlannerEnv` and runs `validateInput`, `prepare` and `simulatePath` on it (path 0 ends exactly as `fixtureSimInput`'s). HC-D1 is cases 7 and 11, and `gate.test.ts` imports both files. Tests: inputs 6 to 13, 15 and 18, plus §10's cases (C13, C24, C25, C35). The resolved fixture equals `fixtureSimInput()` apart from `meta`. Built differently, or where the design is silent:
+  - Case 11 has thirteen warnings, not eight: four `expense_ratio_unknown` (C25) and `hsa_no_medical` (C35).
+  - The resolver checks `path_years_too_many` only for the models whose count is the request (the fixed model is one path when every life is fixed); the historical count is left to the engine's `validateInput`.
+  - Spending phases and conversion years after `plan.endYear` are left out, as the design does for goals; a conversion range wholly after the horizon adds no synthetic Roth.
+  - A draft that fails `SimInput` gives the error `input_invalid` instead of throwing.
+  - `diffBaselines`: basis and contribution rows use the value rule for materiality (1,000.00 or 1%); income and savings-rate rows are never material; a null "before" is empty.
+  - Smaller choices:
+    - `dangling_account_setting` is also raised for `doc.contributions` keys, and the baseline's flags only for included accounts.
+    - `ss_missing` fires when the 70th-birthday month is on or after the start.
+    - Repeated goals get the ids `<id>:<n>`.
+    - The synthetic cash account is named "Cash (surplus)".
+    - Limit groups follow the engine's `limitGroupOf`.
+  - **Stage B review, rev-01 (medium) and rev-02 (low), both real and reproduced.**
+    - rev-01: with the engine's `contributionLimit`, a person born after the start year (Sam's 1977 typed as 2077, or 2027) made `resolvePlan` throw `RangeError: age must be a whole number of years, got -51`, a 500 on the server where the browser showed `horizon_too_long`. A birth year after `plan.startYear` is now the R3 error `born_after_start` at `people.<id>.birthYear` (new; the design has no such code: seams §2.2's ages are whole years attained in the calendar year, so every person is at least 0 in year 0, and the engine's limits refuse a negative age). The limit lookup also skips a negative age.
+    - rev-02: the engine's return-model and seed refusals came back with the path `""`. `historical_horizon_too_long`, `correlation_not_positive_definite`, `correlation_not_symmetric`, `persistence_invalid`, `initial_rate_invalid` and `mean_block_invalid` now map to `settings.returnModel`, and `seed_invalid` to `settings.seed`. Only the first two can get past the schema; `plannerEnv.test.ts` reaches both through the real engine.
+- **Step 29, the web's pure helpers and chart builders (2026-11-14).** `apps/web/src/components/charts/retirementOptions.ts` and `apps/web/src/lib/retirement.ts`, `retirementCard.ts`, `retirementFormat.ts`, `retirementTable.ts`, `retirementSummary.ts`, `retirementAssumptions.ts`, `retirementForms.ts` and `retirementStates.ts`, each with a test file beside it. `retirementFixtures.ts` holds the test data: R1's year table as the engine writes it at ENGINE_VERSION 1.0.1 and data 2026.11.1. `retirementImports.test.ts` checks C47 (the web imports `@meridian/shared` only). Tests: CH-1 to CH-5 and UI-1 to UI-5, plus a test for each page state. Built differently from the design:
+  - Placement: `successTone`, `successText` and `retirementStaleText` are in `lib/retirement.ts` and `lib/retirementCard.ts`, not `components/dashboard/dashboard.ts`. `describeAssumptions` and `yearTableCsv` have their own `lib/retirement*.ts` files.
+  - The result has no gauge or histogram. The design has neither; it has `summaryView`'s large figure and the bars of first failures.
+  - The first-RMD marker is read from the selected path's own table, so the web holds no RMD law (C47).
+  - The custom parametric form starts from `HISTORY_START_PARAMS`, copied from seams §8 D2 and engine-and-returns §3.5 (d), because `GET /meta` carries no model parameters.
+  - The CSV adds an Events column and a units line; the disclaimer stays the last line.
+  - Payroll tax has its own column, outside the federal total (C37).
+  - The strategy hints read the ages in the first year everyone is retired.
+  - Wizard steps: `rothConversions` issues go to Savings, `state` issues to People.
+  - The path caption treats `RunPathResponse.rank` as 0-based. This is unverified until step 28 fills it.
+  - Not here: the scenario history list, `invalidateRetirement` and `components/retirement/queries.ts` (step 30). The ECharts options are checked as objects only; nothing was rendered.
+  - **Stage B review, rev-03 (low) and rev-04 (low), both real and reproduced.**
+    - rev-03: the label of historical cohorts `auto` and the assumptions text left out the fixed-life condition. They now read "Complete stretches of history when every life is a fixed age and at least 30 stretches exist, else wrap around", which is what `planCohorts` does (plan decision 7).
+    - rev-04: `fanMarkers` drew a person's retirement, claim and Medicare markers after their fixed last year: Alex fixed at 55 (last year 2030) still had markers in 2035, 2040 and 2042. Markers now stop at `birthYear` plus the fixed age, or `maxAge` on the table. An event in the last year itself is kept, since a person is alive through that year (seams §2.2, C28).
