@@ -1,6 +1,6 @@
 import type { FastifyError, FastifyInstance } from "fastify";
 import { hasZodFastifySchemaValidationErrors, isResponseSerializationError } from "fastify-type-provider-zod";
-import { PlanError } from "@meridian/db";
+import { driverError, PlanError } from "@meridian/db";
 
 export class HttpError extends Error {
   constructor(
@@ -50,12 +50,15 @@ export function registerErrorHandler(app: FastifyInstance): void {
     if (error instanceof PlanError) {
       return reply.status(error.status).send({ error: error.message, code: error.code });
     }
-    if (isDataException(error)) {
-      request.log.warn({ err: error }, "the database refused a value from the request");
+    // A failed query is the driver's error inside drizzle-orm's DrizzleQueryError, whose message
+    // and fields carry the query's parameters; the SQLSTATE and the log come from the driver's.
+    const dbError = driverError(error);
+    if (isDataException(dbError)) {
+      request.log.warn({ err: dbError }, "the database refused a value from the request");
       return reply.status(400).send({ error: "A value in the request is out of range or not valid", code: "invalid_value" });
     }
-    if (isUnknownReference(error)) {
-      request.log.warn({ err: error }, "the request named a row that does not exist");
+    if (isUnknownReference(dbError)) {
+      request.log.warn({ err: dbError }, "the request named a row that does not exist");
       return reply.status(400).send({ error: "The request refers to something that does not exist (it may have been deleted)", code: "unknown_reference" });
     }
     if (hasZodFastifySchemaValidationErrors(error)) {
@@ -71,7 +74,7 @@ export function registerErrorHandler(app: FastifyInstance): void {
     if (typeof fastifyError.statusCode === "number" && fastifyError.statusCode < 500) {
       return reply.status(fastifyError.statusCode).send({ error: fastifyError.message, code: fastifyError.code ?? "error" });
     }
-    request.log.error({ err: error }, "unhandled error");
+    request.log.error({ err: dbError }, "unhandled error");
     return reply.status(500).send({ error: "Internal error", code: "internal" });
   });
 }

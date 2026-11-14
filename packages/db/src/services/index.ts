@@ -42,3 +42,4 @@ export * from "./passkeys.js";
 export * from "./signInEvents.js";
 export * from "./secretsKey.js";
 export * from "./syncGaps.js";
+export * from "./driverError.js";

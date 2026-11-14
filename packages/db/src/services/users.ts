@@ -2,6 +2,7 @@ import { and, count, eq, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import type { DbOrTx } from "../index.js";
 import { user } from "../schema/index.js";
 import { PlanError, writeAudit, type AuditContext } from "./audit.js";
+import { driverError } from "./driverError.js";
 import { deleteUserPasskeys } from "./passkeys.js";
 import { deleteUserSessions } from "./sessions.js";
 
@@ -78,7 +79,10 @@ export async function getUser(db: DbOrTx, id: string, now: Date): Promise<UserRe
   return (await listUsers(db, now)).find((u) => u.id === id);
 }
 
-const isUniqueViolation = (error: unknown) => typeof error === "object" && error !== null && (error as { code?: unknown }).code === "23505";
+const isUniqueViolation = (error: unknown) => {
+  const e = driverError(error);
+  return typeof e === "object" && e !== null && (e as { code?: unknown }).code === "23505";
+};
 
 /**
  * The owner adds a viewer: a read-only member with their own password. The account starts

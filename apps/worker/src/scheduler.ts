@@ -4,6 +4,7 @@ import {
   countSecuritiesBehind,
   DEFAULT_TIMEZONE,
   enqueueJob,
+  errorMessageOf,
   getHouseholdSetting,
   isValidTimeZone,
   job,
@@ -179,13 +180,13 @@ export function startScheduler(ctx: JobContext, everyMs = 60_000): () => Promise
       const p = await schedulePriceJobs(ctx);
       if (p > 0) ctx.log.info(`[scheduler] queued ${p} price job(s)`);
     } catch (err) {
-      ctx.log.error(`[scheduler] ${(err as Error).message}`);
+      ctx.log.error(`[scheduler] ${errorMessageOf(err)}`);
     }
     try {
       const purged = await hourlyPurge(ctx);
       if (purged && purged.sessions + purged.events > 0) ctx.log.info(`[scheduler] removed ${purged.sessions} expired session(s) and ${purged.events} old sign-in event(s)`);
     } catch (err) {
-      ctx.log.error(`[scheduler] sign-in purge failed: ${(err as Error).message}`);
+      ctx.log.error(`[scheduler] sign-in purge failed: ${errorMessageOf(err)}`);
     }
   };
   const loop = () => {

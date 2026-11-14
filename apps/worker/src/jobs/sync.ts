@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { applyAccountSet, connection, enqueueJob, importLog, lastErrorsKeepingSyncGaps, readHouseholdToday, requestPriceRefresh, type ConnectionError, type HoldingsStats, type JobRow } from "@meridian/db";
+import { applyAccountSet, connection, driverError, enqueueJob, importLog, lastErrorsKeepingSyncGaps, readHouseholdToday, requestPriceRefresh, type ConnectionError, type HoldingsStats, type JobRow } from "@meridian/db";
 import { decryptSecret, errorMessageText, highWaterMarkAfterBalances, highWaterMarkAfterSync, jsonbSafe, syncGapRange, syncWindowStart, type IsoDate, type SyncWindowConfig } from "@meridian/shared";
 import { priceConfigOf } from "../env.js";
 import { fetchAccounts, readAccounts, SimplefinError } from "../simplefin/client.js";
@@ -175,7 +175,7 @@ export async function runSyncJob(ctx: JobContext, job: JobRow): Promise<SyncOutc
     if (windowStart) outcome.windowStart = windowStart;
     return outcome;
   } catch (err) {
-    const message = errorMessageText(err);
+    const message = errorMessageText(driverError(err));
     const status = err instanceof SimplefinError && err.kind === "forbidden" ? "auth_required" : "error";
     // 403 and 402 do not get better by asking again: the schedule stops until a sync started by hand succeeds.
     const paused = err instanceof SimplefinError && err.pausesSchedule;
