@@ -159,14 +159,19 @@ export function atMostEvery<C extends Pick<JobContext, "now">, T>(everyMs: numbe
   };
 }
 
-export function startScheduler(ctx: JobContext, everyMs = 60_000): () => void {
+/**
+ * Ticks every `everyMs`: queues the due syncs, the daily jobs and the price jobs, then runs the
+ * hourly sign-in housekeeping. The housekeeping has its own try block and comes last, so a
+ * purge that keeps failing (it is retried on every tick until it works) is logged and never
+ * keeps a bank sync or a price job from being queued (audit a2-auth-users N4). The returned
+ * function stops the ticks and resolves once a tick in progress has finished.
+ */
+export function startScheduler(ctx: JobContext, everyMs = 60_000): () => Promise<void> {
   let stopped = false;
+  let running: Promise<void> | null = null;
   const hourlyPurge = atMostEvery(SIGN_IN_PURGE_INTERVAL_MS, purgeSignInData);
   const tick = async () => {
-    if (stopped) return;
     try {
-      const purged = await hourlyPurge(ctx);
-      if (purged && purged.sessions + purged.events > 0) ctx.log.info(`[scheduler] removed ${purged.sessions} expired session(s) and ${purged.events} old sign-in event(s)`);
       const n = await scheduleDueSyncs(ctx);
       if (n > 0) ctx.log.info(`[scheduler] queued ${n} sync job(s)`);
       const d = await scheduleDailyJobs(ctx);
@@ -175,12 +180,24 @@ export function startScheduler(ctx: JobContext, everyMs = 60_000): () => void {
       if (p > 0) ctx.log.info(`[scheduler] queued ${p} price job(s)`);
     } catch (err) {
       ctx.log.error(`[scheduler] ${(err as Error).message}`);
-    } finally {
-      if (!stopped) setTimeout(() => void tick(), everyMs);
+    }
+    try {
+      const purged = await hourlyPurge(ctx);
+      if (purged && purged.sessions + purged.events > 0) ctx.log.info(`[scheduler] removed ${purged.sessions} expired session(s) and ${purged.events} old sign-in event(s)`);
+    } catch (err) {
+      ctx.log.error(`[scheduler] sign-in purge failed: ${(err as Error).message}`);
     }
   };
-  void tick();
-  return () => {
+  const loop = () => {
+    if (stopped) return;
+    running = tick().finally(() => {
+      running = null;
+      if (!stopped) setTimeout(loop, everyMs);
+    });
+  };
+  loop();
+  return async () => {
     stopped = true;
+    await running;
   };
 }

@@ -121,8 +121,10 @@ export type AuditAction = z.infer<typeof AuditAction>;
  * `code_lockout` is the wrong code that ended a password session (the fifth).
  * `passkey_signed_in` and `passkey_failed`: a sign-in with a passkey, and an answer from a
  * member's passkey that did not verify (audit a10-conformance-ledger-09).
+ * `reauth_failed`: a wrong current password typed on a signed-in session, where a new
+ * password, a new authenticator or a passkey asks for it again (audit a2-auth-users N2).
  */
-export const SignInEventKind = z.enum(["signed_in", "password_failed", "code_failed", "code_lockout", "passkey_signed_in", "passkey_failed"]);
+export const SignInEventKind = z.enum(["signed_in", "password_failed", "reauth_failed", "code_failed", "code_lockout", "passkey_signed_in", "passkey_failed"]);
 export type SignInEventKind = z.infer<typeof SignInEventKind>;
 
 export const GoalStatus = z.enum(["active", "completed", "archived"]);

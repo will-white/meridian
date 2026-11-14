@@ -1,6 +1,7 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
+import { NAVIGATE_FALLBACK_DENYLIST } from "./src/lib/shellRoutes.js";
 
 export default defineConfig({
   plugins: [
@@ -21,8 +22,10 @@ export default defineConfig({
         icons: [{ src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" }],
       },
       workbox: {
-        // The API is never cached: money data must always be live.
-        navigateFallbackDenylist: [/^\/api\//],
+        // The API is never cached: money data must always be live. Navigations to the API or to a
+        // build file go to the server, which answers them as it does without a worker (a JSON
+        // 404 rather than the shell; src/lib/shellRoutes.ts).
+        navigateFallbackDenylist: NAVIGATE_FALLBACK_DENYLIST,
       },
     }),
   ],

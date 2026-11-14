@@ -19,8 +19,12 @@ export function userAuditJson(row: Pick<StoredUser, "username" | "role" | "passw
   return { username: row.username, role: row.role, passwordChangedAt: row.passwordChangedAt, totpConfirmedAt: row.totpConfirmedAt };
 }
 
-/** Postgres advisory lock taken by first-run setup, so concurrent requests are decided one at a time. */
-const SETUP_LOCK = 0x4d_52_44_4e; // "MRDN"
+/**
+ * Postgres advisory lock taken by everything that adds a member (first-run setup, adding a
+ * viewer), so the check that comes before the insert ("no user yet", "no one by this name in
+ * any case") and the insert are decided one request at a time.
+ */
+const MEMBER_LOCK = 0x4d_52_44_4e; // "MRDN"
 
 /**
  * First-run setup: creates the owner if, and only if, no user exists. The check and the
@@ -29,7 +33,7 @@ const SETUP_LOCK = 0x4d_52_44_4e; // "MRDN"
  */
 export async function createOwner(db: DbOrTx, input: { username: string; passwordHash: string }, batchId: string): Promise<{ id: string; username: string }> {
   return db.transaction(async (tx) => {
-    await tx.execute(sql`select pg_advisory_xact_lock(${SETUP_LOCK})`);
+    await tx.execute(sql`select pg_advisory_xact_lock(${MEMBER_LOCK})`);
     const [existing] = await tx.select({ n: count() }).from(user);
     if ((existing?.n ?? 0) > 0) throw new PlanError(403, "already_setup", "The owner account already exists");
     const [created] = await tx.insert(user).values({ username: input.username, passwordHash: input.passwordHash, role: "owner" }).returning();
@@ -60,8 +64,9 @@ export async function listUsers(db: DbOrTx, now: Date): Promise<UserRecord[]> {
       totpConfirmedAt: user.totpConfirmedAt,
       createdAt: user.createdAt,
       passwordChangedAt: user.passwordChangedAt,
-      // Correlated subqueries, spelled with qualified names: Drizzle leaves the table off a column in a single-table select.
-      lastSignInAt: sql<Date | null>`(select max(e."at") from "sign_in_event" e where e."user_id" = "user"."id" and e."kind" in ('signed_in', 'passkey_signed_in'))`.mapWith(user.createdAt),
+      // Kept on the row, not derived from the activity, which is deleted after 90 days (audit a2-auth-users N3).
+      lastSignInAt: user.lastSignInAt,
+      // A correlated subquery, spelled with qualified names: Drizzle leaves the table off a column in a single-table select.
       activeSessions: sql<number>`(select count(*)::int from "session" s where s."user_id" = "user"."id" and s."totp_verified" and s."expires_at" > ${nowText}::timestamptz and s."idle_expires_at" > ${nowText}::timestamptz)`,
     })
     .from(user)
@@ -78,12 +83,16 @@ const isUniqueViolation = (error: unknown) => typeof error === "object" && error
 /**
  * The owner adds a viewer: a read-only member with their own password. The account starts
  * without a second factor; the viewer enrolls their own authenticator at first sign-in,
- * before anything opens. Names are unique whatever their case ("Sam" and "sam" are one name).
+ * before anything opens. Names are unique whatever their case ("Sam" and "sam" are one name,
+ * plan decision 19). The column's UNIQUE is exact, so the case-blind check runs under the
+ * member lock: of two requests for "Pat" and "pat" sent together, the second waits, then
+ * sees the first's row (audit a2-auth-users N1).
  */
 export async function createViewer(db: DbOrTx, input: { username: string; passwordHash: string }, ctx: AuditContext): Promise<{ id: string }> {
   const taken = new PlanError(409, "username_taken", `There is already a member named "${input.username}"`);
   try {
     return await db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(${MEMBER_LOCK})`);
       const [clash] = await tx.select({ id: user.id }).from(user).where(sql`lower(${user.username}) = lower(${input.username})`).limit(1);
       if (clash) throw taken;
       const [created] = await tx.insert(user).values({ username: input.username, passwordHash: input.passwordHash, role: "viewer" }).returning();

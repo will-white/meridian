@@ -19,8 +19,8 @@ import {
   sessionIdOf,
   touchSession,
 } from "./sessions.js";
-import { countFailedSignIns, listSignInEvents, purgeSignInEvents, recordSignInEvent } from "./signInEvents.js";
-import { acceptTotpStep, createOwner, createViewer } from "./users.js";
+import { countFailedSignIns, FAILED_SIGN_IN_KINDS, listSignInEvents, purgeSignInEvents, recordSignInEvent } from "./signInEvents.js";
+import { acceptTotpStep, createOwner, createViewer, getUser, listUsers } from "./users.js";
 
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
@@ -170,6 +170,23 @@ describe.skipIf(!TEST_DATABASE_URL)("members and authenticator steps", () => {
     expect(await t.db.select().from(user)).toHaveLength(2);
   });
 
+  it("creates one of two viewers whose names differ only by case when both are added at once (audit a2-auth-users N1)", async () => {
+    const [owner] = await t.db.select({ id: user.id }).from(user).where(eq(user.role, "owner"));
+    const ctx = { userId: owner!.id, batchId: randomUUID() };
+    // Ten pairs, each sent together. Before the fix both of a pair were created in most of them.
+    for (let i = 0; i < 10; i++) {
+      const pair = await Promise.allSettled([`PatN${i}`, `patN${i}`].map((username) => createViewer(t.db, { username, passwordHash: "hash" }, ctx)));
+      expect(pair.filter((r) => r.status === "fulfilled"), `pair ${i}`).toHaveLength(1);
+      const refused = pair.filter((r): r is PromiseRejectedResult => r.status === "rejected").map((r) => r.reason as PlanError);
+      expect(refused, `pair ${i}`).toHaveLength(1);
+      expect(refused[0], `pair ${i}`).toMatchObject({ name: "PlanError", status: 409, code: "username_taken" });
+    }
+    const names = (await t.db.select({ username: user.username }).from(user)).map((u) => u.username.toLowerCase()).filter((n) => n.startsWith("patn"));
+    expect(names).toHaveLength(10);
+    expect(new Set(names).size).toBe(10);
+    await t.db.delete(user).where(sql`lower(${user.username}) like 'patn%'`);
+  });
+
   it("keeps sign-in activity newest first, counts the failures of the last 7 days, and drops what is older than 90 days", async () => {
     const [owner] = await t.db.select({ id: user.id }).from(user);
     const [sam] = await t.db.select({ id: user.id }).from(user).where(eq(user.username, "Sam"));
@@ -202,5 +219,41 @@ describe.skipIf(!TEST_DATABASE_URL)("members and authenticator steps", () => {
     // Removing a member keeps their history under the name it happened with.
     await t.db.delete(user).where(eq(user.id, sam!.id));
     expect((await listSignInEvents(t.db)).filter((e) => e.username === "Sam")).toHaveLength(2);
+  });
+
+  it("counts a wrong current password on a signed-in session as a failed attempt (audit a2-auth-users N2)", async () => {
+    const [owner] = await t.db.select({ id: user.id }).from(user).where(eq(user.role, "owner"));
+    const before = await countFailedSignIns(t.db, { userId: owner!.id });
+    await recordSignInEvent(t.db, { userId: owner!.id, username: "owner", kind: "reauth_failed", ip: "192.168.1.20", userAgent: null });
+    expect(await countFailedSignIns(t.db, { userId: owner!.id })).toBe(before + 1);
+    expect(FAILED_SIGN_IN_KINDS).toEqual(["password_failed", "reauth_failed", "code_failed", "code_lockout", "passkey_failed"]);
+  });
+
+  it("keeps a member's last sign-in after the activity that recorded it passes the 90-day retention (audit a2-auth-users N3)", async () => {
+    const [owner] = await t.db.select({ id: user.id }).from(user).where(eq(user.role, "owner"));
+    const robin = (await createViewer(t.db, { username: "Robin", passwordHash: "hash" }, { userId: owner!.id, batchId: randomUUID() })).id;
+    const last = async () => (await getUser(t.db, robin, new Date()))!.lastSignInAt;
+    const event = (kind: SignInEventKind) => recordSignInEvent(t.db, { userId: robin, username: "Robin", kind, ip: null, userAgent: null });
+    const newest = async (kind: SignInEventKind) => (await listSignInEvents(t.db, { userId: robin })).find((e) => e.kind === kind)!.at;
+    expect(await last()).toBeNull();
+
+    await event("signed_in");
+    const first = await newest("signed_in");
+    expect(await last()).toEqual(first);
+    // A failure is not a sign-in.
+    await event("password_failed");
+    await event("code_failed");
+    expect(await last()).toEqual(first);
+    await event("passkey_signed_in");
+    const latest = await newest("passkey_signed_in");
+    expect(latest.getTime()).toBeGreaterThan(first.getTime());
+    expect(await last()).toEqual(latest);
+
+    // Ninety-one days on, the activity is gone; the last sign-in is still known, not "never".
+    await t.db.update(signInEvent).set({ at: sql`${signInEvent.at} - interval '91 days'` }).where(eq(signInEvent.userId, robin));
+    expect(await purgeSignInEvents(t.db)).toBeGreaterThanOrEqual(4);
+    expect(await listSignInEvents(t.db, { userId: robin })).toEqual([]);
+    expect(await last()).toEqual(latest);
+    expect((await listUsers(t.db, new Date())).find((u) => u.id === robin)!.lastSignInAt).toEqual(latest);
   });
 });
