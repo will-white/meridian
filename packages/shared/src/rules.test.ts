@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateRules, RuleActions, RuleConditions, ruleInputProblem, ruleMatches, type RuleLike } from "./rules.js";
+import { evaluateRules, RuleActions, RuleConditions, ruleInputProblem, ruleMatches, storedRuleProblems, type RuleLike } from "./rules.js";
 
 const CAT_GROCERIES = "11111111-1111-4111-8111-111111111111";
 const CAT_SHOPPING = "22222222-2222-4222-8222-222222222222";
@@ -191,5 +191,31 @@ describe("payee conditions and merged names (a6-text-rules-accounts-10)", () => 
     const renamed = evaluateRules([rename, onVariant], merged);
     expect(renamed.payee).toBe("Coffee Shop");
     expect(renamed.categoryId).toBeUndefined();
+  });
+});
+
+describe("a stored rule that cannot run as written says so (a6-text-rules-accounts, second round)", () => {
+  it("names a pattern RE2 refuses, which never matches, and an amount range that cannot match or limits nothing", () => {
+    // Saved before patterns ran on RE2 (negative look-ahead is a common way to say "not containing").
+    const lookahead: RuleConditions = { description: { op: "regex", value: "^(?!.*REFUND).*ACE" } };
+    expect(ruleMatches(lookahead, { ...ctx, description: "ACE HARDWARE #12 DENVER CO" })).toBe(false);
+    expect(storedRuleProblems(lookahead)).toEqual([
+      "The description pattern cannot run here (invalid or unsupported Perl syntax: `(?!`), so this rule never matches. Edit it: look-ahead, look-behind and back-references are not supported.",
+    ]);
+    expect(storedRuleProblems({ payee: { op: "regex", value: "(\\w+) \\1", caseSensitive: true } })).toEqual([
+      "The payee pattern cannot run here (invalid escape sequence: `\\1`), so this rule never matches. Edit it: look-ahead, look-behind and back-references are not supported.",
+    ]);
+    expect(storedRuleProblems({ payee: { op: "equals", value: "Ace" }, amount: { minCents: "500", maxCents: "100" } })).toEqual([
+      "The amount range's minimum is above its maximum, so this rule never matches. Edit it (amounts are signed: spending is negative).",
+    ]);
+    expect(storedRuleProblems({ payee: { op: "equals", value: "Ace" }, amount: {} })).toEqual(["The amount condition has no minimum or maximum, so it limits nothing. Edit it."]);
+  });
+  it("finds nothing in a rule that runs as written, a long pattern saved before the length cap included", () => {
+    expect(storedRuleProblems({ description: { op: "regex", value: "^ACE" }, amount: { maxCents: "0" }, dayOfMonth: { min: 28, max: 3 } })).toEqual([]);
+    expect(storedRuleProblems({ payee: { op: "contains", value: "(?!" } })).toEqual([]);
+    const long: RuleConditions = { description: { op: "regex", value: `^(${"A".repeat(300)})` } };
+    expect(ruleInputProblem(long)?.code).toBe("invalid_regex");
+    expect(storedRuleProblems(long)).toEqual([]);
+    expect(ruleMatches(long, { ...ctx, description: "A".repeat(300) })).toBe(true);
   });
 });

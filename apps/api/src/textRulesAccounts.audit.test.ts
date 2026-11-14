@@ -233,17 +233,97 @@ describe.skipIf(!TEST_DATABASE_URL)("accounts, payees, rules and text safety (au
     await t.db.db.delete(rule);
   });
 
+  it("a6-text-rules-accounts, second round: a payee cannot be renamed to a blank name", async () => {
+    const king = (await get("/api/payees?q=king")).json().items[0] as { id: string; name: string; aliases: string[] };
+    expect(king.name).toBe("King Soopers");
+    for (const name of ["   ", "", "\t \n"]) {
+      const blank = await send("PATCH", `/api/payees/${king.id}`, { name });
+      expect(blank.statusCode, JSON.stringify(name)).toBe(400);
+      expect(blank.json().code).toBe("validation");
+    }
+    const listed = (await get("/api/payees?limit=200")).json().items as Array<{ id: string; name: string; aliases: string[] }>;
+    expect(listed.map((p) => p.name)).not.toContain("");
+    expect(listed.find((p) => p.id === king.id)).toMatchObject({ name: "King Soopers", aliases: king.aliases });
+    // A name with spaces around it is kept trimmed, as before.
+    const padded = await send("PATCH", `/api/payees/${king.id}`, { name: "  King Soopers Market  " });
+    expect(padded.statusCode).toBe(200);
+    expect(padded.json().name).toBe("King Soopers Market");
+  });
+
+  it("a6-text-rules-accounts, second round: security notes and investment memos keep the '<' and '>' that were typed", async () => {
+    const brokerage = (await send("POST", "/api/accounts", { name: "Brokerage", type: "brokerage" })).json();
+    const typedNotes = "Trim if price < 50; ER <0.1% vs 0.03%";
+    const created = await send("POST", "/api/investments/securities", { ticker: "VTSAX", name: "Short Bond Fund <5 yr", type: "fund", assetClass: "us_stock", notes: typedNotes });
+    expect(created.statusCode).toBe(200);
+    expect(created.json()).toMatchObject({ name: "Short Bond Fund <5 yr", notes: typedNotes });
+    const patched = await send("PATCH", `/api/investments/securities/${created.json().id}`, { notes: "Sold > 1 yr held" });
+    expect(patched.json().notes).toBe("Sold > 1 yr held");
+
+    const dividend = await send("POST", "/api/investments/txns", { type: "dividend", accountId: brokerage.id, date: "2026-11-02", securityId: created.json().id, amountCents: "1250", memo: "TRANSFER -> SAVINGS" });
+    expect(dividend.statusCode).toBe(200);
+    const txn = dividend.json().items[0] as { id: string; memo: string | null };
+    expect(txn.memo).toBe("TRANSFER -> SAVINGS");
+    const memo = await send("PATCH", `/api/investments/txns/${txn.id}`, { memo: "price < 50, sold > 1 yr" });
+    expect(memo.json().memo).toBe("price < 50, sold > 1 yr");
+
+    // What could open a tag still goes, from typed text as from the feed.
+    const hostile = await send("PATCH", `/api/investments/securities/${created.json().id}`, { notes: "see <img src=x onerror=alert(1)", name: "Fund <b>A</b>" });
+    expect(hostile.json()).toMatchObject({ notes: "see img src=x onerror=alert(1)", name: "Fund A" });
+  });
+
+  it("a6-text-rules-accounts, second round: a stored rule whose pattern RE2 cannot run says so in the rule list", async () => {
+    await t.db.db.delete(rule);
+    // Stored as a rule saved before patterns ran on RE2 would be: the routes refuse look-ahead now.
+    const [stale] = await t.db.db
+      .insert(rule)
+      .values({ name: "Ace, not refunds", position: 1, conditions: { description: { op: "regex", value: "^(?!.*REFUND).*ACE" } }, actions: { addTags: ["hardware"] } })
+      .returning();
+    const [backref] = await t.db.db
+      .insert(rule)
+      .values({ name: "Doubled word", position: 2, conditions: { payee: { op: "regex", value: "(\\w+) \\1" }, amount: { minCents: "100", maxCents: "-100" } }, actions: { addTags: ["x"] } })
+      .returning();
+    const fine = await send("POST", "/api/rules", { name: "Ace", conditions: { description: { op: "contains", value: "ace hardware" } }, actions: { addTags: ["ace"] }, applyTo: "none" });
+    expect(fine.statusCode).toBe(200);
+    expect(fine.json().rule.problems).toEqual([]);
+
+    const listed = (await get("/api/rules")).json() as Array<{ id: string; enabled: boolean; problems: string[] }>;
+    const byId = new Map(listed.map((r) => [r.id, r]));
+    expect(byId.get(stale!.id)!.enabled).toBe(true);
+    expect(byId.get(stale!.id)!.problems).toHaveLength(1);
+    expect(byId.get(stale!.id)!.problems[0]).toMatch(/^The description pattern cannot run here \(.*\(\?!.*\), so this rule never matches\. Edit it: look-ahead, look-behind and back-references are not supported\.$/);
+    expect(byId.get(backref!.id)!.problems).toEqual([
+      expect.stringMatching(/^The payee pattern cannot run here .*, so this rule never matches\./),
+      "The amount range's minimum is above its maximum, so this rule never matches. Edit it (amounts are signed: spending is negative).",
+    ]);
+    expect(byId.get(fine.json().rule.id)!.problems).toEqual([]);
+
+    // What the list says is what a run does: the row the JavaScript engine would match is not tagged.
+    await csvCommit(checkingId, ["2026-11-08,ACE HARDWARE #12 DENVER CO,-12.00"]);
+    const rows = (await get(`/api/transactions?accountId=${checkingId}&limit=200`)).json().items as Array<{ amountCents: string; tags: string[] }>;
+    expect(rows.find((r) => r.amountCents === "-1200")!.tags).toEqual(["ace"]);
+    // The rule can still be switched off, and an edit that keeps the pattern is refused with the reason.
+    const off = await send("PATCH", `/api/rules/${stale!.id}`, { enabled: false });
+    expect(off.statusCode).toBe(200);
+    expect(off.json().problems).toHaveLength(1);
+    const keep = await send("PATCH", `/api/rules/${stale!.id}`, { actions: { addTags: ["tools"] } });
+    expect(keep.statusCode).toBe(400);
+    expect(keep.json().code).toBe("invalid_regex");
+    const fixed = await send("PATCH", `/api/rules/${stale!.id}`, { conditions: { description: { op: "regex", value: "^.*ACE" } } });
+    expect(fixed.json().problems).toEqual([]);
+    await t.db.db.delete(rule);
+  });
+
   it("a6-text-rules-accounts-15: CSV previews return sanitized headers, sample cells and date errors", async () => {
-    const csvText = ["Date,Description,Amount‮", `not-a-date <b>${"x".repeat(400)}‮,COFFEE,‮00.005-`, "2026-11-01,<b>TEA</b>,-1.00"].join("\n");
+    const csvText = ["Date,Description,Amount\u202E", `not-a-date <b>${"x".repeat(400)}\u202E,COFFEE,\u202E00.005-`, "2026-11-01,<b>TEA</b>,-1.00"].join("\n");
     const res = await send("POST", "/api/import/csv/preview", { csvText, accountId: checkingId, mapping: { ...CSV_MAPPING, amount: { mode: "single", column: "Amount" } } });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.headers).toEqual(["Date", "Description", "Amount"]);
-    expect(JSON.stringify(body.sampleRows)).not.toMatch(/[‮<>]/);
+    expect(JSON.stringify(body.sampleRows)).not.toMatch(/[\u202E<>]/);
     expect(body.sampleRows[1][2]).toBe("00.005-");
     expect(body.errors).toHaveLength(1);
     expect(body.errors[0].message.length).toBeLessThanOrEqual(80);
-    expect(body.errors[0].message).not.toMatch(/[‮<>]/);
+    expect(body.errors[0].message).not.toMatch(/[\u202E<>]/);
     expect(body.rows.map((r: { description: string }) => r.description)).toEqual(["TEA"]);
     // The guessed mapping still finds the column whose header carried the override.
     const guessed = await send("POST", "/api/import/csv/preview", { csvText, accountId: checkingId });

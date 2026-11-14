@@ -14,14 +14,23 @@ const CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
  * the byte order mark. The zero-width joiner and non-joiner (U+200C, U+200D) stay: emoji
  * sequences and some scripts need them, and they reorder nothing (audit a4-sync-parse-16).
  */
-const INVISIBLE_FORMATTING = /[؜​‎‏‪-‮⁠-⁩﻿]/g;
+const INVISIBLE_FORMATTING = /[\u061C\u200B\u200E\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g;
 /**
- * A complete tag. `[^<>]` (not `[^>]`) keeps the scan linear: on a run of "<" every start
- * fails at the next character instead of scanning to the end (audit a6-text-rules-accounts-11).
+ * A complete tag, comment or declaration: "<" then a letter, "!", "/" or "?" (what an HTML parser
+ * reads as the start of markup), up to the next ">". `[^<>]` (not `[^>]`) keeps the scan linear:
+ * on a run of "<" every start fails at the next character instead of scanning to the end (audit
+ * a6-text-rules-accounts-11). "a < b > c" is not a tag and stays.
  */
-const TAGS = /<[^<>]*>/g;
-/** Whatever is left of a tag: an unclosed "<meta …" must not reach a page that sets HTML (audit a6-text-rules-accounts-01). */
-const ANGLE_BRACKETS = /[<>]/g;
+const TAGS = /<[\p{L}!/?][^<>]*>/gu;
+/**
+ * Whatever is left that could still open markup: a run of "<" before a letter, "!", "/" or "?"
+ * (an unclosed "<meta …" must not reach a page that sets HTML; audit a6-text-rules-accounts-01).
+ * The run goes whole, so no "<" before it is left touching the letter, and the lookbehind starts a
+ * match only at the run's first "<", which keeps a long run linear. A "<" or ">" that cannot start
+ * markup ("price < 50", "-> SAVINGS", "ER <0.1%") is text, and stays as typed (audit
+ * a6-text-rules-accounts, second round).
+ */
+const OPENS_MARKUP = /(?<!<)<+(?=[\p{L}!/?])/gu;
 const WHITESPACE = /\s+/g;
 
 /** The first `n` UTF-16 units of `s`, one fewer when the cut would split a surrogate pair. */
@@ -33,8 +42,8 @@ function cut(s: string, n: number): string {
 
 /**
  * Untrusted text as it may be stored and shown: Unicode NFC (so "é" typed two ways is one
- * spelling), no control characters, invisible formatting, tags or angle brackets, whitespace
- * collapsed, at most `maxLength` characters. The input is cut to a small multiple of
+ * spelling), no control characters, invisible formatting, tags or "<" that could open one,
+ * whitespace collapsed, at most `maxLength` characters. The input is cut to a small multiple of
  * `maxLength` before any pattern runs, so one enormous field costs no more than a long one.
  */
 export function sanitizeText(input: unknown, maxLength = 200): string {
@@ -45,7 +54,7 @@ export function sanitizeText(input: unknown, maxLength = 200): string {
     .replace(CONTROL_CHARS, "")
     .replace(INVISIBLE_FORMATTING, "")
     .replace(TAGS, "")
-    .replace(ANGLE_BRACKETS, "")
+    .replace(OPENS_MARKUP, "")
     .replace(WHITESPACE, " ")
     .trim();
   return cut(cleaned, maxLength).trimEnd();

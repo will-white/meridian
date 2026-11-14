@@ -321,10 +321,19 @@ export function RulesPage() {
                   <RuleRow key={r.id}>
                     <tr className={r.enabled ? "" : "muted"}>
                       <td>{r.position}</td>
-                      <td>
-                        {r.name || <span className="muted">(unnamed)</span>} {!r.enabled && <Badge tone="neutral">off</Badge>}
+                      <td className="rule-name">
+                        {r.name || <span className="muted">(unnamed)</span>} {!r.enabled && <Badge tone="neutral">off</Badge>}{" "}
+                        {r.problems.length > 0 && <Badge tone="warn">needs an edit</Badge>}
                       </td>
-                      <td className="small">{describeConditions(r.conditions, acctNames)}</td>
+                      <td className="small">
+                        {describeConditions(r.conditions, acctNames)}
+                        {/* A stored rule that does not run as written says why (audit a6-text-rules-accounts, second round). */}
+                        {r.problems.map((problem) => (
+                          <span key={problem} role="note" className="rule-problem">
+                            {problem}
+                          </span>
+                        ))}
+                      </td>
                       <td className="small">{describeActions(r.actions, catNames)}</td>
                       <td className="nowrap">
                         {!viewer && (

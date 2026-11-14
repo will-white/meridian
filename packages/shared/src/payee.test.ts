@@ -87,8 +87,60 @@ describe("normalizePayee", () => {
     });
   }
 
+  // Audit a6-text-rules-accounts-12, second round: a code in front of the merchant (a card's
+  // MMDD date, a card number, a bank's purchase prefix and transaction id) is not where the
+  // merchant ends. Before the fix these kept the city, or took the merchant for the city.
+  const leadingCodeCases: Array<[string, string]> = [
+    ["CHECKCARD 1105 SAFEWAY DENVER CO", "Safeway"],
+    ["CHECKCARD 1106 SAFEWAY BOULDER CO", "Safeway"],
+    ["POS 1234 TARGET DENVER CO", "Target"],
+    ["XXXX1234 KING SOOPERS DENVER CO", "King Soopers"],
+    ["PURCHASE 1105 SAFEWAY DENVER CO", "Safeway"],
+    ["CHECKCARD 1105 KING SOOPERS FORT COLLINS CO", "King Soopers"],
+    ["DBT CRD 1234 10/02/24 SAFEWAY DENVER CO", "Safeway"],
+    ["VISA DDA PUR 123456 KING SOOPERS DENVER CO", "King Soopers"],
+    ["VISA DDA PUR 123456 SAFEWAY DENVER CO", "Safeway"],
+    ["VISA DDA PUR 654321 WALGREENS BOULDER CO", "Walgreens"],
+    ["DDA PURCHASE 469216 SAFEWAY DENVER CO", "Safeway"],
+    ["VISA DDA PUR AP 000000 SHELL OIL 12345678 BOULDER * CO", "Shell Oil"],
+    ["PURCHASE AUTHORIZED ON 10/02 SAFEWAY #1234 DENVER CO S384275123456789 CARD 1234", "Safeway"],
+    ["RECURRING PAYMENT AUTHORIZED ON 10/05 NETFLIX.COM NETFLIX.COM CA S1234567 CARD 1234", "Netflix.com"],
+    ["Card Purchase With Pin 10/02 Safeway #1234 Denver CO Card 1234", "Safeway"],
+    // A code after the merchant still ends it, so the city after that code goes (round one).
+    ["CHECKCARD 1105 SAFEWAY #1234 DENVER CO", "Safeway"],
+    ["KING SOOPERS #0123 LONE TREE CO", "King Soopers"],
+  ];
+  for (const [raw, expected] of leadingCodeCases) {
+    it(`a6-text-rules-accounts-12, second round: "${raw}" -> "${expected}"`, () => {
+      expect(normalizePayee(raw)).toBe(expected);
+    });
+  }
+
+  it("a6-text-rules-accounts-12, second round: one payee per merchant across cities and formats, and one per merchant only", () => {
+    const merchants: Record<string, string[]> = {
+      Safeway: [
+        "CHECKCARD 1105 SAFEWAY DENVER CO",
+        "CHECKCARD 1106 SAFEWAY BOULDER CO",
+        "PURCHASE 1105 SAFEWAY DENVER CO",
+        "VISA DDA PUR 123456 SAFEWAY DENVER CO",
+        "SAFEWAY #1234 DENVER CO",
+        "PURCHASE AUTHORIZED ON 10/03 SAFEWAY #1234 BOULDER CO S384275123456790 CARD 1234",
+      ],
+      "King Soopers": [
+        "XXXX1234 KING SOOPERS DENVER CO",
+        "XXXX1234 KING SOOPERS BOULDER CO",
+        "VISA DDA PUR 123456 KING SOOPERS DENVER CO",
+        "KING SOOPERS #0123 FORT COLLINS CO",
+      ],
+      Walgreens: ["VISA DDA PUR 654321 WALGREENS BOULDER CO", "VISA DDA PUR 654321 WALGREENS DENVER CO", "WALGREENS #9876 AURORA CO"],
+    };
+    for (const [name, descriptions] of Object.entries(merchants)) {
+      expect(descriptions.map(normalizePayee), name).toEqual(descriptions.map(() => name));
+    }
+  });
+
   it("a6: stays idempotent on the new cases", () => {
-    for (const [raw] of [...cityCases, ...unicodeCases]) {
+    for (const [raw] of [...cityCases, ...unicodeCases, ...leadingCodeCases]) {
       const once = normalizePayee(raw);
       expect(normalizePayee(once), raw).toBe(once);
     }
