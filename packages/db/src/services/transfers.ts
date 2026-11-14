@@ -81,21 +81,39 @@ export async function pairTransfersInDb(tx: DbOrTx, options: PairTransfersInDbOp
   return pairs.length;
 }
 
+export interface MarkAsTransfersOptions {
+  /**
+   * The household linked the row by hand (`PATCH /api/investments/transactions/:id` with
+   * `ledgerTransactionId`): its word, as a hand mark or a hand pairing is, wins over a rule's
+   * "not a transfer" (`not_transfer` is cleared) and over a hand categorization (the category
+   * stays on the row). Default false: the mark is automation's.
+   */
+  byHand?: boolean;
+}
+
 /**
  * Mark ledger rows as transfers the way pairing marks its legs, without a pair: `is_transfer`,
- * and the category goes unless the owner locked it. Rows that are transfers already are left
- * alone. Used when an investment cash transfer is linked to the bank's row of the same money
- * (docs/phase-3-plan.md, audit decision A5): a deposit or a withdrawal the trade history names
- * is a transfer whatever the bank's description says. Returns how many rows changed.
+ * and the category goes unless the owner locked it. Used when an investment cash transfer is
+ * linked to the bank's row of the same money (docs/phase-3-plan.md, audit decision A5): a
+ * deposit or a withdrawal the trade history names is a transfer whatever the bank's description
+ * says. Rows that are transfers already are left alone. An automatic mark (the linker, an
+ * import) takes only the rows automatic pairing may take (audit b3-investment-flows, second
+ * round): never a row a rule said is not a transfer (`not_transfer`, Phase 1 decision 106) or
+ * one the household categorized by hand (`category_locked`, decision 48), so a later rules run
+ * finds nothing to reverse; the investment row is then the flow (A5(2)). A mark `byHand` takes
+ * those too. Returns how many rows changed.
  */
-export async function markAsTransfers(tx: DbOrTx, transactionIds: readonly string[]): Promise<number> {
+export async function markAsTransfers(tx: DbOrTx, transactionIds: readonly string[], options: MarkAsTransfersOptions = {}): Promise<number> {
   const ids = [...new Set(transactionIds)];
+  const markable = options.byHand
+    ? or(eq(transaction.isTransfer, false), eq(transaction.notTransfer, true))
+    : and(eq(transaction.isTransfer, false), eq(transaction.notTransfer, false), eq(transaction.categoryLocked, false));
   let changed = 0;
   for (let i = 0; i < ids.length; i += 500) {
     const rows = await tx
       .update(transaction)
-      .set({ isTransfer: true, updatedAt: new Date() })
-      .where(and(inArray(transaction.id, ids.slice(i, i + 500)), eq(transaction.isTransfer, false)))
+      .set({ isTransfer: true, notTransfer: false, updatedAt: new Date() })
+      .where(and(inArray(transaction.id, ids.slice(i, i + 500)), markable))
       .returning({ id: transaction.id });
     if (rows.length === 0) continue;
     changed += rows.length;

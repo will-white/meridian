@@ -103,7 +103,13 @@ describe.skipIf(!TEST_DATABASE_URL)("ledger pages, the services behind them (aud
 
     it("linked to an investment cash transfer (markAsTransfers)", async () => {
       const id = await costco();
+      // A split is a hand categorization: the linker leaves it alone, as pairing does (audit b3 second round, Phase 3 decision A5).
       await t.db.transaction((tx) => markAsTransfers(tx, [id]));
+      expect((await getTransaction(t.db, id))!.isTransfer).toBe(false);
+      expect(await splitLines(id)).toHaveLength(3);
+      expect(await inGroceries()).toEqual(["Costco"]);
+      // A link set by hand marks it, and the lines go.
+      await t.db.transaction((tx) => markAsTransfers(tx, [id], { byHand: true }));
       expect((await getTransaction(t.db, id))!.isTransfer).toBe(true);
       expect(await splitLines(id)).toEqual([]);
       expect(await inGroceries()).toEqual([]);
