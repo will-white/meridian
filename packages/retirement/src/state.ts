@@ -216,6 +216,8 @@ export interface PathState {
   spendReal: number;
   /** Scheduled conversions skipped because the person had died (warning `conversion_after_death`). */
   conversionsSkipped: number;
+  /** Years of the path whose gross-up stopped with a surplus beyond the tolerance (warning `grossup_not_converged`, a count of path-years). */
+  notConvergedYears: number;
   /** End-of-year portfolio, nominal and in today's dollars, and funded spending in today's dollars (NaN in accumulation years and after the path's end). */
   readonly totalNominal: Float64Array;
   readonly totalReal: Float64Array;
@@ -392,6 +394,7 @@ export function createPathState(run: PreparedRun, hooks: EngineHooks, tax: TaxFu
     payrollReal: 0,
     spendReal: 0,
     conversionsSkipped: 0,
+    notConvergedYears: 0,
     totalNominal: new Float64Array(Y),
     totalReal: new Float64Array(Y),
     spendingReal: new Float64Array(Y),

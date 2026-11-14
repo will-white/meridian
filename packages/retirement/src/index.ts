@@ -8,7 +8,7 @@
  */
 
 export { ENGINE_VERSION, DATA_VERSION, DATA_CHECKSUM } from "./version.js";
-export { centsToDollars, dollarsToCents, dollarsToCentsBigInt } from "./units.js";
+export { centsToDollars, dollarsToCents, dollarsToCentsBigInt, priceLevelString, ratioToBp, ratioToPpm } from "./units.js";
 export { detExp, detLog, detPow, powInt } from "./detmath.js";
 export { selfTest } from "./selftest.js";
 export { PURPOSE, counterWord, invNorm, seedKey, threefry2x32, uniformAt, uniformFromWords } from "./rng.js";
@@ -140,6 +140,26 @@ export type { MutableYearView, PathState } from "./state.js";
 export { PP, PP_COLUMNS, PP_HOUSEHOLD, PP_REC, assessInto, createAssessFn, prepareAssessYear } from "./assess.js";
 export { AC, AC_REC, SP, SP_REC, YEAR_FLAG, YR, YR_REC, createPathDetail, simulatePath } from "./loop.js";
 export type { PathDetail } from "./loop.js";
+export {
+  FAN_MIN_ALIVE,
+  FAN_PERCENTILES_BP,
+  WILSON_Z,
+  addChunk,
+  aggregate,
+  aliveCounts,
+  createChunkSummary,
+  createRunSummary,
+  digest,
+  fanBands,
+  fanYearsShown,
+  percentileIndex,
+  percentilePaths,
+  recordPath,
+  wilson95,
+} from "./aggregate.js";
+export type { ChunkSummary, EngineResult, RunSummary } from "./aggregate.js";
+export { createProductionState, simulateChunk, simulatePathDetail, simulateRun } from "./simulate.js";
+export { essentialCoverageBp, failureSummary, portfolioReturnBp, toFanSeries, toSimSummary, toYearTable, withdrawalRateBp } from "./results/index.js";
 export { EngineInputError, EngineInvariantError, EngineRuntimeError } from "./errors.js";
 export type { EngineRuntimeCode } from "./errors.js";
 export {

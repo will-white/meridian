@@ -174,7 +174,8 @@ export const IY = {
   GUARANTEED: 7,
   /** Rental and other income, whole (the view's other income). */
   OTHER: 8,
-  RESERVED0: 9,
+  /** Rental income, whole (the year table's rental line; `OTHER − RENTAL_CASH` is its other line). */
+  RENTAL_CASH: 9,
 } as const;
 export const IY_REC = 10;
 
@@ -420,6 +421,7 @@ export function incomeYearInto(inc: IncomeTables, t: number, cpi: ArrayLike<numb
       const slot = cls === INCOME.RENTAL ? IY.RENTAL : IY.OTHER_ORD;
       out[slot] = out[slot]! + taxable;
       out[IY.OTHER] = out[IY.OTHER]! + x;
+      if (cls === INCOME.RENTAL) out[IY.RENTAL_CASH] = out[IY.RENTAL_CASH]! + x;
     }
   }
 }

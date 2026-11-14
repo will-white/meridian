@@ -7,6 +7,8 @@ import {
   deflateYearTable,
   fundedShareBp,
   parsePriceLevel,
+  pathStory,
+  realReturnBp,
   successBp,
   FanSeries,
   MortalityTableId,
@@ -409,5 +411,120 @@ describe("deflateYearTable (the roll-forward across rows in today's dollars)", (
     }
     expect(real.startingTotal).toBe(table.startingTotal);
     expect(deflateYearTable({ ...table, rows: [] }).rows).toEqual([]);
+  });
+});
+
+// ---- OUT-11 the path story (strategies-outputs-web §3.12) ----
+
+/** A drawdown row of a one-person, three-account table (taxable, pre-tax, Roth), illustrative amounts. */
+function storyRow(year: number, o: { taxable: bigint; preTax: bigint; roth: bigint; failed?: boolean; returnBp?: number; cpi?: [string, string]; events?: YearRow["strategy"]["events"]; funded?: string; planned?: string; taxCents?: string }): YearRow {
+  const byBucket = (taxable: bigint, preTax: bigint, roth: bigint) => ({ taxable: String(taxable), pre_tax: String(preTax), roth: String(roth), hsa: "0", cash: "0" });
+  const total = o.taxable + o.preTax + o.roth;
+  const base = exampleYearRow();
+  const funded = o.funded ?? (o.failed === true ? "1000000" : "4000000");
+  return {
+    ...base,
+    year,
+    ages: [year - 1962],
+    cpiStart: o.cpi?.[0] ?? "1.000000000",
+    cpiEnd: o.cpi?.[1] ?? "1.000000000",
+    portfolioReturnBp: o.returnBp ?? 0,
+    spending: { ...base.spending, planned: o.planned ?? "4000000", funded, core: funded, shortfall: o.failed === true ? "3000000" : "0" },
+    strategy: { events: o.events ?? [], withdrawalRateBp: 0 },
+    withdrawals: { byAccount: ["4000000", "0", "0"], byBucket: byBucket(o.taxable > 0n ? 4000000n : 0n, o.preTax > 0n ? 1n : 0n, o.roth > 0n ? 1n : 0n), total: "4000000", rmdByAccount: ["0", "0", "0"], rmdTotal: "0" },
+    tax: { ...zeroTaxDetail("single"), totalFederalCents: o.taxCents ?? "0", incomeTaxCents: o.taxCents ?? "0", ordinaryTaxCents: o.taxCents ?? "0" },
+    ending: { byAccount: [String(o.taxable), String(o.preTax), String(o.roth)], basisByAccount: ["0", "0", "0"], byBucket: byBucket(o.taxable, o.preTax, o.roth), total: String(total), totalReal: String(total) },
+    failed: o.failed === true,
+  };
+}
+
+function storyTable(rows: YearRow[]): YearTable {
+  return {
+    schemaVersion: 1,
+    pathIndex: 7,
+    deathYears: [2053],
+    accounts: [
+      { id: "brokerage", name: "Brokerage", bucket: "taxable", owner: "p1" },
+      { id: "ira", name: "IRA", bucket: "pre_tax", owner: "p1" },
+      { id: "roth", name: "Roth IRA", bucket: "roth", owner: "p1" },
+    ],
+    startingTotal: "300000000",
+    rows,
+  };
+}
+
+describe("OUT-11 pathStory (strategies-outputs-web §3.12)", () => {
+  it("OUT-11 taxable empty in 2037, pre-tax in 2049, Roth in 2053 with the first shortfall in 2053 → failed in 2053, depletion in that order", () => {
+    const rows: YearRow[] = [];
+    for (let year = 2027; year <= 2053; year++) {
+      rows.push(
+        storyRow(year, {
+          taxable: year < 2037 ? 1000000n : 0n,
+          preTax: year < 2049 ? 1000000n : 0n,
+          roth: year < 2053 ? 1000000n : 0n,
+          failed: year === 2053,
+        }),
+      );
+    }
+    const table = storyTable(rows);
+    expect(YearTable.parse(table)).toEqual(table);
+    const story = pathStory(table);
+    expect(story.outcome).toBe("failed");
+    expect(story.failureYear).toBe(2053);
+    expect(story.failureAges).toEqual([91]);
+    expect(story.depletion).toEqual([
+      { bucket: "taxable", year: 2037 },
+      { bucket: "pre_tax", year: 2049 },
+      { bucket: "roth", year: 2053 },
+    ]);
+    expect(story.endingRealCents).toBe("0");
+    // The shortfall year is below plan; every other year funded its plan.
+    expect(story.belowPlanYears).toBe(1);
+  });
+
+  it("a funded path: no failure year, buckets that never held money are not listed, events counted, the peak tax", () => {
+    const table = storyTable([
+      storyRow(2027, { taxable: 1000000n, preTax: 0n, roth: 5n, events: ["freeze"], taxCents: "120000" }),
+      storyRow(2028, { taxable: 0n, preTax: 0n, roth: 5n, events: ["cut", "topped_up"], taxCents: "250000" }),
+      storyRow(2029, { taxable: 0n, preTax: 0n, roth: 5n, events: ["raise", "band_floor", "band_ceiling", "cut"], taxCents: "250000" }),
+    ]);
+    const story = pathStory(table);
+    expect(story.outcome).toBe("funded");
+    expect(story.failureYear).toBeUndefined();
+    expect(story.depletion).toEqual([{ bucket: "taxable", year: 2028 }]);
+    expect(story.events).toEqual({ cuts: 2, raises: 1, freezes: 1, topUps: 1, bandFloors: 1, bandCeilings: 1 });
+    // The first of two equal peaks.
+    expect(story.peakTax).toEqual({ year: 2028, cents: "250000" });
+    expect(story.endingRealCents).toBe("5");
+  });
+
+  it("below plan: funded more than a cent short of planned + goals; a one-cent difference is rounding", () => {
+    const table = storyTable([
+      storyRow(2027, { taxable: 1n, preTax: 0n, roth: 0n, funded: "3999999", planned: "4000000" }),
+      storyRow(2028, { taxable: 1n, preTax: 0n, roth: 0n, funded: "3999998", planned: "4000000" }),
+      storyRow(2029, { taxable: 1n, preTax: 0n, roth: 0n, funded: "3000000", planned: "4000000" }),
+    ]);
+    expect(pathStory(table).belowPlanYears).toBe(2);
+  });
+
+  it("first10: the geometric mean real return of the first ten drawdown years, truncated toward zero; the median table's beside it", () => {
+    // +5% at 2.5% inflation: 1.05 ÷ 1.025 = 1.0243902439… → 243.90 bp → 243.
+    const one = storyRow(2027, { taxable: 1n, preTax: 0n, roth: 0n, returnBp: 500, cpi: ["1.000000000", "1.025000000"] });
+    expect(realReturnBp([one])).toBe(243);
+    // +10% then −10% at no inflation: √(1.1 × 0.9) = √0.99 = 0.994987437… → −50.13 bp → −50.
+    const up = storyRow(2027, { taxable: 1n, preTax: 0n, roth: 0n, returnBp: 1000 });
+    const down = storyRow(2028, { taxable: 1n, preTax: 0n, roth: 0n, returnBp: -1000 });
+    expect(realReturnBp([up, down])).toBe(-50);
+    // A year that lost everything has no geometric mean; no rows, no figure.
+    expect(realReturnBp([storyRow(2027, { taxable: 1n, preTax: 0n, roth: 0n, returnBp: -10000 })])).toBeUndefined();
+    expect(realReturnBp([])).toBeUndefined();
+    // Eleven drawdown years: only the first ten count. Ten at +10% (cpi 1) and an eleventh at −50%: 1000.
+    const rows = Array.from({ length: 11 }, (_, i) => storyRow(2027 + i, { taxable: 1n, preTax: 0n, roth: 0n, returnBp: i < 10 ? 1000 : -5000 }));
+    const median = storyTable([up, down]);
+    const story = pathStory(storyTable(rows), median);
+    expect(story.first10).toEqual({ realReturnBp: 1000, medianRealReturnBp: -50 });
+    // Accumulation rows are not drawdown years.
+    const accumulation = { ...up, phase: "accumulation" as const };
+    expect(pathStory(storyTable([accumulation])).first10).toEqual({});
   });
 });

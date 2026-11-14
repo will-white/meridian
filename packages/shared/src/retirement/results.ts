@@ -513,3 +513,127 @@ export function deflateYearTable(table: YearTable): YearTable {
   });
   return { ...table, deathYears: [...table.deathYears], accounts: table.accounts.map((a) => ({ ...a })), rows };
 }
+
+// ---- The path story (strategies-outputs-web §3.12): computed in the browser from a stored table ----
+
+/** What the Results page says about one path (§3.12); nothing of it is stored. */
+export interface PathStory {
+  outcome: "funded" | "failed";
+  /** The first year whose floor was not funded, and the ages of the people alive in it. */
+  failureYear?: number;
+  failureAges?: number[];
+  endingRealCents: string;
+  /** The first year each bucket ended at zero after holding money, in that order (ties in `PlanBucket` order). */
+  depletion: Array<{ bucket: PlanBucket; year: number }>;
+  /** The annualized real portfolio return over the first 10 drawdown years, this path's and the median path's; absent without a drawdown year. */
+  first10: { realReturnBp?: number; medianRealReturnBp?: number };
+  events: { cuts: number; raises: number; freezes: number; topUps: number; bandFloors: number; bandCeilings: number };
+  /** Drawdown years whose funded spending fell below the plan (planned + goals), or had a shortfall. */
+  belowPlanYears: number;
+  /** The year of the largest federal tax (the first on a tie). */
+  peakTax: { year: number; cents: string };
+}
+
+/** `floor(x^(1/n))` for `x ≥ 0` and a whole `n ≥ 1`: integer Newton iteration from above. */
+function nthRootFloor(x: bigint, n: number): bigint {
+  if (x < 2n || n === 1) return x;
+  const k = BigInt(n);
+  let y = 1n << BigInt(Math.ceil(x.toString(2).length / n));
+  for (;;) {
+    const next = ((k - 1n) * y + x / y ** (k - 1n)) / k;
+    if (next >= y) return y;
+    y = next;
+  }
+}
+
+const ROOT_SCALE = 10n ** 12n;
+const BP = 10_000n;
+
+/**
+ * The geometric mean real return of rows, in basis points truncated toward zero (C44: a ratio
+ * computed outside the engine truncates). The real factor of a year is
+ * `(1 + portfolioReturnBp ÷ 10000) × cpiStart ÷ cpiEnd`; the mean is the n-th root of the product,
+ * all in integers. Undefined for no rows or a year that lost everything.
+ */
+export function realReturnBp(rows: readonly YearRow[]): number | undefined {
+  if (rows.length === 0) return undefined;
+  let num = 1n;
+  let den = 1n;
+  for (const row of rows) {
+    const gross = BP + BigInt(row.portfolioReturnBp);
+    if (gross <= 0n) return undefined;
+    num *= gross * parsePriceLevel(row.cpiStart);
+    den *= BP * parsePriceLevel(row.cpiEnd);
+  }
+  const n = rows.length;
+  const g = nthRootFloor((num * ROOT_SCALE ** BigInt(n)) / den, n);
+  return Number(((g - ROOT_SCALE) * BP) / ROOT_SCALE);
+}
+
+const firstTen = (table: YearTable) => table.rows.filter((r) => r.phase !== "accumulation").slice(0, 10);
+
+/**
+ * The path story of a stored table (§3.12), pure and integer-only. `medianTable` is the stored
+ * 50th-percentile table, for the comparison of the first ten drawdown years.
+ *
+ * A bucket "held money" once a row shows a withdrawal from it or an ending balance in it; it is
+ * depleted in the first row at or after that whose ending balance is 0. A drawdown year is below
+ * plan when it has a shortfall or its funded spending is more than one cent short of planned
+ * spending plus goals (the cent absorbs the rounding of three separately rounded figures).
+ */
+export function pathStory(table: YearTable, medianTable?: YearTable): PathStory {
+  const rows = table.rows;
+  const last = rows[rows.length - 1];
+  if (last === undefined) throw new RangeError("pathStory: the table has no row");
+  const failedRow = rows.find((r) => r.failed);
+  const held: Record<PlanBucket, boolean> = { taxable: false, pre_tax: false, roth: false, hsa: false, cash: false };
+  const depleted = new Set<PlanBucket>();
+  const depletion: PathStory["depletion"] = [];
+  const events = { cuts: 0, raises: 0, freezes: 0, topUps: 0, bandFloors: 0, bandCeilings: 0 };
+  let belowPlanYears = 0;
+  let peak = { year: rows[0]!.year, cents: BigInt(rows[0]!.tax.totalFederalCents) };
+  for (const row of rows) {
+    for (const bucket of PlanBucket.options) {
+      const ending = BigInt(row.ending.byBucket[bucket]);
+      if (BigInt(row.withdrawals.byBucket[bucket]) > 0n || ending > 0n) held[bucket] = true;
+      if (held[bucket] && ending === 0n && !depleted.has(bucket)) {
+        depleted.add(bucket);
+        depletion.push({ bucket, year: row.year });
+      }
+    }
+    for (const e of row.strategy.events) {
+      if (e === "cut") events.cuts++;
+      else if (e === "raise") events.raises++;
+      else if (e === "freeze") events.freezes++;
+      else if (e === "topped_up") events.topUps++;
+      else if (e === "band_floor") events.bandFloors++;
+      else if (e === "band_ceiling") events.bandCeilings++;
+    }
+    if (row.phase !== "accumulation") {
+      const sp = row.spending;
+      if (BigInt(sp.shortfall) > 0n || BigInt(sp.funded) + 1n < BigInt(sp.planned) + BigInt(sp.goals)) belowPlanYears++;
+    }
+    const tax = BigInt(row.tax.totalFederalCents);
+    if (tax > peak.cents) peak = { year: row.year, cents: tax };
+  }
+  const story: PathStory = {
+    outcome: failedRow === undefined ? "funded" : "failed",
+    endingRealCents: last.ending.totalReal,
+    depletion,
+    first10: {},
+    events,
+    belowPlanYears,
+    peakTax: { year: peak.year, cents: peak.cents.toString() },
+  };
+  if (failedRow !== undefined) {
+    story.failureYear = failedRow.year;
+    story.failureAges = failedRow.ages.filter((_, i) => failedRow.alive[i] === true);
+  }
+  const own = realReturnBp(firstTen(table));
+  if (own !== undefined) story.first10.realReturnBp = own;
+  if (medianTable !== undefined) {
+    const median = realReturnBp(firstTen(medianTable));
+    if (median !== undefined) story.first10.medianRealReturnBp = median;
+  }
+  return story;
+}

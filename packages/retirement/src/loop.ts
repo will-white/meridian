@@ -259,6 +259,7 @@ export function simulatePath(ps: PathState, pathIndex: number, detail: PathDetai
   ps.payrollReal = 0;
   ps.spendReal = 0;
   ps.conversionsSkipped = 0;
+  ps.notConvergedYears = 0;
   ps.totalNominal.fill(Number.NaN);
   ps.totalReal.fill(Number.NaN);
   ps.spendingReal.fill(Number.NaN);
@@ -269,10 +270,10 @@ export function simulatePath(ps: PathState, pathIndex: number, detail: PathDetai
 
   for (let t = 0; t <= endIdx; t++) runYear(ps, t, detail);
 
-  let total = 0;
-  for (let k = 0; k < ps.bal.length; k++) total += ps.bal[k]!;
-  ps.endNominal = total;
-  ps.endReal = total / cpi[endIdx + 1]!;
+  // The path's ending is the last year's own end total (the same sum and the same division as the
+  // year's record), so a re-simulated table ends at the stored series value bit for bit (T43).
+  ps.endNominal = ps.endTotal;
+  ps.endReal = ps.totalReal[endIdx]!;
   if (ps.failIdx < 0) ps.flags |= PATH_FLAG.SUCCESS;
   if (market.wrapped) ps.flags |= PATH_FLAG.WRAPPED;
   if (detail !== null) {
@@ -525,6 +526,7 @@ function yearWithdrawals(ps: PathState, t: number): void {
     }
     if (!converged) {
       ps.flags |= PATH_FLAG.NOT_CONVERGED;
+      ps.notConvergedYears += 1;
       yearFlags |= YEAR_FLAG.NOT_CONVERGED;
     }
   }
