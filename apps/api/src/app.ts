@@ -9,6 +9,7 @@ import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from "fas
 import { z } from "zod";
 import type { Db } from "@meridian/db";
 import type { ApiConfig } from "./config.js";
+import { defaultPlanner, type Planner } from "./planner.js";
 import { registerErrorHandler } from "./lib/errors.js";
 import { BODY_LIMIT } from "./lib/limits.js";
 import { authPlugin } from "./plugins/auth.js";
@@ -29,6 +30,7 @@ import { planRoutes } from "./routes/plan.js";
 import { priceRoutes } from "./routes/prices.js";
 import { reconcileRoutes } from "./routes/reconcile.js";
 import { recurringRoutes } from "./routes/recurring.js";
+import { retirementRoutes } from "./routes/retirement.js";
 import { ruleRoutes } from "./routes/rules.js";
 import { securityRoutes } from "./routes/securities.js";
 import { settingsRoutes } from "./routes/settings.js";
@@ -44,9 +46,11 @@ export interface BuildAppOptions {
   now?: () => Date;
   /** Injectable clock for sign-in only (session lifetimes, authenticator codes); the real time unless a test moves it. */
   authNow?: () => Date;
+  /** The retirement planner's engine (`app.planner`, planner.ts); the engine package itself unless a test injects a fake. */
+  planner?: Planner;
 }
 
-export async function buildApp({ db, config, logger, now, authNow }: BuildAppOptions) {
+export async function buildApp({ db, config, logger, now, authNow, planner }: BuildAppOptions) {
   const app = Fastify({
     logger: logger ?? config.nodeEnv !== "test",
     // Only the listed reverse proxy may state the client address and the public host
@@ -60,6 +64,7 @@ export async function buildApp({ db, config, logger, now, authNow }: BuildAppOpt
   app.decorate("config", config);
   app.decorate("now", now ?? (() => new Date()));
   app.decorate("authNow", authNow ?? (() => new Date()));
+  app.decorate("planner", planner ?? defaultPlanner());
   registerErrorHandler(app);
 
   await app.register(helmet, {
@@ -108,6 +113,8 @@ export async function buildApp({ db, config, logger, now, authNow }: BuildAppOpt
       await api.register(valuationRoutes);
       await api.register(reconcileRoutes);
       await api.register(investmentViewRoutes);
+      // Phase 4: the retirement planner (docs/design/phase-4/inputs-and-data.md §4.7, tax-rmd-ss §4.4).
+      await api.register(retirementRoutes, { prefix: "/retirement" });
     },
     { prefix: "/api" },
   );

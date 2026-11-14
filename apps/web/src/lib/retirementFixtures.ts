@@ -1,4 +1,4 @@
-import { YearTable } from "@meridian/shared";
+import { RetirementReturnModelsMeta, YearTable } from "@meridian/shared";
 
 /**
  * Test data for the retirement helpers; not imported by any page.
@@ -41,4 +41,55 @@ export const R1_YEAR_TABLE: YearTable = YearTable.parse({
     {"year":2046,"yearFractionPpm":1000000,"ages":[84,84],"alive":[true,true],"phase":"retirement","filingStatus":"married_joint","cpiStart":"1.598650186","cpiEnd":"1.638616440","inflationBp":250,"portfolioReturnBp":500,"income":{"wages":"0","socialSecurity":["5752800","3451200"],"socialSecurityParts":[{"spousal":"0","survivor":"0","withheld":"0"},{"spousal":"0","survivor":"0","withheld":"0"}],"pensionAnnuity":"1200000","rental":"0","other":"0","total":"10404000"},"contributions":{"employee":"0","employer":"0"},"spending":{"planned":"14547717","funded":"14547717","core":"14547717","healthcare":"0","longTermCare":"0","goals":"0","floor":"14547717","shortfall":"0"},"strategy":{"events":[],"withdrawalRateBp":275,"essentialCoverageBp":7152},"withdrawals":{"byAccount":["0","0","3897095","1634600","0"],"byBucket":{"taxable":"0","pre_tax":"5531695","roth":"0","hsa":"0","cash":"0"},"total":"5531695","rmdByAccount":["0","0","3897095","1634600","0"],"rmdTotal":"5531695"},"conversions":"0","investment":{"realizedGains":"0","dividends":"0","coupons":"0"},"tax":{"filingStatus":"married_joint","totalFederalCents":"804440","incomeTaxCents":"804440","ordinaryTaxCents":"804440","capitalGainsTaxCents":"0","niitCents":"0","earlyPenaltyCents":"0","hsaPenaltyCents":"0","payrollTaxCents":"0","agiCents":"13225337","taxableIncomeCents":"7385337","ordinaryTaxableCents":"7385337","taxableSocialSecurityCents":"6493641","standardDeductionCents":"5840000","seniorDeductionCents":"0","gainsAt0Cents":"0","gainsAt15Cents":"0","gainsAt20Cents":"0","capitalLossCarryoverCents":"0","magiIrmaaCents":"13225337","magiAcaCents":"15935695","bracketRateBp":1200,"nextGainRateBp":0},"surplusSaved":"583538","growth":"8734431","ending":{"byAccount":["0","2829917","64652806","27118021","88822300"],"basisByAccount":["0","2459415","0","0","0"],"byBucket":{"taxable":"2829917","pre_tax":"91770827","roth":"88822300","hsa":"0","cash":"0"},"total":"183423044","totalReal":"111937754"},"failed":false},
     {"year":2047,"yearFractionPpm":1000000,"ages":[85,85],"alive":[true,true],"phase":"retirement","filingStatus":"married_joint","cpiStart":"1.638616440","cpiEnd":"1.679581851","inflationBp":250,"portfolioReturnBp":500,"income":{"wages":"0","socialSecurity":["5896800","3537600"],"socialSecurityParts":[{"spousal":"0","survivor":"0","withheld":"0"},{"spousal":"0","survivor":"0","withheld":"0"}],"pensionAnnuity":"1200000","rental":"0","other":"0","total":"10634400"},"contributions":{"employee":"0","employer":"0"},"spending":{"planned":"14911410","funded":"14911410","core":"14911410","healthcare":"0","longTermCare":"0","goals":"0","floor":"14911410","shortfall":"0"},"strategy":{"events":[],"withdrawalRateBp":279,"essentialCoverageBp":7132},"withdrawals":{"byAccount":["0","0","4040801","1694876","0"],"byBucket":{"taxable":"0","pre_tax":"5735677","roth":"0","hsa":"0","cash":"0"},"total":"5735677","rmdByAccount":["0","0","4040801","1694876","0"],"rmdTotal":"5735677"},"conversions":"0","investment":{"realizedGains":"0","dividends":"0","coupons":"0"},"tax":{"filingStatus":"married_joint","totalFederalCents":"841475","incomeTaxCents":"841475","ordinaryTaxCents":"841475","capitalGainsTaxCents":"0","niitCents":"0","earlyPenaltyCents":"0","hsaPenaltyCents":"0","payrollTaxCents":"0","agiCents":"13700622","taxableIncomeCents":"7710622","ordinaryTaxableCents":"7710622","taxableSocialSecurityCents":"6764945","standardDeductionCents":"5990000","seniorDeductionCents":"0","gainsAt0Cents":"0","gainsAt15Cents":"0","gainsAt20Cents":"0","capitalLossCarryoverCents":"0","magiIrmaaCents":"13700622","magiAcaCents":"16370077","bracketRateBp":1200,"nextGainRateBp":0},"surplusSaved":"617192","growth":"8915228","ending":{"byAccount":["0","3619465","63642606","26694302","93263414"],"basisByAccount":["0","3076608","0","0","0"],"byBucket":{"taxable":"3619465","pre_tax":"90336908","roth":"93263414","hsa":"0","cash":"0"},"total":"187219787","totalReal":"111468094"},"failed":false},
   ],
+});
+
+const CORRELATION_BP = [
+  [10000, 224, -43, 164],
+  [224, 10000, 2664, -2066],
+  [-43, 2664, 10000, 1247],
+  [164, -2066, 1247, 10000],
+];
+
+/**
+ * `GET /meta`'s `returnModels` as the API answers it at ENGINE_VERSION 1.0.1 and data 2026.11.1
+ * (apps/api/src/planner.ts `returnModelsMeta`, whose test, planner.test.ts, derives these figures
+ * by hand from seams §8 D2 and engine-and-returns §3.5 (d)). Written once from the API's answer,
+ * because the web may not import the engine (seams C47).
+ */
+export const RETURN_MODELS_META: RetirementReturnModelsMeta = RetirementReturnModelsMeta.parse({
+  presets: [
+    {
+      id: "historical",
+      label: "Long-run history",
+      params: {
+        meanKind: "arithmetic",
+        stocks: { meanBp: 1199, volBp: 2133 },
+        bonds: { meanBp: 482, volBp: 779 },
+        bills: { meanBp: 342, volBp: 300, persistenceBp: 0 },
+        inflation: { meanBp: 311, volBp: 389, persistenceBp: 6190 },
+        correlationBp: CORRELATION_BP,
+      },
+    },
+    {
+      id: "conservative",
+      label: "Conservative future",
+      params: {
+        meanKind: "geometric",
+        stocks: { meanBp: 550, volBp: 1940 },
+        bonds: { meanBp: 450, volBp: 790 },
+        bills: { meanBp: 320, volBp: 304, persistenceBp: 0 },
+        inflation: { meanBp: 250, volBp: 390, persistenceBp: 6190 },
+        correlationBp: CORRELATION_BP,
+      },
+    },
+  ],
+  historyStartParams: {
+    meanKind: "arithmetic",
+    stocks: { meanBp: 1185, volBp: 1940 },
+    bonds: { meanBp: 482, volBp: 790 },
+    bills: { meanBp: 341, volBp: 304, persistenceBp: 0 },
+    inflation: { meanBp: 311, volBp: 390, persistenceBp: 6190 },
+    correlationBp: CORRELATION_BP,
+  },
+  history: { firstYear: 1928, lastYear: 2025 },
 });

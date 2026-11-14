@@ -9,8 +9,10 @@ import { resolveToday, usePlanErrors } from "./plan.js";
  * `GET /api/dashboard` (docs/phase-2-plan.md §15, grid-and-api `DashboardView`): the
  * current month's summary strip, the 30-day combined cash-flow line with its low point,
  * bills due in the next 14 days (plus overdue items), net worth with its 12-month change,
- * the review counts and the sync status. Computed per request from the services, never
- * cached or written, and sent with `Cache-Control: no-store` so no proxy keeps a copy;
+ * the review counts, the sync status, the investments block and the retirement card (the newest
+ * finished run of the default scenario, null before a planner profile exists). Computed per
+ * request from the services, never cached or written, and sent with `Cache-Control: no-store`
+ * so no proxy keeps a copy;
  * the client's own staleTime is its only cache. `today` is the client's local date,
  * bounded to ±2 days of the server's household date (else 400).
  */
@@ -21,7 +23,8 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
   r.get("/dashboard", { schema: { querystring: TodayQuery, response: { 200: DashboardView } } }, async (request, reply) => {
     const today = await resolveToday(app, request.query.today);
     // Phase 3: the investments block values the chain on the expected price date (the server clock) and reports the feed's state.
-    const view = toDashboardView(await getDashboard(app.db, { today, now: app.now(), priceProvider: app.config.priceProvider ?? null }));
+    // Phase 4: the retirement card is judged against the planner's current engine and data (inputs-and-data §4.9).
+    const view = toDashboardView(await getDashboard(app.db, { today, now: app.now(), priceProvider: app.config.priceProvider ?? null, planner: app.planner.env }));
     reply.header("Cache-Control", "no-store");
     return view;
   });

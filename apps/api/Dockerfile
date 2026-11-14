@@ -20,6 +20,7 @@ COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY apps/api/package.json ./apps/api/package.json
 COPY packages/db/package.json ./packages/db/package.json
 COPY packages/shared/package.json ./packages/shared/package.json
+COPY packages/retirement/package.json ./packages/retirement/package.json
 RUN pnpm install --frozen-lockfile --prod --filter @meridian/api
 
 # The image: the bundles (with their source maps), the UI, the migrations and the runtime
@@ -31,9 +32,11 @@ COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=build /app/apps/api/package.json ./apps/api/package.json
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/web/dist ./apps/web/dist
-# The workspace links in node_modules point at these two folders.
+# The workspace links in node_modules point at these three folders (the planner's engine is bundled;
+# the API runs one path at a time on its own thread and never starts worker threads, seams G11).
 COPY --from=build /app/packages/db/package.json ./packages/db/package.json
 COPY --from=build /app/packages/shared/package.json ./packages/shared/package.json
+COPY --from=build /app/packages/retirement/package.json ./packages/retirement/package.json
 # Applied by the API at boot (apps/api/src/boot.ts).
 COPY --from=build /app/packages/db/drizzle ./packages/db/drizzle
 ENV NODE_ENV=production

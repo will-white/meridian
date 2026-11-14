@@ -268,36 +268,20 @@ export interface ParametricForm {
 }
 
 /**
- * Where a new custom model starts: history (seams G2, "means and volatilities; correlations and
- * persistence from history"). The means are the arithmetic means of the data file's simple annual
- * returns and the volatilities their sample standard deviations (seams §8 D2: 0.118547, 0.048224,
- * 0.034149, 0.031083; engine-and-returns §3.5 (d): 0.194034, 0.079024, 0.030358, 0.038953), each to
- * the nearest basis point; the inflation persistence 0.6190 and the six innovation correlations
- * (0.0224, −0.0043, 0.0164, 0.2664, −0.2066, 0.1247, §3.5 (d)) likewise; bills not persistent, as in
- * the `historical` preset. The rounded matrix is positive definite (its smallest eigenvalue is
- * about 0.594). These are display defaults copied from the designs, not engine data: the web may
- * not import the engine (C47), and `GET /meta` carries no return-model parameters; a data update
- * leaves them as they are until this copy is updated.
+ * What the run-settings form reads of `GET /meta` (`RetirementMeta.returnModels`, seams C47 and G2):
+ * the parametric presets and where a new custom model starts, the latter "means and volatilities;
+ * correlations and persistence from history" (the data file's arithmetic means and simple-return
+ * volatilities, its inflation persistence and innovation correlations, bills not persistent, each to
+ * the nearest basis point). The server computes them from the engine's data, so a data update
+ * reaches the form with it; the web may not import the engine.
  */
-export const HISTORY_START_PARAMS: ParametricParams = {
-  meanKind: "arithmetic",
-  stocks: { meanBp: 1185, volBp: 1940 },
-  bonds: { meanBp: 482, volBp: 790 },
-  bills: { meanBp: 341, volBp: 304, persistenceBp: 0 },
-  inflation: { meanBp: 311, volBp: 390, persistenceBp: 6190 },
-  correlationBp: [
-    [10000, 224, -43, 164],
-    [224, 10000, 2664, -2066],
-    [-43, 2664, 10000, 1247],
-    [164, -2066, 1247, 10000],
-  ],
-};
+export type ReturnModelsMeta = Pick<RetirementMeta, "returnModels">;
 
 const meanVolForm = (v: { meanBp: number; volBp: number }): MeanVolForm => ({ mean: percentInputValue(v.meanBp), vol: percentInputValue(v.volBp) });
 
-/** The form from saved custom parameters, or from `HISTORY_START_PARAMS`. */
-export function parametricForm(params?: ParametricParams): ParametricForm {
-  const p = params ?? HISTORY_START_PARAMS;
+/** The form from saved custom parameters, or from history (`meta.returnModels.historyStartParams`). */
+export function parametricForm(meta: ReturnModelsMeta, params?: ParametricParams): ParametricForm {
+  const p = params ?? meta.returnModels.historyStartParams;
   return { meanKind: p.meanKind, stocks: meanVolForm(p.stocks), bonds: meanVolForm(p.bonds), bills: meanVolForm(p.bills), inflation: meanVolForm(p.inflation) };
 }
 
@@ -306,10 +290,14 @@ type ParametricAsset = "stocks" | "bonds" | "bills" | "inflation";
 /**
  * The form as `ParametricParams` in integer basis points (C3): means −50% to 100%, volatilities 0% to
  * 100%, at most two decimals. Persistence, initial rates and correlations are kept from `base` (the
- * saved custom parameters) or taken from history; the result is checked with the shared schema.
+ * saved custom parameters) or taken from history (`meta`); the result is checked with the shared schema.
  */
-export function parseParametricForm(form: ParametricForm, base?: ParametricParams): { ok: true; params: ParametricParams } | { ok: false; errors: FieldError[] } {
-  const start = base ?? HISTORY_START_PARAMS;
+export function parseParametricForm(
+  form: ParametricForm,
+  meta: ReturnModelsMeta,
+  base?: ParametricParams,
+): { ok: true; params: ParametricParams } | { ok: false; errors: FieldError[] } {
+  const start = base ?? meta.returnModels.historyStartParams;
   const errors: FieldError[] = [];
   const read = (asset: ParametricAsset) => {
     const mean = parseSignedPercent(form[asset].mean, -5000, 10000);
@@ -388,11 +376,10 @@ export const COHORT_CHOICES: ReadonlyArray<{ value: HistoricalCohorts; label: st
   { value: "complete", label: "Complete stretches of history only" },
   { value: "wrap", label: "Every start year, wrapping around to the first year of the record" },
 ];
-export const PRESET_CHOICES: ReadonlyArray<{ value: ParametricPreset; label: string }> = [
-  { value: "historical", label: "Long-run history" },
-  { value: "conservative", label: "Conservative future" },
-  { value: "custom", label: "Your own returns and volatilities" },
-];
+/** The parametric presets of `GET /meta` with their labels, then the custom model. */
+export function presetChoices(meta: ReturnModelsMeta): Array<{ value: ParametricPreset; label: string }> {
+  return [...meta.returnModels.presets.map((p) => ({ value: p.id, label: p.label })), { value: "custom", label: "Your own returns and volatilities" }];
+}
 
 const defaultsOf = <K extends StrategyKind>(kind: K) => StrategyConfig.parse({ kind }) as Extract<StrategyConfig, { kind: K }>;
 
@@ -427,7 +414,7 @@ function strategyFields(current: StrategyConfig): StrategyFields {
  * strategy's fields are filled (the current kind's values, the others' defaults), so switching
  * the card keeps what was typed.
  */
-export function runSettingsForm(settings: RunSettings = defaultRunSettings()): RunSettingsForm {
+export function runSettingsForm(meta: ReturnModelsMeta, settings: RunSettings = defaultRunSettings()): RunSettingsForm {
   const m = settings.returnModel;
   return {
     paths: String(settings.paths),
@@ -436,7 +423,7 @@ export function runSettingsForm(settings: RunSettings = defaultRunSettings()): R
     cohorts: m.kind === "historical" ? m.cohorts : "auto",
     meanBlockYears: String(m.kind === "bootstrap" ? m.meanBlockYears : 10),
     preset: m.kind === "parametric" ? m.preset : "historical",
-    custom: parametricForm(m.kind === "parametric" && m.preset === "custom" ? m.params : undefined),
+    custom: parametricForm(meta, m.kind === "parametric" && m.preset === "custom" ? m.params : undefined),
     strategy: settings.strategy.kind,
     strategyFields: strategyFields(settings.strategy),
     cashReserve: dollarsInputValue(settings.withdrawalOrder.cashReserveCents),
@@ -496,7 +483,11 @@ function parseStrategy(kind: StrategyKind, f: StrategyFields, errors: FieldError
  * fixed test model). The paths of the historical model are kept as they are: it reports its own
  * count.
  */
-export function parseRunSettingsForm(form: RunSettingsForm, base: RunSettings): { ok: true; settings: RunSettings } | { ok: false; errors: FieldError[] } {
+export function parseRunSettingsForm(
+  form: RunSettingsForm,
+  base: RunSettings,
+  meta: ReturnModelsMeta,
+): { ok: true; settings: RunSettings } | { ok: false; errors: FieldError[] } {
   const errors: FieldError[] = [];
   const pathsLocked = pathsField(form).disabled;
   const paths = pathsLocked ? base.paths : parseWholeNumber(form.paths, 100, 100_000);
@@ -521,7 +512,7 @@ export function parseRunSettingsForm(form: RunSettingsForm, base: RunSettings): 
         break;
       }
       const saved = base.returnModel.kind === "parametric" && base.returnModel.preset === "custom" ? base.returnModel.params : undefined;
-      const custom = parseParametricForm(form.custom, saved);
+      const custom = parseParametricForm(form.custom, meta, saved);
       if (!custom.ok) errors.push(...custom.errors.map((e) => ({ ...e, field: `custom.${e.field}` })));
       else returnModel = { kind: "parametric", preset: "custom", params: custom.params };
       break;

@@ -180,7 +180,20 @@ describe("request contracts", () => {
 });
 
 describe("response contracts", () => {
-  it("C47: the meta carries minStartYear", () => {
+  it("C47: the meta carries minStartYear and the return models' facts (presets, the custom model's start)", () => {
+    const params = {
+      meanKind: "arithmetic",
+      stocks: { meanBp: 1185, volBp: 1940 },
+      bonds: { meanBp: 482, volBp: 790 },
+      bills: { meanBp: 341, volBp: 304, persistenceBp: 0 },
+      inflation: { meanBp: 311, volBp: 390, persistenceBp: 6190 },
+      correlationBp: [
+        [10000, 224, -43, 164],
+        [224, 10000, 2664, -2066],
+        [-43, 2664, 10000, 1247],
+        [164, -2066, 1247, 10000],
+      ],
+    };
     const meta = {
       engineVersion: "1.0.0",
       dataVersion: "2026.11.0",
@@ -188,6 +201,14 @@ describe("response contracts", () => {
       ruleSets: [{ id: "current_law", label: "Current law" }],
       limits: { minPaths: 100, maxPaths: 100_000, defaultPaths: 10_000 },
       defaultSettings: defaultRunSettings(),
+      returnModels: {
+        presets: [
+          { id: "historical", label: "Long-run history", params },
+          { id: "conservative", label: "Conservative future", params: { ...params, meanKind: "geometric" } },
+        ],
+        historyStartParams: params,
+        history: { firstYear: 1928, lastYear: 2025 },
+      },
       storedPercentiles: [5, 10, 25, 50, 75, 90, 95],
       medicareAge: 65,
       fullRetirementAge: [{ fromBirthYear: 1960, toBirthYear: null, years: 67, months: 0 }],
@@ -196,6 +217,10 @@ describe("response contracts", () => {
     expect(RetirementMeta.parse(meta)).toEqual(meta);
     const { minStartYear: _dropped, ...without } = meta;
     expect(ok(RetirementMeta, without)).toBe(false);
+    const { returnModels: _models, ...noModels } = meta;
+    expect(ok(RetirementMeta, noModels)).toBe(false);
+    // A preset is historical or conservative; custom is the form itself.
+    expect(ok(RetirementMeta, { ...meta, returnModels: { ...meta.returnModels, presets: [{ id: "custom", label: "Yours", params }] } })).toBe(false);
   });
 
   it("routes 2, 13, 16 and 18 carry the stored documents", () => {

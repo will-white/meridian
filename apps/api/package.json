@@ -17,6 +17,7 @@
     "@fastify/rate-limit": "^10.2.1",
     "@fastify/static": "^10.1.11",
     "@meridian/db": "workspace:*",
+    "@meridian/retirement": "workspace:*",
     "@meridian/shared": "workspace:*",
     "@node-rs/argon2": "^2.0.2",
     "@simplewebauthn/server": "13.3.3",
