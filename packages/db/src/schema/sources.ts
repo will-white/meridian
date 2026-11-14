@@ -36,6 +36,8 @@ export const JOB_TYPES = [
   "investments.income_feed",
   // Audit a5-ingest-transfers-13
   "simplefin.reprocess_transactions",
+  // Phase 4
+  "retirement.simulate",
 ] as const;
 
 /** A data source: a SimpleFIN access URL, a CSV mapping profile, or manual entry. */

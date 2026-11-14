@@ -218,7 +218,8 @@ describe.skipIf(!TEST_DATABASE_URL || !haveTools)("deploy scripts: backup, resto
     expect(failing.stderr).toContain("off-site copy of daily/");
     expect(failing.stderr).toContain("FAILED");
     expect(readFileSync(path.join(root, "status", "offsite"), "utf8")).toContain("failed");
-    const unhealthy = run(BACKUP, ["--health"], baseEnv(root));
+    // The healthcheck runs in the container, with the same BACKUP_COPY_CMD.
+    const unhealthy = run(BACKUP, ["--health"], baseEnv(root, { BACKUP_COPY_CMD: 'echo "remote: unreachable" >&2; exit 1' }));
     expect(unhealthy.status).toBe(1);
     expect(unhealthy.stdout).toContain("off-site copy is failing");
 
@@ -230,10 +231,36 @@ describe.skipIf(!TEST_DATABASE_URL || !haveTools)("deploy scripts: backup, resto
     expect(files(path.join(remote, "daily"))).toEqual(files(path.join(root, "daily")));
     expect(files(path.join(remote, "daily"))).toHaveLength(2);
     expect(files(path.join(remote, "monthly"))).toEqual(files(path.join(root, "monthly")));
-    expect(run(BACKUP, ["--health"], baseEnv(root)).status).toBe(0);
+    expect(run(BACKUP, ["--health"], baseEnv(root, { BACKUP_COPY_CMD: copyCmd })).status).toBe(0);
     // Nothing is copied twice. (Backups are named to the second; one made in the same second waits for the next.)
     const third = run(BACKUP, [], baseEnv(root, { BACKUP_COPY_CMD: copyCmd }));
     expect(third.stdout.match(/copied /g)?.length).toBe(1);
+  });
+
+  it("a7-backup-deploy-secrets (second round): once BACKUP_COPY_CMD is removed, a copy that failed before no longer fails the healthcheck", () => {
+    const root = newDir("offsite-off");
+    const failingCmd = 'echo "remote: unreachable" >&2; exit 1';
+    expect(run(BACKUP, [], baseEnv(root, { BACKUP_COPY_CMD: failingCmd })).status).toBe(3);
+    expect(run(BACKUP, ["--health"], baseEnv(root, { BACKUP_COPY_CMD: failingCmd })).status).toBe(1);
+
+    // The container recreated without it: there is no copy to report on, at once, and the healthcheck says none is made.
+    const recreated = run(BACKUP, ["--health"], baseEnv(root));
+    expect(recreated.status, recreated.stdout).toBe(0);
+    expect(recreated.stdout).not.toContain("off-site copy is failing");
+    expect(recreated.stdout).toContain("no off-site copy is made (BACKUP_COPY_CMD is not set)");
+
+    // The next backup records that no copy is made, instead of keeping the old failure.
+    const next = run(BACKUP, [], baseEnv(root));
+    expect(next.status, next.stderr).toBe(0);
+    expect(readFileSync(path.join(root, "status", "offsite"), "utf8")).toMatch(/^\d+ off /);
+    expect(run(BACKUP, ["--health"], baseEnv(root)).status).toBe(0);
+    // Set again: healthy until a copy has been tried, then a failing one fails the healthcheck again,
+    // and every file not copied yet is tried (all three dailies and the monthly).
+    expect(run(BACKUP, ["--health"], baseEnv(root, { BACKUP_COPY_CMD: failingCmd })).status).toBe(0);
+    const again = run(BACKUP, [], baseEnv(root, { BACKUP_COPY_CMD: failingCmd }));
+    expect(again.status).toBe(3);
+    expect(again.stderr.match(/off-site copy of (daily|monthly)\//g)).toHaveLength(4);
+    expect(run(BACKUP, ["--health"], baseEnv(root, { BACKUP_COPY_CMD: failingCmd })).stdout).toContain("off-site copy is failing");
   });
 
   it("a7-backup-deploy-secrets-18: the healthcheck fails 26 hours after the last verified backup", () => {
@@ -311,6 +338,62 @@ describe.skipIf(!TEST_DATABASE_URL || !haveTools)("deploy scripts: backup, resto
     const kept = await admin<{ datname: string }[]>`select datname from pg_database where datname like ${`${live}_before_%`}`;
     expect(kept).toHaveLength(1);
     expect(await userCount(kept[0]!.datname)).toBe(2);
+  });
+
+  it("a7-backup-deploy-secrets (second round): the command a restore prints to drop the database it replaced works where the restore ran", async () => {
+    const { file } = goodBackup();
+    /** The lines the restore prints as commands to run ("[restore]   <command>"). */
+    const printed = (stdout: string) => [...stdout.matchAll(/^\[restore\] {3}(\S.*)$/gm)].map((m) => m[1]!.trim());
+    const kept = async (live: string) => (await admin<{ datname: string }[]>`select datname from pg_database where datname like ${`${live}_before_%`}`).map((r) => r.datname);
+    /** Runs restore.sh as the backup image has it, at /restore.sh ($0), without writing to /. */
+    const asImage = (args: string[], env: NodeJS.ProcessEnv) =>
+      spawnSync("sh", ["-c", 'f="$1"; shift; . "$f"', "/restore.sh", RESTORE, ...args], { env, cwd: scratch, encoding: "utf8", timeout: 60_000, input: "" });
+
+    // Outside Docker: the command names this script.
+    const live = await liveDb();
+    // The backup container's environment: PGHOST, PGPORT and the POSTGRES_* settings, but no
+    // PGUSER or PGPASSWORD, so a bare psql connects as the operating-system user.
+    const env = baseEnv(newDir("r"), { POSTGRES_DB: live });
+    expect(env["PGUSER"]).toBeUndefined();
+    expect(env["PGPASSWORD"]).toBeUndefined();
+    const restored = run(RESTORE, ["--yes", file], env);
+    expect(restored.status, restored.stderr).toBe(0);
+    const [previous] = await kept(live);
+    expect(previous).toMatch(new RegExp(`^${live}_before_\\d{14}$`));
+    expect(restored.stdout).toContain(`kept as "${previous}"`);
+    const [hostCommand] = printed(restored.stdout);
+    const dropped = spawnSync("sh", ["-c", hostCommand!], { env, cwd: scratch, encoding: "utf8", timeout: 60_000, input: "" });
+    expect(dropped.status, `${hostCommand}: ${dropped.stderr}`).toBe(0);
+    expect(await kept(live)).toEqual([]);
+    expect(hostCommand).toBe(`${RESTORE} --drop-kept ${previous}`);
+    expect(await userCount(live)).toBe(1);
+
+    // In the backup container (the README's way): the command is the README's, and it works there.
+    const second = await liveDb();
+    const imageEnv = baseEnv(newDir("r"), { POSTGRES_DB: second });
+    const inImage = asImage(["--yes", file], imageEnv);
+    expect(inImage.status, inImage.stderr).toBe(0);
+    const [kept2] = await kept(second);
+    const prefix = "docker compose -f deploy/docker-compose.yml exec backup ";
+    expect(printed(inImage.stdout)).toEqual([`${prefix}/restore.sh --drop-kept ${kept2}`]);
+    const readme = readFileSync(fileURLToPath(new URL("../../../README.md", import.meta.url)), "utf8");
+    expect(readme).toContain(`${prefix}/restore.sh /backups/daily/`);
+    expect(readme).toContain(`${prefix}/restore.sh --drop-kept `);
+    const droppedInImage = asImage(["--drop-kept", kept2!], imageEnv);
+    expect(droppedInImage.status, droppedInImage.stderr).toBe(0);
+    expect(droppedInImage.stdout).toContain(`dropped "${kept2}"`);
+    expect(await kept(second)).toEqual([]);
+
+    // It drops only a copy a restore kept: never the live database, nor any other.
+    for (const name of [live, `${live}_restore_20261114000000`, "postgres", `${live}_before_2026`]) {
+      const refused = run(RESTORE, ["--drop-kept", name], env);
+      expect(refused.status, name).toBe(1);
+      expect(refused.stderr, name).toContain(`only a database a restore kept ("${live}_before_<time>")`);
+    }
+    const missing = run(RESTORE, ["--drop-kept", `${live}_before_20000101000000`], env);
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain("there is no database");
+    expect(await userCount(live)).toBe(1);
   });
 
   it("a7-backup-deploy-secrets-04: restore reads the repository's .env from any directory, never runs it, and an already-set value wins", async () => {

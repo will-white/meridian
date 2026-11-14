@@ -59,6 +59,8 @@ export const JobType = z.enum([
   "investments.valuation",
   "investments.income_feed",
   "simplefin.reprocess_transactions",
+  // Phase 4: one run of the retirement planner (inputs-and-data §6.3)
+  "retirement.simulate",
 ]);
 export type JobType = z.infer<typeof JobType>;
 
@@ -110,6 +112,11 @@ export const AuditEntity = z.enum([
   "import_log",
   // SECRETS_KEY rotated or lost (audit a7-backup-deploy-secrets-09): a connection's secrets re-encrypted or cleared.
   "connection",
+  // Phase 4: the planner's profile document, its baseline refreshed from live data, scenarios, and a run's pin and note.
+  "plan_profile",
+  "plan_baseline",
+  "scenario",
+  "sim_run",
 ]);
 export type AuditEntity = z.infer<typeof AuditEntity>;
 
@@ -302,10 +309,9 @@ export const ReconcileRowStatus = z.enum([
 export type ReconcileRowStatus = z.infer<typeof ReconcileRowStatus>;
 
 // ---- Phase 4: retirement planner ----
-// The planner's enums (docs/design/phase-4/inputs-and-data.md §2.5). The additions to `JobType`
-// (`retirement.simulate`) and `AuditEntity` (`plan_profile`, `plan_baseline`, `scenario`, `sim_run`)
-// land together with their database mirrors `JOB_TYPES` and `AUDIT_ENTITIES` (Stage B), because a
-// test asserts the two lists are equal.
+// The planner's enums (docs/design/phase-4/inputs-and-data.md §2.5). `JobType` gains
+// `retirement.simulate` and `AuditEntity` the planner's four entities above, each with its database
+// mirror (`JOB_TYPES`, `AUDIT_ENTITIES`; `packages/db/src/schema/retirement.test.ts` asserts they are equal).
 
 /** The planner's account groups, derived from the tax treatment (`planBucketOf`); bank accounts are `cash`. */
 export const PlanBucket = z.enum(["taxable", "pre_tax", "roth", "hsa", "cash"]);
