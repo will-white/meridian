@@ -515,7 +515,9 @@ function forcedFlows(ps: PathState, t: number): void {
   ps.rmdTotal = rmdTotal;
   conversionsYearInto(run.conversions, t, ps.cpi, ps.conv);
   let convTotal = 0;
+  const convTake = ps.convTake;
   for (let i = 0; i < P; i++) {
+    convTake[i] = 0;
     const amount = ps.conv[i]!;
     if (!(amount > 0)) continue;
     if (ps.alive[i] !== 1) {
@@ -531,10 +533,13 @@ function forcedFlows(ps: PathState, t: number): void {
     }
     const target = run.conversions.target[i]!;
     ps.convIn[target] = ps.convIn[target]! + take;
-    ps.convTake[i] = take;
-    addRothConversionFrom(ps.roth, i * RB_REC, ps.convTake, i, ps.year);
+    convTake[i] = take;
     convTotal += take;
   }
+  // Each person's conversion enters the Roth record every year (0 adds nothing and starts no
+  // clock): called every year the function is compiled with the loop, called only in the years of
+  // a conversion it would run unoptimized (boxing its doubles) for most of a run.
+  for (let i = 0; i < P; i++) addRothConversionFrom(ps.roth, i * RB_REC, convTake, i, ps.year);
   ps.convTotal = convTotal;
 }
 

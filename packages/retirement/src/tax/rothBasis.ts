@@ -60,10 +60,6 @@ export function rothRollYear(st: Float64Array, off: number): void {
   st[off + RB.CONV4] = 0;
 }
 
-function startClock(st: Float64Array, off: number, year: number): void {
-  if (st[off + RB.FIRST_YEAR] === 0) st[off + RB.FIRST_YEAR] = year;
-}
-
 /** A regular contribution in `year`: `BASIS_FREE += amount`; the first funding starts the clock. */
 export function addRothContribution(st: Float64Array, off: number, amount: number, year: number): void {
   AMOUNT[0] = amount;
@@ -75,7 +71,9 @@ export function addRothContributionFrom(st: Float64Array, off: number, amounts: 
   const amount = amounts[at]!;
   if (!(amount > 0)) return;
   st[off + RB.BASIS_FREE] = (st[off + RB.BASIS_FREE] as number) + amount;
-  startClock(st, off, year);
+  // The first funding starts the clock (written here: a call reached only in a year with an
+  // amount would run unoptimized for most of a run).
+  if (st[off + RB.FIRST_YEAR] === 0) st[off + RB.FIRST_YEAR] = year;
 }
 
 /** A conversion in `year`: `CONV4 += amount`; the first funding starts the clock. */
@@ -89,7 +87,8 @@ export function addRothConversionFrom(st: Float64Array, off: number, amounts: Fl
   const amount = amounts[at]!;
   if (!(amount > 0)) return;
   st[off + RB.CONV4] = (st[off + RB.CONV4] as number) + amount;
-  startClock(st, off, year);
+  // The first funding starts the clock (see addRothContributionFrom).
+  if (st[off + RB.FIRST_YEAR] === 0) st[off + RB.FIRST_YEAR] = year;
 }
 
 /** True when a distribution in `year` is after the five-year period: `FIRST_YEAR > 0 && year ≥ FIRST_YEAR + 5`. */

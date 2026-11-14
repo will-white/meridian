@@ -294,12 +294,6 @@ function storeSurvivorFactor(out: Float64Array, slot: number, t: Float64Array, a
   out[slot] = (den - t[RU.MAX_REDUCTION_NUM]! * k) / den;
 }
 
-/** `1 + credits × delayed credit`, as one division. */
-function storeCreditFactor(out: Float64Array, slot: number, t: Float64Array, credits: number): void {
-  const den = t[RU.DELAYED_DEN]!;
-  out[slot] = (den + credits * t[RU.DELAYED_NUM]!) / den;
-}
-
 /**
  * The factor of a retirement benefit claimed at `claimMonths` of age (clamped to [744, 840]) with
  * full retirement age `fra`: early, `1 − (min(m, 36) × 5/900 + max(0, m − 36) × 5/1200)` with
@@ -450,6 +444,13 @@ function planTable(rules: SsRules, people: readonly SsPerson[], spousal: boolean
     for (let c = rules.earliestRetirementMonths; c <= rules.latestCreditMonths; c++) {
       storeRetirementFactor(t, o + SP.FACTOR0 + c - rules.earliestRetirementMonths, rules.table, c, p.fra);
     }
+    // The survivor factor k months before the survivor full retirement age: the age fra − k (the
+    // formula reads only k, clamped to the span from 60), for every k a benefit can start at.
+    const survivor0 = o + survivorTableOffset(rules.latestCreditMonths, rules.earliestRetirementMonths);
+    if (p.survivorFra > rules.latestCreditMonths) throw new RangeError(`compileSsPlan: a survivor full retirement age of ${p.survivorFra} months is above ${rules.latestCreditMonths}`);
+    for (let k = 0; k <= rules.latestCreditMonths - rules.survivorEarliestMonths; k++) {
+      storeSurvivorFactor(t, survivor0 + k, rules.table, p.survivorFra - k, p.survivorFra);
+    }
   });
   // The spousal excess starts at the later of the two claims (deemed filing), at the person's age then.
   if (people.length === 2) {
@@ -465,9 +466,22 @@ function planTable(rules: SsRules, people: readonly SsPerson[], spousal: boolean
   return t;
 }
 
-/** Slots of one person record: the fixed slots and one factor per claim month. */
+/**
+ * Slots of one person record: the fixed slots, one factor per claim month (`FACTOR0 + c − 744`)
+ * and one survivor factor per month short of the survivor full retirement age (`survivorTableOffset`).
+ */
 function personRec(rules: SsRules): number {
-  return SP.FACTOR0 + rules.latestCreditMonths - rules.earliestRetirementMonths + 1;
+  return survivorTableOffset(rules.latestCreditMonths, rules.earliestRetirementMonths) + rules.latestCreditMonths - rules.survivorEarliestMonths + 1;
+}
+
+/**
+ * Where a person record's survivor factors start: `survivorFactor` of a widow(er)'s benefit that
+ * starts k months before the survivor full retirement age is at this offset + k (k = 0 … the months
+ * from 60 to that age). The hot path copies the factor fixed when the benefit starts from there,
+ * instead of computing it once per path in a function that would run unoptimized for most of a run.
+ */
+function survivorTableOffset(latest: number, earliest: number): number {
+  return SP.FACTOR0 + latest - earliest + 1;
 }
 
 function planRec(rules: SsRules): number {
@@ -675,38 +689,6 @@ const WAGES = new Float64Array(2);
  * the store* helpers and the death years come in an array.
  */
 
-/**
- * The deceased's own factor, fixed once after the death (§3.9.7), written to `st[slot]`: when they
- * had claimed, the factor in pay in the December of the death with every credit counted (and the
- * earnings-test months credited when past full retirement age); when not, 1 before full
- * retirement age, else the credits earned up to the January after the death (at most to 70).
- * `deaths[d]` is the decedent's death year.
- */
-function storeDeceasedFactor(st: Float64Array, slot: number, tb: Float64Array, o: number, arfMonths: number, deaths: Float64Array, d: number): void {
-  const deathYear = deaths[d]!;
-  const december = 12 * deathYear + 11;
-  const claimAge = tb[o + SP.CLAIM_AGE]!;
-  const fra = tb[o + SP.FRA]!;
-  const fraIndex = tb[o + SP.FRA_INDEX]!;
-  if (tb[o + SP.CLAIM_INDEX]! <= december) {
-    if (claimAge < fra) {
-      const credited = december >= fraIndex ? claimAge + arfMonths : claimAge;
-      storeRetirementFactor(st, slot, tb, credited < fra ? credited : fra, fra);
-      return;
-    }
-    storeCreditFactor(st, slot, tb, tb[o + SP.CREDITS]!);
-    return;
-  }
-  const january = 12 * (deathYear + 1);
-  if (january <= fraIndex) {
-    st[slot] = 1;
-    return;
-  }
-  const months = january - fraIndex;
-  const cap = tb[RU.LATEST]! - fra;
-  storeCreditFactor(st, slot, tb, months < cap ? months : cap);
-}
-
 /** Writes PAY for person i in month m: own benefit, spousal part, widow(er)'s benefit (each truncated to the dime). `deaths` holds both death years. */
 function evaluate(tb: Float64Array, st: Float64Array, i: number, m: number, deaths: Float64Array): void {
   const rec = tb[PL.PERSON_REC]!;
@@ -767,8 +749,44 @@ function evaluate(tb: Float64Array, st: Float64Array, i: number, m: number, deat
       const sixty = birth + tb[RU.SURVIVOR_EARLIEST]!;
       const start = january > sixty ? january : sixty;
       if (m >= start) {
-        if (st[SS.SURVIVOR_FACTOR + i]! < 0) storeSurvivorFactor(st, SS.SURVIVOR_FACTOR + i, tb, start - birth, tb[o + SP.SURVIVOR_FRA]!);
-        if (st[SS.DECEASED_FACTOR + j]! < 0) storeDeceasedFactor(st, SS.DECEASED_FACTOR + j, tb, oj, st[SS.ARF_MONTHS + j]!, deaths, j);
+        // Both fixed factors from the person records' tables (planTable): the survivor factor at k =
+        // survivorFra − max(age, 60) months short, the deceased's at its claim month.
+        if (st[SS.SURVIVOR_FACTOR + i]! < 0) {
+          const survivorFra = tb[o + SP.SURVIVOR_FRA]!;
+          const age = start - birth;
+          const a = age > tb[RU.SURVIVOR_EARLIEST]! ? age : tb[RU.SURVIVOR_EARLIEST]!;
+          const k = survivorFra > a ? survivorFra - a : 0;
+          st[SS.SURVIVOR_FACTOR + i] = tb[o + survivorTableOffset(tb[RU.LATEST]!, tb[RU.EARLIEST]!) + k]!;
+        }
+        if (st[SS.DECEASED_FACTOR + j]! < 0) {
+          // The deceased's own factor (§3.9.7), fixed once after the death: when they had claimed,
+          // the factor in pay in the December of the death with every credit counted (and the
+          // earnings-test months credited when past full retirement age); when not, 1 before full
+          // retirement age, else the credits earned up to the January after the death (at most to
+          // 70). Each is the factor table's at a claim month c (an early claim credited back is a
+          // later claim; k credits are a claim at fra + k: (den + k × num) / den both ways), so it
+          // is read, in integers, here: in a function of its own, called once per path, it would
+          // run unoptimized for most of a run.
+          const december = 12 * deathJ + 11;
+          const claimAgeJ = tb[oj + SP.CLAIM_AGE]!;
+          const fraJ = tb[oj + SP.FRA]!;
+          const fraIndexJ = tb[oj + SP.FRA_INDEX]!;
+          const earliest = tb[RU.EARLIEST]!;
+          const latest = tb[RU.LATEST]!;
+          let c: number;
+          if (tb[oj + SP.CLAIM_INDEX]! <= december) {
+            if (claimAgeJ < fraJ) {
+              const credited = december >= fraIndexJ ? claimAgeJ + st[SS.ARF_MONTHS + j]! : claimAgeJ;
+              c = clamp(credited < fraJ ? credited : fraJ, earliest, latest);
+            } else c = fraJ + tb[oj + SP.CREDITS]!;
+          } else {
+            const january = 12 * (deathJ + 1);
+            const months = january - fraIndexJ;
+            const cap = latest - fraJ;
+            c = january <= fraIndexJ ? -1 : fraJ + (months < cap ? months : cap);
+          }
+          st[SS.DECEASED_FACTOR + j] = c < 0 ? 1 : tb[oj + SP.FACTOR0 + c - earliest]!;
+        }
         const sv = st[SS.SURVIVOR_FACTOR + i]!;
         const d = st[SS.DECEASED_FACTOR + j]!;
         const piaJ = st[SS.PIA + j]!;
