@@ -1,116 +1,15 @@
 name: meridian
 
-# Four services from the spec (web = API + static UI, worker, db, proxy) plus the
-# nightly backup sidecar. LAN only: nothing here publishes a port except Caddy,
-# and remote access is meant to go through Tailscale, never port forwarding.
-
-# The app containers assemble their database URL from POSTGRES_* (env file) and
-# MERIDIAN_DB_HOST, so nothing here depends on compose variable interpolation.
-# The shared env file also carries the Phase 3 price feed: PRICE_PROVIDER reaches both
-# containers (the API shows the feed's state, the worker runs it) and TIINGO_API_KEY (or
-# TIINGO_API_KEY_FILE) is used by the worker only. Tiingo's free terms must be confirmed at
-# signup (see .env.example). To keep the key out of .env, mount it as a Docker secret instead:
-# uncomment the `secrets:` blocks below and set TIINGO_API_KEY_FILE=/run/secrets/tiingo_api_key.
-x-app-env: &app-env
-  env_file: ../.env
-  environment: &app-environment
-    NODE_ENV: production
-    MERIDIAN_DB_HOST: db
-    MERIDIAN_MIGRATIONS_DIR: /app/packages/db/drizzle
-
-services:
-  db:
-    image: postgres:16-alpine
-    restart: unless-stopped
+# Four services from the spec (web = API + static UI, worker, db, proxy) plus the nightly backup
+# sidecar, defined in services.yml. This file only includes it, so that the ${...} values there
+# are read from the repository's .env (../.env), whichever directory compose is run from:
+#
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#
+# Needs Docker Compose 2.20 or later (`include` with `env_file`). A value set in the shell that
+# runs compose wins over .env. Development adds docker-compose.dev.yml (the database on
+# 127.0.0.1:5432); docker-compose.secrets.yml reads SECRETS_KEY and TIINGO_API_KEY from Docker
+# secret files instead of .env.
+include:
+  - path: ./services.yml
     env_file: ../.env
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    # Loopback only, for psql from the host. Remove if not wanted.
-    ports:
-      - "127.0.0.1:5432:5432"
-
-  web:
-    build:
-      context: ..
-      dockerfile: apps/api/Dockerfile
-    restart: unless-stopped
-    <<: *app-env
-    environment:
-      <<: *app-environment
-      # Listen on the container's interfaces so the proxy can reach it (outside Docker the API
-      # binds loopback). The port is never published: only this compose network reaches it.
-      API_HOST: 0.0.0.0
-      # Whose X-Forwarded-For / X-Forwarded-Host the API believes: peers on a private network,
-      # which here means Caddy (it replaces whatever a client sent). The sign-in rate limits
-      # count the client address Caddy reports. If you publish this port or put the container
-      # on another network, name your proxy's address or range here instead.
-      TRUST_PROXY: uniquelocal
-    depends_on:
-      db:
-        condition: service_healthy
-    expose:
-      - "3000"
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-
-  worker:
-    build:
-      context: ..
-      dockerfile: apps/worker/Dockerfile
-    restart: unless-stopped
-    <<: *app-env
-    # The worker is the only container that talks to the outside world: SimpleFIN and, with
-    # PRICE_PROVIDER=tiingo and TIINGO_API_KEY (or TIINGO_API_KEY_FILE) set in ../.env, Tiingo.
-    # secrets:
-    #   - tiingo_api_key
-    depends_on:
-      db:
-        condition: service_healthy
-      web:
-        condition: service_healthy # web runs migrations on boot
-
-  proxy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    env_file: ../.env
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - web
-
-  backup:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    env_file: ../.env
-    environment:
-      BACKUP_HOUR: ${BACKUP_HOUR:-2}
-    volumes:
-      - ./backup.sh:/backup.sh:ro
-      - ./backups:/backups
-    depends_on:
-      db:
-        condition: service_healthy
-    entrypoint: ["/bin/sh", "/backup.sh", "--nightly"]
-
-# secrets:
-#   tiingo_api_key:
-#     file: ./secrets/tiingo_api_key
-
-volumes:
-  pg_data:
-  caddy_data:
-  caddy_config:

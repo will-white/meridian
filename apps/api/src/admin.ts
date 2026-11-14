@@ -4,8 +4,10 @@
  *   docker compose -f deploy/docker-compose.yml exec web node apps/api/dist/admin.js users
  *   docker compose -f deploy/docker-compose.yml exec web node apps/api/dist/admin.js reset-totp <username>
  *
- * It needs only the database settings the server itself uses (DATABASE_URL, or
- * MERIDIAN_DB_HOST with POSTGRES_*), not the session or encryption keys.
+ * It needs the database settings the server itself uses (DATABASE_URL, or MERIDIAN_DB_HOST
+ * with POSTGRES_*); rotate-secrets-key and reset-secrets-key also read SECRETS_KEY (and
+ * SECRETS_KEY_OLD). When the server refuses to start on a wrong key, run it with
+ * `docker compose -f deploy/docker-compose.yml run --rm web node apps/api/dist/admin.js <command>`.
  */
 import { createDb } from "@meridian/db";
 import { resolveDatabaseUrl } from "./config.js";

@@ -22,6 +22,37 @@ function b64decode(text: string): Uint8Array<ArrayBuffer> {
   return out;
 }
 
+/**
+ * Why `key` cannot be SECRETS_KEY, or null when it is 32 bytes of standard base64 (audit
+ * a7-backup-deploy-secrets-06). Both the API and the worker check it at start-up, so a wrong
+ * kind of key stops them with this message instead of failing the first sign-in or sync.
+ */
+export function secretsKeyProblem(key: string, name = "SECRETS_KEY"): string | null {
+  const text = key.trim();
+  const advice = `${name} must be 32 random bytes in base64 (openssl rand -base64 32)`;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(text) || text.length % 4 !== 0) return `${advice}; this value is not base64`;
+  const bytes = atob(text).length;
+  if (bytes === 32) return null;
+  const hex = /^[0-9a-f]+$/i.test(text) ? " (it looks like hex: openssl rand -hex makes a different kind of key)" : "";
+  return `${advice}; this one decodes to ${bytes} bytes${hex}`;
+}
+
+/** Values from .env.example that must never run in production (audit a7-backup-deploy-secrets-17). */
+export const PLACEHOLDER_SECRETS: readonly string[] = ["change-me", "change-me-to-64-random-hex-chars"];
+
+/** The error to stop on when `value` (named `name`) is an .env.example placeholder, else null. */
+export function placeholderSecretProblem(name: string, value: string | undefined): string | null {
+  return value !== undefined && PLACEHOLDER_SECRETS.includes(value.trim()) ? `${name} is the .env.example placeholder "${value.trim()}"; set a real secret in .env before running in production` : null;
+}
+
+/** A decryption failure says what it most likely means instead of Web Crypto's "operation-specific reason". */
+export class SecretDecryptError extends Error {
+  constructor() {
+    super("A stored secret could not be decrypted with SECRETS_KEY: the key is not the one it was encrypted with, or the value is damaged");
+    this.name = "SecretDecryptError";
+  }
+}
+
 async function importKey(keyB64: string): Promise<CryptoKey> {
   const raw = b64decode(keyB64.trim());
   if (raw.length !== 32) throw new Error("SECRETS_KEY must decode to exactly 32 bytes");
@@ -39,7 +70,12 @@ export async function decryptSecret(ciphertext: string, keyB64: string): Promise
   const [version, ivB64, ctB64] = ciphertext.split(".");
   if (version !== "v1" || !ivB64 || !ctB64) throw new Error("Unrecognized ciphertext format");
   const key = await importKey(keyB64);
-  const pt = await subtle.decrypt({ name: "AES-GCM", iv: b64decode(ivB64) }, key, b64decode(ctB64));
+  let pt: ArrayBuffer;
+  try {
+    pt = await subtle.decrypt({ name: "AES-GCM", iv: b64decode(ivB64) }, key, b64decode(ctB64));
+  } catch {
+    throw new SecretDecryptError();
+  }
   return new TextDecoder().decode(pt);
 }
 

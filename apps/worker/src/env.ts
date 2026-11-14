@@ -1,15 +1,32 @@
 import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { parsePriceProviderId, type PriceProviderId } from "@meridian/shared";
+import { parsePriceProviderId, placeholderSecretProblem, secretsKeyProblem, type PriceProviderId } from "@meridian/shared";
 import { DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_SIMPLEFIN_HOSTS } from "./simplefin/client.js";
 
-/** SECRETS_KEY from the environment, or from a Docker secret file named by SECRETS_KEY_FILE. */
-export function readSecretsKey(env: NodeJS.ProcessEnv = process.env): string {
-  const file = env["SECRETS_KEY_FILE"];
+/**
+ * SECRETS_KEY from the environment, or from a Docker secret file named by SECRETS_KEY_FILE;
+ * it must be 32 bytes of base64 (audit a7-backup-deploy-secrets-06). `name` reads another key
+ * the same way (SECRETS_KEY_OLD for the key rotation).
+ */
+export function readSecretsKey(env: NodeJS.ProcessEnv = process.env, name = "SECRETS_KEY"): string {
+  const file = env[`${name}_FILE`];
   const fromFile = file ? readFileSync(file, "utf8").trim() : "";
-  const key = fromFile || env["SECRETS_KEY"]?.trim() || "";
-  if (!key) throw new Error("SECRETS_KEY (or SECRETS_KEY_FILE) must be set; generate one with `openssl rand -base64 32`");
+  const key = fromFile || env[name]?.trim() || "";
+  if (!key) throw new Error(`${name} (or ${name}_FILE) must be set; generate one with \`openssl rand -base64 32\``);
+  const problem = secretsKeyProblem(key, name);
+  if (problem) throw new Error(problem);
   return key;
+}
+
+/** In production, stop on the .env.example database password (audit a7-backup-deploy-secrets-17). */
+export function productionDatabaseProblem(databaseUrl: string): string | null {
+  let password = "";
+  try {
+    password = decodeURIComponent(new URL(databaseUrl).password);
+  } catch {
+    return null;
+  }
+  return placeholderSecretProblem("POSTGRES_PASSWORD", password);
 }
 
 /**
@@ -148,6 +165,8 @@ export interface WorkerConfig {
    * `PRICE_PROVIDER=none` with the `PRICE_DEFAULTS` (see `priceConfigOf`).
    */
   prices?: Partial<PriceConfig>;
+  /** `WORKER_HEARTBEAT_FILE`: touched after every pass over the queue, for the container's healthcheck (unset: none). */
+  heartbeatFile?: string;
 }
 
 export const DEFAULT_DETECT_HOUR_UTC = 8;
@@ -187,8 +206,13 @@ export function loadPriceConfig(env: NodeJS.ProcessEnv = process.env): PriceConf
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
+  const databaseUrl = resolveDatabaseUrl(env);
+  if (env["NODE_ENV"] === "production") {
+    const problem = productionDatabaseProblem(databaseUrl);
+    if (problem) throw new Error(problem);
+  }
   return {
-    databaseUrl: resolveDatabaseUrl(env),
+    databaseUrl,
     secretsKey: readSecretsKey(env),
     workerId: `${hostname()}:${process.pid}`,
     syncIntervalHours: int(env["SYNC_INTERVAL_HOURS"], 6),
@@ -200,5 +224,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     simplefinMaxResponseBytes: readSimplefinMaxResponseBytes(env),
     detectHourUtc: intInRange(env["DETECT_HOUR_UTC"], 0, 23, DEFAULT_DETECT_HOUR_UTC),
     prices: loadPriceConfig(env),
+    ...(env["WORKER_HEARTBEAT_FILE"]?.trim() ? { heartbeatFile: env["WORKER_HEARTBEAT_FILE"].trim() } : {}),
   };
 }

@@ -11,3 +11,7 @@ deploy/backups/
 deploy/caddy_data/
 deploy/pg_data/
 dev-dist/
+
+# Docker secret files and the off-site copy's keys (deploy/docker-compose.secrets.yml, BACKUP_COPY_CMD)
+deploy/secrets/
+deploy/backup-config/

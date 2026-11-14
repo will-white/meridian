@@ -37,3 +37,4 @@ export * from "./investmentViews.js";
 export * from "./sessions.js";
 export * from "./users.js";
 export * from "./signInEvents.js";
+export * from "./secretsKey.js";

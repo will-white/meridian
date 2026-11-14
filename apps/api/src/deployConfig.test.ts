@@ -19,11 +19,13 @@ function composeService(compose: string, name: string): string {
   return lines.slice(start, end === -1 ? undefined : end).join("\n");
 }
 
+/** `- NAME=value` entries of a service's environment list (a bare `- NAME` passes NAME from .env). */
 const settings = (block: string): Record<string, string> =>
-  Object.fromEntries([...block.matchAll(/^\s+([A-Z][A-Z0-9_]*):\s*(\S.*)$/gm)].map((m) => [m[1]!, m[2]!.trim()]));
+  Object.fromEntries([...block.matchAll(/^\s+- ([A-Z][A-Z0-9_]*)=(\S.*)$/gm)].map((m) => [m[1]!, m[2]!.trim()]));
 
 describe("deploy files: where the API listens and which proxy it trusts", () => {
-  const compose = repo("deploy/docker-compose.yml");
+  // docker-compose.yml includes services.yml, reading ../.env for its values.
+  const compose = repo("deploy/services.yml");
 
   it("the web container listens on every interface, trusts only private-network peers, and publishes no port", () => {
     const web = composeService(compose, "web");
@@ -31,9 +33,9 @@ describe("deploy files: where the API listens and which proxy it trusts", () => 
     expect(env["API_HOST"]).toBe("0.0.0.0");
     expect(env["TRUST_PROXY"]).toBe("uniquelocal");
     expect(parseTrustProxy(env["TRUST_PROXY"])).toEqual(["uniquelocal"]);
-    // The shared settings still reach it through the merge key.
-    expect(web).toContain("<<: *app-environment");
-    expect(compose).toMatch(/environment: &app-environment\n\s+NODE_ENV: production\n\s+MERIDIAN_DB_HOST: db/);
+    expect(env["NODE_ENV"]).toBe("production");
+    expect(env["MERIDIAN_DB_HOST"]).toBe("db");
+    expect(repo("deploy/docker-compose.yml")).toMatch(/include:\n\s+- path: \.\/services\.yml\n\s+env_file: \.\.\/\.env/);
     expect(web).not.toMatch(/^\s+ports:/m);
     expect(web).toMatch(/^\s+expose:\n\s+- "3000"/m);
   });
@@ -41,6 +43,8 @@ describe("deploy files: where the API listens and which proxy it trusts", () => 
   it("only Caddy publishes ports, and the worker has no network settings of the API", () => {
     const proxy = composeService(compose, "proxy");
     expect(proxy).toMatch(/ports:\n\s+- "80:80"\n\s+- "443:443"/);
+    // Audit a7-backup-deploy-secrets-10: no other service publishes one (db's loopback port is in docker-compose.dev.yml).
+    for (const name of ["db", "web", "worker", "backup"]) expect(composeService(compose, name), name).not.toMatch(/^\s+ports:/m);
     const worker = settings(composeService(compose, "worker"));
     expect(worker["API_HOST"]).toBeUndefined();
     expect(worker["TRUST_PROXY"]).toBeUndefined();
@@ -57,7 +61,7 @@ describe("deploy files: where the API listens and which proxy it trusts", () => 
     );
     expect(example["API_HOST"]).toBeUndefined();
     expect(example["TRUST_PROXY"]).toBeUndefined();
-    const config = loadConfig({ ...example, SESSION_SECRET: "0123456789abcdef0123456789abcdef", SECRETS_KEY: "s" });
+    const config = loadConfig({ ...example, SESSION_SECRET: "0123456789abcdef0123456789abcdef", SECRETS_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=" });
     expect(config.host).toBe("127.0.0.1");
     expect(config.trustProxy).toEqual([]);
     expect(config.port).toBe(3000);
@@ -67,11 +71,11 @@ describe("deploy files: where the API listens and which proxy it trusts", () => 
     const example = repo(".env.example");
     expect(example).toMatch(/^SESSION_TTL_DAYS=30$/m);
     expect(example).toMatch(/^SESSION_IDLE_DAYS=14$/m);
-    const defaults = loadConfig({ SESSION_SECRET: "0123456789abcdef0123456789abcdef", SECRETS_KEY: "s", DATABASE_URL: "postgres://x" });
+    const defaults = loadConfig({ SESSION_SECRET: "0123456789abcdef0123456789abcdef", SECRETS_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", DATABASE_URL: "postgres://x" });
     expect([defaults.sessionTtlDays, defaults.sessionIdleDays]).toEqual([30, 14]);
-    const custom = loadConfig({ SESSION_SECRET: "0123456789abcdef0123456789abcdef", SECRETS_KEY: "s", DATABASE_URL: "postgres://x", SESSION_TTL_DAYS: "7", SESSION_IDLE_DAYS: "2" });
+    const custom = loadConfig({ SESSION_SECRET: "0123456789abcdef0123456789abcdef", SECRETS_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", DATABASE_URL: "postgres://x", SESSION_TTL_DAYS: "7", SESSION_IDLE_DAYS: "2" });
     expect([custom.sessionTtlDays, custom.sessionIdleDays]).toEqual([7, 2]);
-    expect(() => loadConfig({ SESSION_SECRET: "0123456789abcdef0123456789abcdef", SECRETS_KEY: "s", DATABASE_URL: "postgres://x", SESSION_IDLE_DAYS: "0" })).toThrow();
+    expect(() => loadConfig({ SESSION_SECRET: "0123456789abcdef0123456789abcdef", SECRETS_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", DATABASE_URL: "postgres://x", SESSION_IDLE_DAYS: "0" })).toThrow();
   });
 
   it("the image ships the recovery command the README tells a locked-out owner to run", () => {

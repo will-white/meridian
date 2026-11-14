@@ -28,6 +28,8 @@ export const AUDIT_ENTITIES = [
   // Ledger corrections (audit a5-ingest-transfers): a transaction deleted or paired by hand, a CSV import undone
   "transaction",
   "import_log",
+  // SECRETS_KEY rotated or lost (audit a7-backup-deploy-secrets-09): a connection's secrets re-encrypted or cleared
+  "connection",
 ] as const;
 
 /** Category groups sit under bucket headers in the grid. A group belongs to exactly one bucket. */
