@@ -138,7 +138,8 @@ export type { AssessFn, Assessment, EngineHooks, YearView } from "./hooks.js";
 export { CARRY, CARRY_REC, PATH_FLAG, createPathState } from "./state.js";
 export type { MutableYearView, PathState } from "./state.js";
 export { PP, PP_COLUMNS, PP_HOUSEHOLD, PP_REC, assessInto, createAssessFn, prepareAssessYear } from "./assess.js";
-export { AC, AC_REC, SP, SP_REC, YEAR_FLAG, YR, YR_REC, createPathDetail, simulatePath } from "./loop.js";
+// The loop's one-path step on a path state; the facade's `simulatePath(input, k)` is below.
+export { AC, AC_REC, SP, SP_REC, YEAR_FLAG, YR, YR_REC, createPathDetail, simulatePath as simulatePathInto } from "./loop.js";
 export type { PathDetail } from "./loop.js";
 export {
   FAN_MIN_ALIVE,
@@ -161,6 +162,9 @@ export type { ChunkSummary, EngineResult, RunSummary } from "./aggregate.js";
 export { createProductionState, simulateChunk, simulatePathDetail, simulateRun } from "./simulate.js";
 export { essentialCoverageBp, failureSummary, portfolioReturnBp, toFanSeries, toSimSummary, toYearTable, withdrawalRateBp } from "./results/index.js";
 export { EngineInputError, EngineInvariantError, EngineRuntimeError } from "./errors.js";
+// The facade (seams §2.4): ENGINE_VERSION, DATA_VERSION and DATA_CHECKSUM above, validateInput with prepare.
+export { ensureSelfTest, simulatePath, simulatePreparedPath, toSimOutput } from "./facade.js";
+export type { PathResult, SimOutput } from "./facade.js";
 export type { EngineRuntimeCode } from "./errors.js";
 export {
   TAX_DATA_FIRST_YEAR, TaxDataError, fullRetirementAgeTable, listTaxRuleSets, loadTaxData, pendingLimits, taxDataStale, buildRulesView, federalTaxPreview,

@@ -5,8 +5,8 @@
  * same failure. Each sets `name` to its class name, so the thread harness can rebuild the class on
  * the far side of a worker boundary from `{ name, code, message }`.
  *
- * The harness errors (`SimulationCancelledError`, `SimulationWorkerError`) belong to
- * `src/node` and are added with the pool.
+ * The harness errors (`SimulationCancelledError`, `SimulationWorkerError`) are in
+ * `src/node/errors.ts`; `@meridian/retirement/node` exports all five.
  */
 
 /** Bad input, raised by `prepare()` / `validateInput()` before any thread starts. */

@@ -24,3 +24,4 @@ export {
 } from "./stubs.js";
 export type { StubTaxOptions } from "./stubs.js";
 export { referenceR1Input, referenceR2Input } from "./referenceScenarios.js";
+export { BENCH_MODELS, benchWorkloadInput } from "./benchWorkload.js";
