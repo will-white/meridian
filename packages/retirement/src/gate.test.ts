@@ -17,8 +17,10 @@ import { describe, expect, it } from "vitest";
 // (`loop.properties.test.ts`, seeded random households), T46 (`determinism.test.ts`, the source
 // scan) and T47 (`node/perf.test.ts`, run time).
 //
-// The rest of the gate is not in this package: HC-D1 (the inputs design's cases 7 and 11, the
-// resolver of build step 23) and `apps/api/src/retirementGate.test.ts` (step 31, after Stage B).
+// HC-D1 (the inputs design's cases 7 and 11, the resolver of build step 23) runs here from shared's
+// `resolve.test.ts`, with case 6 (the contribution aggregation the fixture's baseline rests on); the
+// resolver against this engine is `plannerEnv.test.ts`. The rest of the gate is not in this package:
+// `apps/api/src/retirementGate.test.ts` (step 31, after Stage B).
 
 // Part A: tax, RMD, Social Security, limits, payroll, yields (tax-rmd-ss §7; HC-T, HC-R, HC-S).
 import "./tax/compile.test.js";
@@ -74,7 +76,8 @@ import "./withdrawals/withdrawals.real.test.js";
 import "./withdrawals/withdrawals.sweep.test.js";
 import "./results/results.test.js";
 // Part A: the shared pure helpers (seams §11 step 3: inputs cases 1 to 5, 14, 16, 17; OUT-1 to
-// OUT-3, OUT-6, OUT-7; the VPW table) and the frozen input's shape (inputs case 11, its shape).
+// OUT-3, OUT-6, OUT-7; the VPW table), the frozen input's shape (inputs case 11, its shape) and the
+// resolver (step 23: inputs cases 6 to 13 and 18, HC-D1).
 import "@meridian/shared/src/retirement/bucket.test.js";
 import "@meridian/shared/src/retirement/clock.test.js";
 import "@meridian/shared/src/retirement/weights.test.js";
@@ -84,6 +87,8 @@ import "@meridian/shared/src/retirement/percentile.test.js";
 import "@meridian/shared/src/retirement/results.test.js";
 import "@meridian/shared/src/retirement/strategy.test.js";
 import "@meridian/shared/src/retirement/input.test.js";
+import "@meridian/shared/src/retirement/contributions.test.js";
+import "@meridian/shared/src/retirement/resolve.test.js";
 // Part B: R1 to R4.
 import "../reference/sheets.test.js";
 import "../reference/reference-sheets.test.js";
@@ -132,7 +137,8 @@ const range = (prefix: string, from: number, to: number) => Array.from({ length:
 
 /**
  * The cases strategies-outputs-web §7.5 requires at least, by id: the tax, RMD and Social Security
- * hand cases; HC-E1 (T19 and the 1966 path of R3), HC-E2 (T34), HC-E3 (T41 and T43); HC-W.
+ * hand cases; HC-E1 (T19 and the 1966 path of R3), HC-E2 (T34), HC-E3 (T41 and T43); HC-W; HC-D1
+ * (the resolver's cases 7 and 11).
  */
 const REQUIRED = [
   ...range("HC-T", 1, 16),
@@ -146,6 +152,7 @@ const REQUIRED = [
   ...range("ST-", 1, 17),
   ...range("WD-", 1, 21),
   ...range("OUT-", 1, 12),
+  "HC-D1",
 ];
 
 describe("the gate covers strategies-outputs-web §7.5", () => {
@@ -158,6 +165,13 @@ describe("the gate covers strategies-outputs-web §7.5", () => {
     expect(missing).toEqual([]);
   });
 
+  it("HC-D1 is the resolver's cases 7 (spending resolution) and 11 (full resolution of the fixture), both run here", () => {
+    const names = importedSuites()
+      .filter((url) => url.pathname.endsWith("/retirement/resolve.test.ts"))
+      .flatMap((url) => caseNames(readFileSync(url, "utf8"), url.pathname));
+    for (const n of [7, 11]) expect(names.some((name) => name.startsWith(`${n} HC-D1 `)), `case ${n}`).toBe(true);
+  });
+
   it("every imported suite exists, and both halves of R1 to R4's three-way agreement are imported", () => {
     const suites = importedSuites().map((u) => u.pathname);
     for (const path of suites) expect(() => readFileSync(path), path).not.toThrow();
@@ -165,6 +179,4 @@ describe("the gate covers strategies-outputs-web §7.5", () => {
     expect(suites.some((p) => p.endsWith("/src/reference.test.ts"))).toBe(true);
     expect(suites.length).toBeGreaterThanOrEqual(60);
   });
-
-  it.todo("HC-D1 the inputs design's cases 7 (spending resolution) and 11 (full resolution of the fixture): resolvePlan, build step 23");
 });

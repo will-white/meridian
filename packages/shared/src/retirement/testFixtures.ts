@@ -10,7 +10,8 @@
  */
 import type { RetirementBaseline } from "./baseline.js";
 import type { SimInput } from "./input.js";
-import type { RetirementProfileDocInput } from "./profile.js";
+import { RetirementProfileDoc, type RetirementProfileDocInput } from "./profile.js";
+import type { ResolveArgs, ResolveContext } from "./resolve.js";
 import type { FanSeries, SimSummary, YearRow, YearTable } from "./results.js";
 import { defaultRunSettings } from "./settings.js";
 import type { TaxYearDetail } from "./tax.js";
@@ -91,7 +92,7 @@ export function fixtureProfileDoc(): RetirementProfileDocInput {
   };
 }
 
-/** The fixture's baseline (inputs §7.0, tests 4, 6, 7, 9 and 11). */
+/** The fixture's baseline (inputs §7.0 and the §3.2 worked example; tests 4, 6 to 11, 15 and 18). */
 export function fixtureBaseline(): RetirementBaseline {
   const base = {
     treatmentDefaulted: false,
@@ -211,8 +212,8 @@ export function fixtureBaseline(): RetirementBaseline {
         flags: ["partial_window"],
       },
       {
-        // Design (test 8): 300,000 a year from the recurring transfer of 25,000 a month.
-        accountId: IDS.R,
+        // Design (§3.2 worked example): T's first data date is 2026-10-13, so no month of the window counts.
+        accountId: IDS.T,
         monthsWithData: 0,
         grossInCents: "0",
         outCents: "0",
@@ -221,13 +222,52 @@ export function fixtureBaseline(): RetirementBaseline {
         employerCents: "0",
         employeeCents: "0",
         employerDetected: false,
-        plannedCents: "300000",
-        source: "recurring",
+        plannedCents: "0",
+        source: "none",
         flags: ["insufficient_history"],
       },
+      {
+        // Design (§3.2 worked example, test 8): 500,000 in one paired transfer from Checking, 12 months.
+        accountId: IDS.B,
+        monthsWithData: 12,
+        grossInCents: "500000",
+        outCents: "0",
+        netCents: "500000",
+        unpairedCents: "0",
+        employerCents: "0",
+        employeeCents: "500000",
+        employerDetected: false,
+        annualNetCents: "500000",
+        annualEmployeeCents: "500000",
+        annualEmployerCents: "0",
+        annualUnpairedCents: "0",
+        plannedCents: "0",
+        source: "measured",
+        flags: ["irregular"],
+      },
+      {
+        // Design (§3.2 worked example, test 8): no flows over 11 months (first data date 2025-10-13);
+        // 300,000 a year from the recurring transfer of 25,000 a month.
+        accountId: IDS.R,
+        monthsWithData: 11,
+        grossInCents: "0",
+        outCents: "0",
+        netCents: "0",
+        unpairedCents: "0",
+        employerCents: "0",
+        employeeCents: "0",
+        employerDetected: false,
+        annualNetCents: "0",
+        annualEmployeeCents: "0",
+        annualEmployerCents: "0",
+        annualUnpairedCents: "0",
+        plannedCents: "300000",
+        source: "recurring",
+        flags: ["partial_window"],
+      },
     ],
-    // Illustrative except the measured rate of 2518 bp (inputs §3.4 R9).
-    savingsRate: { bp: 2518, contributionsCents: "2580000", payrollCents: "1846000", baseCents: "10246000" },
+    // Design (§3.2 B9): contributions 1,800,000 + 500,000 + 360,000; payroll 1,800,000 + 360,000; base 8,400,000 + 2,160,000.
+    savingsRate: { bp: 2518, contributionsCents: "2660000", payrollCents: "2160000", baseCents: "10560000" },
   };
 }
 
@@ -354,6 +394,35 @@ export function fixtureSimInput(): SimInput {
     rothConversions: [{ year: 2036, personId: "p1", amountCents: "3000000", dollars: "today" }],
     settings: defaultRunSettings(),
   };
+}
+
+/**
+ * The resolver's context for the fixture (inputs test 11): today 2026-10-14, one day after the
+ * baseline's as-of date; the meta of `fixtureSimInput`; the data version 2026.11.1; current law
+ * only; the first tax year 2026; no contribution limit and no engine check (the browser's
+ * context). `o` overrides any field.
+ */
+export function fixtureResolveContext(o: Partial<ResolveContext> = {}): ResolveContext {
+  return {
+    today: "2026-10-14",
+    dataVersion: "2026.11.1",
+    ruleSets: ["current_law"],
+    minStartYear: 2026,
+    meta: {
+      createdAt: "2026-10-14T12:00:00.000Z",
+      profileRevision: 1,
+      baselineHash: "0".repeat(64),
+      scenarioId: IDS.scenario,
+      scenarioRevision: 1,
+      scenarioName: "Base plan",
+    },
+    ...o,
+  };
+}
+
+/** The fixture's profile document, baseline, no overrides and the default run settings. */
+export function fixtureResolveArgs(o: Partial<ResolveArgs> = {}): ResolveArgs {
+  return { doc: RetirementProfileDoc.parse(fixtureProfileDoc()), baseline: fixtureBaseline(), overrides: {}, settings: defaultRunSettings(), ...o };
 }
 
 /** A year's tax detail with every amount zero (an accumulation year in which nothing is owed). */
