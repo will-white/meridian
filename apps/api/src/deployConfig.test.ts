@@ -87,6 +87,28 @@ describe("deploy files: where the API listens and which proxy it trusts", () => 
     expect(example).not.toMatch(/The compose file sets `uniquelocal` for the web container\./);
   });
 
+  it("a7-backup-deploy-secrets (second round): no document describes the shared env_file the compose layout no longer has", async () => {
+    // Since audit a7-backup-deploy-secrets-07, services.yml passes each setting by name; the
+    // `x-app-env` anchor and its `env_file: ../.env`, which gave every container all of .env, are gone.
+    expect(repo("deploy/services.yml")).not.toMatch(/x-app-env|^\s+env_file:/m);
+    const { readdirSync } = await import("node:fs");
+    const dir = (relative: string) =>
+      readdirSync(fileURLToPath(new URL(`../../../${relative}`, import.meta.url)))
+        .filter((name) => name.endsWith(".md"))
+        .map((name) => `${relative}/${name}`);
+    // Phase 4's documents belong to another team; the audit records quote the old layout on purpose.
+    const documents = ["README.md", "docs/phase-1-plan.md", "docs/phase-2-plan.md", "docs/phase-3-plan.md", ...dir("docs/design/phase-2"), ...dir("docs/design/phase-3")];
+    const stale: string[] = [];
+    for (const file of documents) {
+      repo(file)
+        .split("\n")
+        .forEach((line, i) => {
+          if (/x-app-env|shared `?env_file/.test(line) && !/services\.yml/.test(line)) stale.push(`${file}:${i + 1}`);
+        });
+    }
+    expect(stale).toEqual([]);
+  });
+
   it(".env.example states the session lifetimes the API defaults to: 30 days, 14 idle", () => {
     const example = repo(".env.example");
     expect(example).toMatch(/^SESSION_TTL_DAYS=30$/m);

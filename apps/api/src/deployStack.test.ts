@@ -15,6 +15,8 @@ import { parseTrustProxy } from "./config.js";
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const repo = (relative: string) => readFileSync(path.join(root, relative), "utf8");
 const haveCompose = spawnSync("docker", ["compose", "version"], { encoding: "utf8" }).status === 0;
+/** An exact release of the base images (audit a7-backup-deploy-secrets-13): Postgres 16.<minor>, Node 22.<minor>.<patch>. */
+const EXACT = { POSTGRES_IMAGE: /^postgres:16\.\d+-alpine$/, NODE_IMAGE: /^node:22\.\d+\.\d+-alpine$/ } as const;
 
 interface Service {
   environment?: Record<string, string | null>;
@@ -102,6 +104,25 @@ describe.skipIf(!haveCompose)("deploy stack as compose renders it", () => {
     expect(dev.services["db"]!.ports).toEqual([expect.objectContaining({ host_ip: "127.0.0.1", published: "5432" })]);
   });
 
+  it("a7-backup-deploy-secrets-10 (second round): the development file puts the database on a network its published port can use", () => {
+    // Docker sets up a published port through a network that is not internal: a container on
+    // `internal` alone has no gateway endpoint, so 127.0.0.1:5432 would answer nothing.
+    const dev = render({}, ["deploy/docker-compose.dev.yml"]);
+    const devNets = Object.keys(dev.services["db"]!.networks ?? {}).sort();
+    expect(devNets).toContain("internal"); // web and worker still reach it by name
+    const routed = devNets.filter((net) => dev.networks[net]?.internal !== true);
+    expect(routed.length, `db's networks in development: ${devNets.join(", ")}`).toBeGreaterThan(0);
+    // The network is the development file's own, not the worker's way out or Caddy's.
+    for (const net of routed) {
+      for (const [name, service] of Object.entries(dev.services)) if (name !== "db") expect(Object.keys(service.networks ?? {}), `${name} on ${net}`).not.toContain(net);
+    }
+    // Without the development file the database stays on `internal` alone, publishing nothing.
+    const prod = render();
+    expect(Object.keys(prod.services["db"]!.networks ?? {})).toEqual(["internal"]);
+    expect(prod.services["db"]!.ports ?? []).toEqual([]);
+    for (const net of routed) expect(prod.networks[net], net).toBeUndefined();
+  });
+
   it("a7-backup-deploy-secrets-11: BACKUP_HOUR in .env reaches the backup container", () => {
     expect(render({ BACKUP_HOUR: "5" }).services["backup"]!.environment!["BACKUP_HOUR"]).toBe("5");
     expect(render({ BACKUP_COPY_CMD: `'rclone copy "$1" "offsite:meridian/$2"'` }).services["backup"]!.environment!["BACKUP_COPY_CMD"]).toBe('rclone copy "$$1" "offsite:meridian/$$2"');
@@ -136,6 +157,18 @@ describe.skipIf(!haveCompose)("deploy stack as compose renders it", () => {
     expect(stack.services["web"]!.build!.args!["NODE_IMAGE"]).toContain("@sha256:" + "b".repeat(64));
     expect(stack.services["worker"]!.build!.args!["NODE_IMAGE"]).toContain("@sha256:" + "b".repeat(64));
     expect(stack.services["proxy"]!.image).toContain("@sha256:" + "c".repeat(64));
+  });
+
+  it("a7-backup-deploy-secrets-13 (second round): without a setting in .env, Postgres and Node are exact releases, the same in every service", () => {
+    const stack = render();
+    const postgresImage = stack.services["db"]!.image!;
+    expect(postgresImage).toMatch(EXACT.POSTGRES_IMAGE);
+    expect(stack.services["backup"]!.build!.args!["POSTGRES_IMAGE"]).toBe(postgresImage);
+    const nodeImage = stack.services["web"]!.build!.args!["NODE_IMAGE"]!;
+    expect(nodeImage).toMatch(EXACT.NODE_IMAGE);
+    expect(stack.services["worker"]!.build!.args!["NODE_IMAGE"]).toBe(nodeImage);
+    // Caddy stays on its major tag (decision 124): nothing here runs a Caddy, so no release of it is known to work with the Caddyfile.
+    expect(stack.services["proxy"]!.image).toBe("caddy:2-alpine");
   });
 
   it("a1-serve-and-guard (second round): TRUST_PROXY in .env names the proxy the web container trusts; unset or empty it is uniquelocal", () => {
@@ -209,6 +242,26 @@ describe("deploy files as text", () => {
       for (const from of froms) expect(from, file).toMatch(/^\$\{(NODE|POSTGRES)_IMAGE\}$/);
     }
     expect(JSON.parse(repo("package.json")).packageManager).toMatch(/^pnpm@\d+\.\d+\.\d+\+sha512\.[0-9a-f]{128}$/);
+  });
+
+  it("a7-backup-deploy-secrets-13 (second round): the default base images are exact releases, and every file names the same ones", () => {
+    const argDefault = (file: string, name: string) => new RegExp(`^ARG ${name}=(\\S+)$`, "m").exec(repo(file))?.[1];
+    const composeDefault = (name: string) => [...new Set([...repo("deploy/services.yml").matchAll(new RegExp(`\\$\\{${name}:-([^}]+)\\}`, "g"))].map((m) => m[1]!))];
+    const defaults: Record<string, string> = {};
+    for (const name of ["POSTGRES_IMAGE", "NODE_IMAGE"] as const) {
+      const inCompose = composeDefault(name);
+      expect(inCompose, `${name} in services.yml`).toHaveLength(1);
+      defaults[name] = inCompose[0]!;
+      expect(defaults[name], name).toMatch(EXACT[name]);
+    }
+    expect(argDefault("deploy/backup.Dockerfile", "POSTGRES_IMAGE")).toBe(defaults["POSTGRES_IMAGE"]);
+    expect(argDefault("apps/api/Dockerfile", "NODE_IMAGE")).toBe(defaults["NODE_IMAGE"]);
+    expect(argDefault("apps/worker/Dockerfile", "NODE_IMAGE")).toBe(defaults["NODE_IMAGE"]);
+    // Node matches the engines field, Postgres the major version the data volume was made with.
+    expect(JSON.parse(repo("package.json")).engines.node).toBe(">=22");
+    // The README and .env.example name the defaults a household overrides.
+    for (const file of ["README.md", ".env.example"]) for (const image of Object.values(defaults)) expect(repo(file), `${file} names ${image}`).toContain(image);
+    expect(repo("README.md")).not.toMatch(/The base images are the floating tags/);
   });
 
   it("a7-backup-deploy-secrets-15: Docker secret files and the off-site copy's keys are git-ignored", () => {

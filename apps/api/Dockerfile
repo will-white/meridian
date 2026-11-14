@@ -1,5 +1,5 @@
 # Builds the API bundle and the web UI into one image; the API serves the static UI.
-ARG NODE_IMAGE=node:22-alpine
+ARG NODE_IMAGE=node:22.23.4-alpine
 FROM ${NODE_IMAGE} AS build
 RUN corepack enable
 WORKDIR /app

@@ -23,6 +23,8 @@
 #   rclone copy "$1" "offsite:meridian-backups/$2"
 #   scp -i /backup-config/id_ed25519 -o UserKnownHostsFile=/backup-config/known_hosts "$1" me@nas:meridian-backups/$2/
 # A file whose copy failed is tried again after the next backup; until then the healthcheck fails.
+# Without BACKUP_COPY_CMD nothing leaves the server: the healthcheck ignores an earlier failed
+# copy and says no copy is made, and the next backup records the off-site state as "off".
 #
 # Status: $BACKUP_ROOT/status holds last-success, last-failure, offsite and restore-check.
 # Restore: see restore.sh; prove a backup restores: restore-check.sh.
@@ -78,11 +80,16 @@ health() {
     if [ "$ok_at" -eq 0 ]; then echo "no verified backup yet"; else echo "no verified backup for over ${max_hours} hours"; fi
     return 1
   fi
-  if [ -f "$STATUS/offsite" ] && [ "$(cut -d' ' -f2 < "$STATUS/offsite")" != "ok" ]; then
+  # The off-site state counts only while there is a copy to make: the healthcheck runs with the
+  # container's settings, so once BACKUP_COPY_CMD is removed an old failure no longer applies.
+  offsite_note=""
+  if [ -z "${BACKUP_COPY_CMD:-}" ]; then
+    offsite_note="; no off-site copy is made (BACKUP_COPY_CMD is not set)"
+  elif [ -f "$STATUS/offsite" ] && [ "$(cut -d' ' -f2 < "$STATUS/offsite")" = "failed" ]; then
     echo "the off-site copy is failing: $(cut -d' ' -f2- < "$STATUS/offsite")"
     return 1
   fi
-  if [ "$ok_at" -eq 0 ]; then echo "ok: waiting for the first nightly backup"; else echo "ok: $(cut -d' ' -f2- < "$STATUS/last-success")"; fi
+  if [ "$ok_at" -eq 0 ]; then echo "ok: waiting for the first nightly backup$offsite_note"; else echo "ok: $(cut -d' ' -f2- < "$STATUS/last-success")$offsite_note"; fi
   return 0
 }
 
@@ -136,7 +143,12 @@ prune() {
 }
 
 offsite_copy() {
-  [ -n "${BACKUP_COPY_CMD:-}" ] || return 0
+  if [ -z "${BACKUP_COPY_CMD:-}" ]; then
+    # Replaces a failure recorded while a command was set: nothing is retried now. The list of
+    # files already copied is kept, so setting the command again copies only the rest.
+    record offsite "off BACKUP_COPY_CMD is not set; no copy leaves the server" || warn "could not record the off-site state under $STATUS"
+    return 0
+  fi
   list="$STATUS/offsite-copied"
   touch "$list" || return 1
   failed=0

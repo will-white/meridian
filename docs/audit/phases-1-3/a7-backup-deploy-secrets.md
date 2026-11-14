@@ -175,3 +175,73 @@ Status: fixed (showing the backup state in Settings is left for Phase 6, decisio
 What changed: backup `backup.sh --health` (last backup failed, nothing verified for 26 hours, or the off-site copy failing; a container that just started is healthy until its first night has passed); worker: the runner writes `WORKER_HEARTBEAT_FILE` after every pass over the queue and every job, and the healthcheck fails after 35 minutes without one; Caddy: its admin endpoint; the proxy now waits for a healthy web.
 
 Tests: `deployScripts.test.ts` "a7-backup-deploy-secrets-18: the healthcheck fails 26 hours after the last verified backup"; worker `runner.test.ts` "worker heartbeat … > WORKER_HEARTBEAT_FILE names the file; without it there is none" and "… writes the heartbeat after each pass over the queue, and not while the database cannot be reached"; `deployStack.test.ts` "a7-backup-deploy-secrets-18: every service has a healthcheck, and the proxy waits for a healthy web". Caddy's admin endpoint answering inside the container was not observed here.
+
+## Second round
+
+An independent reviewer found two first-round items not done (-10 a regression, -13 incomplete) and raised three new issues. Each was checked against the spec, the plan and the code, and reproduced. -10, -13 and new issues 1 and 3 are real and fixed. New issue 2 is real for `docs/design/phase-3/prices-and-valuation.md` and fixed there; its README part had already been fixed by the a1-serve-and-guard second round (commit 4722f45), so nothing was left to do there. For -13 the fix covers Postgres and Node; Caddy stays on its major tag, for the reason below. Decisions: `docs/phase-1-plan.md`, "Decisions made during the audit", 124 to 127 (decisions 76, 77 and 80 now point to them). The README (Backups, Restore, Updating), `.env.example`, the comments in `deploy/services.yml`, `deploy/docker-compose.dev.yml`, `deploy/backup.sh` and `deploy/restore.sh`, and `docs/design/phase-3/prices-and-valuation.md` were edited to match.
+
+Each new test was run against the code before its fix and failed: `a7r2-red-deploy.txt` in the lane's scratch directory (`laneA/`), 6 of 43 failing in `deployStack.test.ts`, `deployScripts.test.ts` and `deployConfig.test.ts`. The restore case shows the old printed command failing as the reviewer described: "Password for user root: … fe_sendauth: no password supplied". No Docker daemon runs here, so as in the first round the stack is checked as `docker compose config` renders it, and the scripts run under the local `/bin/sh` against Postgres 16.
+
+### Second round, a7-backup-deploy-secrets-10 (regression): the development database's port could not work
+
+Status: fixed.
+
+What was wrong: `deploy/docker-compose.dev.yml` added `127.0.0.1:5432:5432` to db, but db's only network was `internal` (`internal: true`, from -16). Docker sets up a published port only through a network that is not internal, because an internal network gives the container no gateway. Decision 77 says the same, which is why Caddy is also on `edge`. So the development quick start (`… -f deploy/docker-compose.dev.yml up -d db`, then `pnpm db:migrate`) and the README's host-side restore would have found nothing on 127.0.0.1:5432. Rendered with the development file, db had the port and `networks: {internal}`. The -10 test checked only the port entry.
+
+What changed: the development file also puts db on `dev`, a network of its own that no other service joins. Web and worker still reach db on `internal`. The home-server stack is unchanged: db is on `internal` only and publishes nothing (decision 125). Docker's behaviour on a running daemon was not observed here.
+
+Tests: api `deployStack.test.ts` "a7-backup-deploy-secrets-10 (second round): the development file puts the database on a network its published port can use". Rendered with the development file, db is on `internal` and on at least one network that is not internal, and no other service is on that network. Rendered without it, db is on `internal` alone, has no port, and the stack has no such network.
+
+### Second round, a7-backup-deploy-secrets-13 (incomplete): the defaults were still floating tags
+
+Status: fixed for Postgres and Node. Caddy stays on its major tag (decision 124).
+
+What was wrong: the first round routed every image through `POSTGRES_IMAGE`, `NODE_IMAGE` and `CADDY_IMAGE`, but kept `postgres:16-alpine`, `node:22-alpine` and `caddy:2-alpine` as the defaults (decision 80). The default deploy was therefore no more reproducible than before, and the item was reported as fixed anyway. The reviewer is right that an exact version tag needs no digest lookup.
+
+What changed: the defaults are `postgres:16.15-alpine` and `node:22.23.4-alpine`, the releases the test suites run on here (`psql --version` 16.15, `node --version` v22.23.4). They are set in `deploy/services.yml` (db and backup, web and worker), in the `ARG` lines of `deploy/backup.Dockerfile`, `apps/api/Dockerfile` and `apps/worker/Dockerfile`, in `.env.example` and in the README. An update of the repository moves them, and `.env` still overrides them, with a digest for a byte-for-byte rebuild. Postgres minor releases share the storage format, so an install that ran a later 16.x reads its volume with the pin.
+
+Caddy stays `caddy:2-alpine`. Nothing in the repository's checks runs a Caddy, and nothing here names a current Caddy release. A tag guessed from memory, if the registry lacks it, would stop every install at `up`, and none can be looked up from here (no requests outside the package registry). The major tag keeps the one service the LAN talks to on Caddy's fixes until a release is checked; `CADDY_IMAGE` pins it. No digest is shipped, for decision 80's reason.
+
+Tests: api `deployStack.test.ts`:
+- "a7-backup-deploy-secrets-13 (second round): without a setting in .env, Postgres and Node are exact releases, the same in every service" (rendered; Caddy asserted to be its major tag, so pinning it later changes the test on purpose);
+- "… the default base images are exact releases, and every file names the same ones" (as text: one default per image in `services.yml`, equal to each Dockerfile's `ARG` default, and named in the README and `.env.example`).
+
+### Second round, new issue 1 (low): the backup healthcheck stayed failed for good once BACKUP_COPY_CMD was removed
+
+Status: fixed.
+
+What was wrong: with `BACKUP_COPY_CMD` empty, `offsite_copy` returned before writing anything. A `status/offsite` left by an earlier failed copy therefore stayed, and `--health` kept failing with "they are tried again after the next backup", although nothing would retry them. Reproduced: one backup with a failing command exited 3, the next one without it exited 0, and `--health` still exited 1.
+
+What changed: the healthcheck runs with the container's settings, so with `BACKUP_COPY_CMD` unset it ignores `status/offsite` and adds "no off-site copy is made (BACKUP_COPY_CMD is not set)" to its ok line. That holds from the moment the container is recreated. A backup run without the command records the state as `off`. Only a state of `failed` fails the healthcheck, so a command set again is healthy until a copy has been tried. The list of files already copied is kept, so setting the command again copies only the rest. The README's "Off the server" says how to stop copying (decision 126). The first-round -05 test now gives its health calls the same `BACKUP_COPY_CMD` as the backup, as the container does.
+
+Tests: api `deployScripts.test.ts` "a7-backup-deploy-secrets (second round): once BACKUP_COPY_CMD is removed, a copy that failed before no longer fails the healthcheck". The sequence: a failed copy, then the healthcheck without the command (0, says no copy is made), a backup without it (`off` recorded, healthy), the command set again (healthy), and a failing copy (exit 3, all four uncopied files tried, unhealthy again).
+
+### Second round, new issue 2 (low): documents still described the compose layout the first round replaced
+
+Status: fixed. The README part was already fixed.
+
+What was wrong: `docs/design/phase-3/prices-and-valuation.md` line 14 said the shared `x-app-env` (`env_file: ../.env`) delivers `.env` to web and worker, and line 565 said the shared `env_file` carries `PRICE_*` and `TIINGO_API_KEY*` to both containers. Since -07 neither is true: `deploy/services.yml` passes each setting by name. The README line the reviewer quoted ("`TRUST_PROXY` in `deploy/docker-compose.yml` must name its address") was no longer there. The a1-serve-and-guard second round (commit 4722f45, decision 114) had replaced it with "set `TRUST_PROXY` in `.env`" and a pointer to `deploy/services.yml`, and its test checks that every file the README names for `TRUST_PROXY` sets it.
+
+What changed: both lines of `prices-and-valuation.md` keep what the design said and add, as line 596 and `seams.md` P9 already did, what `services.yml` passes since -07. Line 565 also says which container gets which price setting and that the Docker-secret file mounts the key into the worker only.
+
+Tests: api `deployConfig.test.ts` "a7-backup-deploy-secrets (second round): no document describes the shared env_file the compose layout no longer has". `services.yml` has no `x-app-env` or `env_file`. Every line of the README, the Phase 1 to 3 plans and the Phase 2 and 3 designs that mentions `x-app-env` or a shared `env_file` also names `services.yml`. Phase 4's documents and the audit records are left out.
+
+### Second round, new issue 3 (low): the command restore.sh printed to drop the kept database failed where the README runs it
+
+Status: fixed.
+
+What was wrong: after a swap, `restore.sh` printed `psql -d postgres -c 'DROP DATABASE "<db>_before_<stamp>"'`. In the backup container `PGHOST=db` is set but `PGUSER` and `PGPASSWORD` are not, so psql connects as the operating-system user and fails. The README gave no drop command either, and the kept copy takes as much disk space as the data until it is dropped.
+
+What changed: `restore.sh --drop-kept <db>_before_<14 digits>` drops such a copy with the script's own connection settings. It needs only `POSTGRES_*` and psql, and it refuses any other name: the live database, a `_restore_` copy, `postgres` or a wrong stamp. After a swap the restore prints the command as it would run again where the restore ran. When the script is the image's `/restore.sh`, that is `docker compose -f deploy/docker-compose.yml exec backup /restore.sh --drop-kept …`; otherwise it is the script's own path. The README's Restore section shows the command and says the copy takes disk space until it is dropped. Setting `PGUSER` and `PGPASSWORD` on the backup service was the other choice. It would put the password in the container's environment a second time and still leave a hand-typed `DROP DATABASE` that a typo can aim at the live database (decision 127).
+
+Tests: api `deployScripts.test.ts` "a7-backup-deploy-secrets (second round): the command a restore prints to drop the database it replaced works where the restore ran":
+- the environment is the backup container's (PGHOST, PGPORT and `POSTGRES_*`, no PGUSER or PGPASSWORD);
+- run from its path, the printed command is run as printed and drops the kept copy, and the live database keeps its data;
+- run as `/restore.sh` (through `sh -c '. file'`, so `$0` is the image's path without writing to `/`), the printed line is the README's `docker compose … exec backup /restore.sh --drop-kept <name>`, which the README contains, and that command drops the copy;
+- every other name is refused, and a name of the right form that does not exist is refused too.
+
+Checks:
+- `pnpm typecheck` and `pnpm lint` pass.
+- Suites of the packages touched, with TEST_DATABASE_PREFIX `meridian_fix_a_`: api 46 files, 373 tests; worker (its Dockerfile changed) 15 files, 129 tests.
+- `pnpm build` passes. No web code changed, so no browser check was needed.
+- Green outputs: `a7r2-green-api.txt` and `a7r2-green-worker.txt` in `laneA/`.

@@ -126,7 +126,7 @@ The `backup` service (`deploy/backup.Dockerfile`: the Postgres image plus openss
 
 `docker compose -f deploy/docker-compose.yml ps` shows the backup container **unhealthy** when the last backup failed, when no verified backup was made for 26 hours, or when the off-site copy is failing; `docker compose -f deploy/docker-compose.yml exec backup /backup.sh --health` says which, and `docker compose -f deploy/docker-compose.yml logs backup` shows each night. `deploy/backups/status/` keeps the last success, the last failure, the off-site state and the last restore check.
 
-**Off the server.** Set `BACKUP_COPY_CMD` in `.env` (examples there): it runs for every backup file not copied yet, daily and monthly, with the file as `$1` and its folder as `$2`; a file whose copy failed is tried again after the next backup. Put the tool's configuration in `deploy/backup-config/` (git-ignored, mounted at `/backup-config`): `rclone.conf` for rclone (`RCLONE_CONFIG` points there; make one with `rclone config` and copy it in), or an ssh key and `known_hosts` for scp. The folder must be readable by uid 70 (`sudo chown -R 70 deploy/backup-config`).
+**Off the server.** Set `BACKUP_COPY_CMD` in `.env` (examples there): it runs for every backup file not copied yet, daily and monthly, with the file as `$1` and its folder as `$2`; a file whose copy failed is tried again after the next backup. Remove the setting (and `up -d` again) to stop copying: the healthcheck then no longer reports an earlier failed copy, and says no off-site copy is made. Put the tool's configuration in `deploy/backup-config/` (git-ignored, mounted at `/backup-config`): `rclone.conf` for rclone (`RCLONE_CONFIG` points there; make one with `rclone config` and copy it in), or an ssh key and `known_hosts` for scp. The folder must be readable by uid 70 (`sudo chown -R 70 deploy/backup-config`).
 
 **Prove a backup restores** (once a month; running it on a schedule is Phase 6 work): `docker compose -f deploy/docker-compose.yml exec backup /restore-check.sh` restores the newest backup into a throwaway database, checks it holds the app's tables, drops it and records the result. The live database is not touched.
 
@@ -136,20 +136,22 @@ The `backup` service (`deploy/backup.Dockerfile`: the Postgres image plus openss
 docker compose -f deploy/docker-compose.yml stop web worker
 docker compose -f deploy/docker-compose.yml exec backup /restore.sh /backups/daily/meridian-20261013T020000Z.sql.gz.enc
 docker compose -f deploy/docker-compose.yml start web worker
+# once the app works, drop the copy the restore kept (it prints this line with the name)
+docker compose -f deploy/docker-compose.yml exec backup /restore.sh --drop-kept meridian_before_20261114093000
 ```
 
-Nothing is changed until the backup has been decrypted and read to its end. It is then restored into a new database in one transaction that stops at the first error, and only then swapped in; the database it replaced is kept as `<name>_before_<time>` until you drop it. It asks you to type the database name (or pass `--yes`). `--target-db <name>` restores into a new database of that name and leaves everything else alone. On another machine with `psql`, `openssl` and `gzip` installed (and the development file's database port), `deploy/restore.sh` reads the settings it is not given from the repository's `.env`, from any directory. A restored database needs the same `SECRETS_KEY` (see "The encryption key").
+Nothing is changed until the backup has been decrypted and read to its end. It is then restored into a new database in one transaction that stops at the first error, and only then swapped in; the database it replaced is kept as `<name>_before_<time>`, taking as much disk space as the data, until you drop it with `--drop-kept`, which drops such a copy and nothing else. It asks you to type the database name (or pass `--yes`). `--target-db <name>` restores into a new database of that name and leaves everything else alone. On another machine with `psql`, `openssl` and `gzip` installed (and the development file's database port), `deploy/restore.sh` reads the settings it is not given from the repository's `.env`, from any directory. A restored database needs the same `SECRETS_KEY` (see "The encryption key").
 
 ## Updating
 
 ```bash
 git pull
 docker compose -f deploy/docker-compose.yml pull --ignore-buildable   # db and Caddy
-docker compose -f deploy/docker-compose.yml build --pull              # web, worker and backup on fresh base images
+docker compose -f deploy/docker-compose.yml build --pull              # web, worker and backup on the base images the checkout names
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-The base images are the floating tags `postgres:16-alpine`, `node:22-alpine` and `caddy:2-alpine`, so a rebuild picks up their security fixes. To make rebuilds reproducible instead, pin each to a digest in `.env` (`POSTGRES_IMAGE`, `NODE_IMAGE`, `CADDY_IMAGE`; `docker buildx imagetools inspect <image>` prints the digest) and move the pins when you choose to update. Keep Postgres on major version 16: a new major version cannot read the existing data volume without a dump and restore. pnpm is pinned by version and hash in `package.json`.
+The base images are exact releases, `postgres:16.15-alpine` and `node:22.23.4-alpine` (the versions the test suites run on), so a rebuild of the same checkout gets the same versions, and `git pull` brings the next ones when the repository moves them. Caddy is `caddy:2-alpine`, its major tag, which a rebuild keeps on Caddy's latest 2.x: nothing in the repository's checks runs a Caddy, so no release of it is known to work with the Caddyfile. To take a newer patch release before the repository moves, or to pin Caddy, set `POSTGRES_IMAGE`, `NODE_IMAGE` or `CADDY_IMAGE` in `.env`; add a digest (`docker buildx imagetools inspect <image>` prints it) to make a rebuild byte for byte the same, and move it when you choose to update. Keep Postgres on major version 16: a new major version cannot read the existing data volume without a dump and restore (a different 16.x reads it either way). pnpm is pinned by version and hash in `package.json`.
 
 ## Layout
 

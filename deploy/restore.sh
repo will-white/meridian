@@ -4,6 +4,7 @@
 #   restore.sh [--yes] <backup.sql.gz.enc>                  replace the app's database (POSTGRES_DB)
 #   restore.sh --target-db <name> <backup.sql.gz.enc>       restore into a new database <name>; nothing else is touched
 #   restore.sh --check <backup.sql.gz.enc>                  restore into a throwaway database, report what it holds, drop it
+#   restore.sh --drop-kept <db>_before_<time>               drop the database a restore replaced and kept
 #
 # On the server, run it in the backup container, which has the tools, the settings and the
 # database's network (the backups are under /backups there):
@@ -15,7 +16,9 @@
 # backup is then restored into a new database in one transaction that stops at the first error;
 # only when that worked (and the restored database has the app's migrations) is the current
 # database renamed to <db>_before_<stamp> and the restored one renamed into its place. The old
-# one is kept until you drop it. Replacing asks you to type the database name, unless --yes.
+# one is kept, taking its disk space, until you drop it with --drop-kept (the restore prints the
+# command), which drops nothing but such a copy. Replacing asks you to type the database name,
+# unless --yes.
 #
 # Settings: BACKUP_PASSPHRASE, POSTGRES_USER, POSTGRES_PASSWORD and POSTGRES_DB come from the
 # environment; any of them that is not set is read from the .env file at the repository root
@@ -27,9 +30,14 @@ umask 077
 say() { echo "[restore] $*"; }
 die() { echo "[restore] FAILED: $*" >&2; exit 1; }
 
+# The comment block above: all of it for --help, the usage lines when no backup file is given.
+header() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0"; }
+usage() { header | awk '/restore\.sh / { seen = 1; print; next } seen { exit } { print }' >&2; }
+
 target_db=""
 assume_yes=0
 check=0
+drop_kept=""
 file=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -37,13 +45,23 @@ while [ $# -gt 0 ]; do
     --target-db=*) target_db="${1#--target-db=}"; shift ;;
     --yes | -y) assume_yes=1; shift ;;
     --check) check=1; shift ;;
-    -h | --help) sed -n '2,24p' "$0"; exit 0 ;;
+    --drop-kept) [ $# -ge 2 ] || die "--drop-kept needs the name of the database a restore kept"; drop_kept="$2"; shift 2 ;;
+    --drop-kept=*) drop_kept="${1#--drop-kept=}"; shift ;;
+    -h | --help) header; exit 0 ;;
     -*) die "unknown option $1 (see --help)" ;;
     *) [ -z "$file" ] || die "one backup file at a time"; file="$1"; shift ;;
   esac
 done
-[ -n "$file" ] || { sed -n '2,6p' "$0" >&2; exit 2; }
-[ -f "$file" ] && [ -r "$file" ] || die "cannot read $file"
+if [ -n "$drop_kept" ]; then
+  [ -z "$file" ] && [ -z "$target_db" ] && [ "$check" = 0 ] || die "--drop-kept takes the name of a database and nothing else"
+  needed="POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB"
+  tools="psql"
+else
+  [ -n "$file" ] || { usage; exit 2; }
+  [ -f "$file" ] && [ -r "$file" ] || die "cannot read $file"
+  needed="BACKUP_PASSPHRASE POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB"
+  tools="psql openssl gzip"
+fi
 
 # KEY=VALUE from the .env file, without running it: quotes are removed, an inline " #" comment
 # after an unquoted value is dropped, and the last line for a key wins (as Docker Compose reads it).
@@ -66,7 +84,7 @@ for key in BACKUP_PASSPHRASE POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB; do
     if value=$(env_value "$key"); then export "$key=$value"; fi
   fi
 done
-for key in BACKUP_PASSPHRASE POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB; do
+for key in $needed; do
   eval "value=\${$key:-}"
   [ -n "$value" ] || die "$key is not set (in the environment or $env_file)"
 done
@@ -76,7 +94,7 @@ export PGPORT="${PGPORT:-5432}"
 export PGUSER="$POSTGRES_USER"
 export PGPASSWORD="$POSTGRES_PASSWORD"
 
-for tool in psql openssl gzip; do
+for tool in $tools; do
   command -v "$tool" > /dev/null 2>&1 || die "$tool is not installed here (run this in the backup container: see the top of this script)"
 done
 
@@ -84,6 +102,29 @@ valid_name() {
   case "$1" in '' | [!A-Za-z_]* | *[!A-Za-z0-9_]*) return 1 ;; esac
   [ "${#1}" -le 63 ]
 }
+psql_admin() { psql -X -q -v ON_ERROR_STOP=1 -d postgres "$@"; }
+db_exists() { [ "$(psql_admin -Atc "select 1 from pg_database where datname = '$1'")" = "1" ]; }
+
+# This script, as it would be run again where it runs now. The backup image has it at
+# /restore.sh, and the README runs it there through compose from the repository's root.
+this_script() {
+  if [ "$0" = /restore.sh ]; then echo "docker compose -f deploy/docker-compose.yml exec backup /restore.sh"; else echo "$0"; fi
+}
+
+# Drop a database an earlier restore kept (<db>_before_<14 digits>), and nothing else.
+if [ -n "$drop_kept" ]; then
+  case "$drop_kept" in
+    "${POSTGRES_DB}_before_"[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+    *) die "--drop-kept drops only a database a restore kept (\"${POSTGRES_DB}_before_<time>\"), not \"$drop_kept\"" ;;
+  esac
+  valid_name "$drop_kept" || die "\"$drop_kept\" is not a database name a restore makes"
+  psql_admin -Atc "select 1" > /dev/null || die "cannot reach Postgres at $PGHOST:$PGPORT as $POSTGRES_USER - nothing was dropped"
+  db_exists "$drop_kept" || die "there is no database \"$drop_kept\" on $PGHOST (already dropped?)"
+  psql_admin -c "DROP DATABASE \"$drop_kept\"" > /dev/null || die "cannot drop \"$drop_kept\" (is something connected to it?)"
+  say "dropped \"$drop_kept\", the copy a restore kept; \"$POSTGRES_DB\" is untouched."
+  exit 0
+fi
+
 stamp=$(date -u +%Y%m%d%H%M%S)
 [ "$check" = 1 ] && [ -z "$target_db" ] && target_db="${RESTORE_CHECK_PREFIX:-meridian_restorecheck_}${stamp}"
 if [ -n "$target_db" ]; then
@@ -98,8 +139,6 @@ fi
 
 work=$(mktemp -d) || die "cannot create a temporary directory"
 trap 'rm -rf "$work"' EXIT
-psql_admin() { psql -X -q -v ON_ERROR_STOP=1 -d postgres "$@"; }
-db_exists() { [ "$(psql_admin -Atc "select 1 from pg_database where datname = '$1'")" = "1" ]; }
 
 decrypt_stream() {
   { openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:BACKUP_PASSPHRASE -in "$file" || echo "decrypt exited $? (wrong BACKUP_PASSPHRASE, or a damaged file)" >> "$work/errors"; } \
@@ -173,6 +212,6 @@ if ! psql_admin -c "ALTER DATABASE \"$staging\" RENAME TO \"$POSTGRES_DB\""; the
 fi
 say "Restore complete: \"$POSTGRES_DB\" now holds $file ($summary)."
 if [ "$replacing" = 1 ]; then
-  say "The database it replaced is kept as \"$previous\". When the app works, drop it:"
-  say "  psql -d postgres -c 'DROP DATABASE \"$previous\"'"
+  say "The database it replaced is kept as \"$previous\" and takes disk space until it is dropped. When the app works, drop it:"
+  say "  $(this_script) --drop-kept $previous"
 fi

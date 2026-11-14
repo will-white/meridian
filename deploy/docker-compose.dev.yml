@@ -2,7 +2,18 @@
 # and the integration tests. Never use it on the home server, where only Caddy publishes ports.
 #
 #   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev.yml up -d db
+#
+# A published port needs a network that is not internal: on `internal` alone the container has no
+# gateway, so Docker sets up no port for it (the reason Caddy is also on `edge`). Here db also
+# joins `dev`, a network of its own that no other service is on; web and worker still reach it on
+# `internal`.
 services:
   db:
     ports:
       - "127.0.0.1:5432:5432"
+    networks:
+      - internal
+      - dev
+
+networks:
+  dev: {}

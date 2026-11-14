@@ -1,6 +1,6 @@
 # The backup sidecar: the Postgres image (pg_dump and psql of the server's major version) plus
 # what backup.sh, restore.sh and restore-check.sh need that it lacks.
-ARG POSTGRES_IMAGE=postgres:16-alpine
+ARG POSTGRES_IMAGE=postgres:16.15-alpine
 FROM ${POSTGRES_IMAGE}
 # openssl encrypts the dumps; rclone and openssh-client (ssh, scp) carry the off-site copy
 # (BACKUP_COPY_CMD); su-exec lets backup.sh start as root to hand /backups to postgres, then drop.

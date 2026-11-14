@@ -13,12 +13,16 @@
 # is also on `edge`, the network its published ports need. Which hosts the worker may call is
 # enforced by the worker itself (SIMPLEFIN_ALLOWED_HOSTS, the price provider's host), not here.
 #
-# Images: the *_IMAGE values in .env choose the base images (default the floating tags below);
-# pin them to a digest there to make a rebuild reproducible (README, "Updating").
+# Images: the defaults below are exact releases, Postgres 16.15 and Node 22.23.4, the ones the
+# test suites run on, so a rebuild of the same checkout gets the same versions; an update of the
+# repository moves them. Caddy stays on its major tag: no Caddy runs in the repository's checks,
+# so no release of it is known to work with the Caddyfile. POSTGRES_IMAGE, NODE_IMAGE and
+# CADDY_IMAGE in .env replace them, with a digest for a rebuild that is byte for byte the same
+# (README, "Updating").
 
 services:
   db:
-    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    image: ${POSTGRES_IMAGE:-postgres:16.15-alpine}
     restart: unless-stopped
     environment:
       - POSTGRES_USER
@@ -39,7 +43,7 @@ services:
       context: ..
       dockerfile: apps/api/Dockerfile
       args:
-        NODE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
+        NODE_IMAGE: ${NODE_IMAGE:-node:22.23.4-alpine}
     restart: unless-stopped
     environment:
       - NODE_ENV=production
@@ -89,7 +93,7 @@ services:
       context: ..
       dockerfile: apps/worker/Dockerfile
       args:
-        NODE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
+        NODE_IMAGE: ${NODE_IMAGE:-node:22.23.4-alpine}
     restart: unless-stopped
     # The worker is the only app container that talks to the outside world: SimpleFIN and, with
     # PRICE_PROVIDER=tiingo and TIINGO_API_KEY (or TIINGO_API_KEY_FILE) set in ../.env, Tiingo.
@@ -169,7 +173,7 @@ services:
       context: .
       dockerfile: backup.Dockerfile
       args:
-        POSTGRES_IMAGE: ${POSTGRES_IMAGE:-postgres:16-alpine}
+        POSTGRES_IMAGE: ${POSTGRES_IMAGE:-postgres:16.15-alpine}
     restart: unless-stopped
     # backup.sh starts as root only to hand /backups to the postgres user, then drops to it.
     environment:
